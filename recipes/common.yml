@@ -174,7 +174,6 @@ modules:
           - com.system76.Popsicle
           - com.github.tchx84.Flatseal
           - org.mozilla.Thunderbird
-          - com.discordapp.Discord
           - com.yubico.yubioath
       - scope: user
         notify: false
