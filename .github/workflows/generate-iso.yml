@@ -58,10 +58,11 @@ jobs:
       matrix:
         image: ${{ fromJSON(needs.editions.outputs.images) }}
     permissions:
-      contents: write
+      contents: read
       packages: read
     env:
       TAG: ${{ inputs.tag || 'latest' }}
+      ISO_NAME: monolith-${{ matrix.image }}.iso
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -103,8 +104,6 @@ jobs:
       # Use a stable per-edition filename and checksum.
       - name: Stage ISO
         id: stage
-        env:
-          ISO_NAME: monolith-${{ matrix.image }}.iso
         run: |
           src=$(ls output/*.iso | head -1)
           sudo chown "$(id -u):$(id -g)" "$src"
@@ -112,17 +111,29 @@ jobs:
           (cd output && sha256sum "$ISO_NAME" | tee "$ISO_NAME.sha256")
           ls -lh output/
 
-      - name: Publish ISO to the rolling isos release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          ISO_NAME: monolith-${{ matrix.image }}.iso
+      - name: Upload ISO artifact
+        id: upload_iso
+        uses: actions/upload-artifact@v7
+        with:
+          path: output/${{ env.ISO_NAME }}
+          archive: false
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Upload checksum artifact
+        uses: actions/upload-artifact@v7
+        with:
+          path: output/${{ env.ISO_NAME }}.sha256
+          archive: false
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Add ISO details to the run summary
         run: |
-          set -euo pipefail
-          gh release view isos >/dev/null 2>&1 || \
-            gh release create isos \
-              --title "Live ISOs (rolling)" \
-              --notes "Latest live installer ISO for each edition, refreshed monthly or on manual dispatch." \
-              --prerelease || gh release view isos >/dev/null
-          gh release upload isos \
-            "output/$ISO_NAME" "output/$ISO_NAME.sha256" \
-            --clobber
+          {
+            echo "### ${{ matrix.image }} ISO"
+            echo
+            echo "- [Download $ISO_NAME](${{ steps.upload_iso.outputs.artifact-url }})"
+            echo "- Retention: 7 days"
+            echo "- SHA-256: \`$(cut -d' ' -f1 "output/$ISO_NAME.sha256")\`"
+          } >> "$GITHUB_STEP_SUMMARY"
