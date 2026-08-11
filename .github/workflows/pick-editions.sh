@@ -39,7 +39,7 @@ while IFS= read -r f; do
     recipes/base-main.yml) mark cosmic cosmic-nvidia ;;
     recipes/nvidia.yml) mark gnome-nvidia kde-nvidia cosmic-nvidia ;;
     # These files do not change an image.
-    *.md|LICENSE|.gitignore|justfile|iso/*) ;;
+    *.md|LICENSE|.gitignore|justfile|iso/*|.github/dependabot.yml) ;;
     .github/workflows/generate-iso.yml) ;;
     .github/workflows/generate_release.yml|.github/workflows/changelog.py) ;;
     .github/workflows/prune-buildkit.yml|.github/workflows/pr-rebase-hint.yml) ;;
