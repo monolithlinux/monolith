@@ -1,0 +1,47 @@
+[org.gnome.shell]
+enabled-extensions=['appindicatorsupport@rgcjonas.gmail.com', 'blur-my-shell@aunetx', 'clipboard-history@alexsaveau.dev', 'tilingshell@ferrarodomenico.com', 'caffeine@patapon.info', 'bazaar-integration@kolunmi.github.io', 'add-to-steam@pupper.space', 'restartto@tiagoporsch.github.io', 'gnome-ui-tune@itstime.tech', 'vicinae@dagimg-dot']
+disabled-extensions=['user-theme@gnome-shell-extensions.gcampax.github.com', 'dash-to-dock@micxgx.gmail.com', 'dash-to-panel@jderose9.github.com']
+favorite-apps=['brave-origin-nightly.desktop', 'org.gnome.Ptyxis.desktop', 'org.gnome.Nautilus.desktop', 'steam.desktop', 'io.github.kolunmi.Bazaar.desktop']
+
+[org.gnome.desktop.interface]
+color-scheme='prefer-dark'
+enable-hot-corners=false
+
+[org.gnome.desktop.peripherals.keyboard]
+numlock-state=true
+
+[org.gnome.desktop.wm.preferences]
+button-layout='appmenu:minimize,maximize,close'
+
+[org.gnome.mutter]
+center-new-windows=true
+check-alive-timeout=uint32 20000
+
+[org.gtk.Settings.FileChooser]
+sort-directories-first=true
+
+[org.gtk.gtk4.Settings.FileChooser]
+sort-directories-first=true
+
+[org.gnome.software]
+allow-updates=false
+download-updates=false
+download-updates-notify=false
+
+[org.gnome.shell.extensions.tilingshell]
+outer-gaps=uint32 0
+
+[org.gnome.desktop.search-providers]
+sort-order=['org.gnome.Settings.desktop', 'org.gnome.Nautilus.desktop', 'io.github.kolunmi.Bazaar.desktop']
+
+[org.gnome.shell.keybindings]
+show-screenshot-ui=['<Control><Super>z']
+
+[org.gnome.desktop.wm.keybindings]
+close=['<Super>q']
+
+# NOTE: Custom keyboard shortcuts (Super+T terminal, Super+B browser) are NOT
+# defined here. They use a relocatable schema, which gschema override files
+# cannot set. See files/system/etc/dconf/db/local.d/00-monolith-keybindings.
+[org.gnome.settings-daemon.plugins.media-keys]
+mic-mute=['<Super>backslash']

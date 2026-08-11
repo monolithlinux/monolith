@@ -1,0 +1,11 @@
+// Let administrators manage the system libvirt daemon (qemu:///system).
+// Without this, connecting from virt-manager (flatpak or RPM) or virsh
+// prompts for the root password on every action, or requires adding each
+// user to the libvirt group per machine. wheel membership already means
+// full sudo here, so this grants nothing new; it just makes libvirt use
+// the same admin boundary as the rest of the system.
+polkit.addRule(function (action, subject) {
+    if (action.id == "org.libvirt.unix.manage" && subject.isInGroup("wheel")) {
+        return polkit.Result.YES;
+    }
+});

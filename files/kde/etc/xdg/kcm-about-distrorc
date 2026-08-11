@@ -1,0 +1,4 @@
+# Brand KDE's About page with a logo visible on Breeze Light.
+[General]
+LogoPath=/usr/share/pixmaps/monolith/greeter-logo-dark.png
+Website=https://github.com/monolithlinux/monolith

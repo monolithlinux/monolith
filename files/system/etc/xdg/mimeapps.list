@@ -1,0 +1,7 @@
+# Override Fedora's Firefox browser defaults; Monolith ships Brave instead.
+# Per-user mimeapps settings retain higher precedence.
+[Default Applications]
+text/html=brave-origin-nightly.desktop
+application/xhtml+xml=brave-origin-nightly.desktop
+x-scheme-handler/http=brave-origin-nightly.desktop
+x-scheme-handler/https=brave-origin-nightly.desktop

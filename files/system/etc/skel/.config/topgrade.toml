@@ -1,0 +1,7 @@
+[misc]
+ignore_failures = ["protonplus"]
+disable = ["toolbx"]
+
+[linux]
+bootc = true
+rpm_ostree = false

@@ -1,0 +1,73 @@
+name: PR Rebase Hint
+
+# Post test-image rebase commands for editions affected by a PR.
+on:
+  pull_request:
+    types: [opened, reopened]
+
+permissions: {}
+
+jobs:
+  rebase-hint:
+    name: Post rebase command
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      # Full history is required for the main...HEAD diff.
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Comment the PR test-build rebase command
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+
+          git rev-parse --verify --quiet refs/remotes/origin/main >/dev/null \
+            || git fetch --quiet origin main:refs/remotes/origin/main
+          # Preserve pick-editions.sh's exit status.
+          .github/workflows/pick-editions.sh origin/main...HEAD > built.txt
+          readarray -t built < built.txt
+
+          if [ "${#built[@]}" -eq 0 ]; then
+            echo "This PR builds no edition; skipping the rebase-hint comment."
+            exit 0
+          fi
+
+          {
+            echo "### Test this PR"
+            echo
+            echo "After the build passes, rebase an existing Monolith install to the matching test image:"
+            echo
+          } > body.md
+
+          for e in "${built[@]}"; do
+            recipe="recipes/recipe-${e}.yml"
+            name="$(awk '/^name:/{print $2; exit}' "$recipe")"
+            version="$(awk '/^image-version:/{print $2; exit}' "$recipe")"
+            [ -n "$name" ] && [ -n "$version" ] \
+              || { echo "name/image-version not found in $recipe" >&2; exit 1; }
+            image="ghcr.io/monolithlinux/${name}"
+            tag="pr-${PR_NUMBER}-${version}"
+            {
+              echo "**\`${name}\`**"
+              echo
+              echo "\`\`\`bash"
+              echo "rpm-ostree rebase ostree-image-signed:docker://${image}:${tag}"
+              echo "systemctl reboot"
+              echo "\`\`\`"
+              echo
+            } >> body.md
+          done
+
+          {
+            echo "New commits update these tags. Rebase to \`:latest\` when testing is finished."
+          } >> body.md
+
+          gh pr comment "$PR_NUMBER" --body-file body.md

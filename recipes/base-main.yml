@@ -1,0 +1,16 @@
+---
+# yaml-language-server: $schema=https://schema.blue-build.org/recipe-v1.json
+# Desktop plumbing missing from Universal Blue base-main.
+modules:
+  - type: dnf
+    install:
+      packages:
+        # tuned-ppd provides the PowerProfiles D-Bus API.
+        - tuned
+        - tuned-ppd
+
+  - type: systemd
+    system:
+      enabled:
+        - tuned.service
+        - tuned-ppd.service

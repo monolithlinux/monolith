@@ -1,0 +1,52 @@
+---
+# yaml-language-server: $schema=https://schema.blue-build.org/recipe-v1.json
+# COSMIC desktop layer for base-main, shared by standard and NVIDIA editions.
+modules:
+  - type: dnf
+    group-install:
+      packages:
+        # Fedora's complete Wayland-native COSMIC desktop group.
+        - cosmic-desktop
+      exclude:
+        # Bazaar is the shared app store.
+        - cosmic-store
+        # Distrobox replaces toolbox.
+        - toolbox
+    install:
+      packages:
+        # Required by cosmic-bg's compiled-in default.
+        - cosmic-wallpapers
+        # Network backends for cosmic-files.
+        - gvfs-smb
+        - gvfs-nfs
+        # Host disk management; COSMIC has no native equivalent.
+        - gnome-disk-utility
+
+  # Copy system defaults after packages so Monolith's dock pins win.
+  - type: files
+    files:
+      - source: cosmic
+        destination: /
+
+  # COSMIC desktop apps; shared Flatpaks live in common.yml.
+  - type: default-flatpaks
+    configurations:
+      - notify: false
+        scope: system
+        install:
+          - org.gnome.Papers # documents        (KDE: okular)
+          - org.gnome.SimpleScan # scanning     (KDE: skanpage)
+          - org.gnome.baobab # disk usage       (KDE: filelight)
+          - org.gnome.Characters # characters   (KDE: kcharselect)
+          - org.gnome.Loupe # image viewer      (KDE: gwenview)
+          # Native cosmic-utils apps.
+          - dev.edfloreshz.Calculator
+          - com.jwestall.Forecast
+          # Replace with Observatory when it reaches Fedora or Flathub.
+          - net.nokyan.Resources
+
+  - type: systemd
+    system:
+      enabled:
+        # base-main has no display manager.
+        - cosmic-greeter.service

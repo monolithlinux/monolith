@@ -1,0 +1,12 @@
+# Transient live-ISO layer built on the image that Anaconda installs.
+# Local build:
+#   sudo podman build --cap-add sys_admin --security-opt label=disable --squash \
+#     --build-arg BASE_IMAGE=ghcr.io/monolithlinux/gnome:latest \
+#     -t localhost/monolith-live:latest -f iso/Containerfile iso/
+ARG BASE_IMAGE=ghcr.io/monolithlinux/gnome:latest
+FROM ${BASE_IMAGE}
+
+# Re-declare after FROM for the Anaconda kickstart.
+ARG BASE_IMAGE
+COPY iso.yaml build.sh /src/
+RUN INSTALL_IMAGEREF="${BASE_IMAGE}" /src/build.sh && rm -rf /src

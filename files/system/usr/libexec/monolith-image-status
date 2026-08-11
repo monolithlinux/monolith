@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Booted-image info for the fastfetch config (fine to run standalone too).
+#   monolith-image-status  ->  gnome:latest · 44.20260702.1
+set -euo pipefail
+
+json=$(rpm-ostree status --booted --json 2>/dev/null) || { echo "unknown"; exit 0; }
+ref=$(jq -r '.deployments[0]."container-image-reference" // ""' <<<"$json")
+img="${ref##*docker://}" # ghcr.io/monolithlinux/gnome:latest
+version=$(jq -r '.deployments[0].version // ""' <<<"$json")
+
+if [ -z "$img" ] || [ "$img" = "$ref" ]; then
+    # Not a container deployment; show whatever version we have.
+    echo "${version:-unknown}"
+    exit 0
+fi
+short="${img##*/}" # gnome:latest
+echo "${short}${version:+ · ${version}}"

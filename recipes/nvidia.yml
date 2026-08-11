@@ -1,0 +1,108 @@
+---
+# yaml-language-server: $schema=https://schema.blue-build.org/recipe-v1.json
+# Build the open NVIDIA module for Turing+ against the CachyOS kernel.
+# Prebuilt modules target the stock kernel, so this layer builds from a
+# transient Negativo17 source and runs before initramfs creation.
+modules:
+  - type: script
+    snippets:
+      - |
+        set -euxo pipefail
+
+        # The signing key was imported with the Negativo17 Steam repo.
+        curl -fsSL https://negativo17.org/repos/fedora-nvidia.repo \
+          -o /etc/yum.repos.d/fedora-nvidia.repo
+
+        # Install build dependencies before NVIDIA userspace. Installing userspace
+        # first pulls akmod-nvidia, whose post-install build fails as root.
+        # Match the versionlocked Terra Mesa stack for i686 dependencies.
+        dnf5 --enable-repo=terra-mesa -y install \
+          akmods kmodtool kernel-rpm-macros dnf5-plugins cpio \
+          gcc gcc-c++ make elfutils-libelf-devel \
+          mesa-libGL.i686 \
+          mesa-libEGL.i686
+
+        # Stage akmod-nvidia's source payload without installing its failing RPM
+        # hook. akmods drops privileges internally while targeting the sole kernel.
+        KVER="$(ls /usr/lib/modules)"
+        test "$(printf '%s\n' "$KVER" | wc -l)" -eq 1 \
+          || { echo "expected exactly one kernel in /usr/lib/modules, found: $KVER" >&2; exit 1; }
+        test -d "/usr/src/kernels/$KVER" \
+          || { echo "no kernel-devel headers at /usr/src/kernels/$KVER" >&2; exit 1; }
+
+        mkdir -p /tmp/akmod-src /usr/src/akmods
+        dnf5 -y download --destdir /tmp/akmod-src akmod-nvidia
+        ( cd /tmp/akmod-src && rpm2cpio akmod-nvidia-*.rpm | cpio -idm )
+        cp -a /tmp/akmod-src/usr/src/akmods/. /usr/src/akmods/
+        ls /usr/src/akmods/nvidia-kmod.latest \
+          || { echo "akmod-nvidia did not provide /usr/src/akmods/nvidia-kmod.latest" >&2; exit 1; }
+
+        # akmods cannot install the result until userspace supplies
+        # nvidia-kmod-common, but it leaves the built RPM in its cache.
+        akmods --force --kernels "$KVER" --kmod nvidia || true
+        mapfile -t ko_rpms < <(find /var/cache/akmods/nvidia -name 'kmod-nvidia-*.rpm' 2>/dev/null)
+        if [ "${#ko_rpms[@]}" -eq 0 ]; then
+          echo "===== akmods nvidia build log ====="
+          cat /var/cache/akmods/nvidia/*.failed.log 2>/dev/null || true
+          echo "===== end akmods nvidia build log ====="
+          echo "akmods did not produce a kmod-nvidia rpm for $KVER" >&2
+          exit 1
+        fi
+
+        # Install the kmod and userspace together to resolve nvidia-kmod-common.
+        dnf5 --enable-repo=terra-mesa -y install --nogpgcheck \
+          "${ko_rpms[@]}" \
+          nvidia-driver \
+          nvidia-driver-libs \
+          nvidia-driver-libs.i686 \
+          nvidia-settings
+
+        find "/usr/lib/modules/$KVER" -name 'nvidia*.ko*' | grep -q . \
+          || { echo "nvidia kmod not present for $KVER after install" >&2; exit 1; }
+        depmod -a "$KVER"
+
+        # Enable early KMS and VRAM preservation; disable Nouveau.
+        install -d /usr/lib/modprobe.d
+        cat > /usr/lib/modprobe.d/nvidia-monolith.conf <<'EOF'
+        options nvidia-drm modeset=1 fbdev=1
+        options nvidia NVreg_PreserveVideoMemoryAllocations=1
+        blacklist nouveau
+        options nouveau modeset=0
+        EOF
+
+        # Include NVIDIA modules in the initramfs for early KMS.
+        install -d /usr/lib/dracut/dracut.conf.d
+        cat > /usr/lib/dracut/dracut.conf.d/99-nvidia.conf <<'EOF'
+        add_drivers+=" nvidia nvidia-modeset nvidia-uvm nvidia-drm "
+        EOF
+
+        # Enable services after installation, gated on bound NVIDIA hardware.
+        for unit in nvidia-powerd nvidia-suspend nvidia-resume nvidia-hibernate; do
+          install -d "/usr/lib/systemd/system/$unit.service.d"
+          cat > "/usr/lib/systemd/system/$unit.service.d/10-monolith-hardware.conf" <<'EOF'
+        [Unit]
+        ConditionPathExistsGlob=/sys/bus/pci/drivers/nvidia/????:??:??.?
+        EOF
+          systemctl enable "$unit.service" || echo "warning: could not enable $unit.service"
+        done
+
+        # Lock the driver to the kernel build and remove the temporary repo.
+        mapfile -t nvpkgs < <(rpm -qa --qf '%{NAME}\n' 'nvidia*' 'akmod-nvidia' 'kmod-nvidia*' | sort -u)
+        test "${#nvpkgs[@]}" -gt 0 || { echo "no nvidia packages found to versionlock" >&2; exit 1; }
+        dnf5 versionlock add "${nvpkgs[@]}"
+
+        rm -f /etc/yum.repos.d/fedora-nvidia.repo
+
+  # Sign modules with the kernel's MOK before initramfs creation.
+  - type: script
+    env:
+      MODULE_NAME: nvidia
+      PUBLIC_KEY_DER_PATH: /etc/pki/akmods/certs/akmods-monolith.der
+    secrets:
+      - type: file
+        source: ./MOK.priv
+        mount:
+          type: file
+          destination: /tmp/certs/private_key.priv
+    scripts:
+      - sign-modules.sh

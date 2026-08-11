@@ -1,0 +1,77 @@
+---
+# yaml-language-server: $schema=https://schema.blue-build.org/recipe-v1.json
+# GNOME layer shared by standard and NVIDIA editions.
+modules:
+  - type: files
+    files:
+      # GDM branding and relocatable media-key shortcuts.
+      - source: gnome
+        destination: /
+
+  - type: dnf
+    install:
+      packages:
+        - gnome-tweaks
+    remove:
+      packages:
+        - gnome-software
+        # Replaced by Resources.
+        - gnome-system-monitor
+
+  - type: gnome-extensions
+    install:
+      - AppIndicator and KStatusNotifierItem Support
+      - Blur my Shell
+      # Package ID avoids an ambiguous extension name.
+      - 4839
+      - Tiling Shell
+      - Caffeine
+      - User Themes
+      - Add to Steam
+      - Restart To
+      - Dash to Dock
+      - Dash to Panel
+      - Gnome 4x, 5x UI Improvements
+      - Vicinae
+
+  - type: gschema-overrides
+    include:
+      - zzz-monolith.gschema.override
+
+  # GNOME core apps; the shared cross-desktop flatpaks live in common.yml.
+  - type: default-flatpaks
+    configurations:
+      - notify: false
+        scope: system
+        install:
+          - org.gnome.Loupe
+          - org.gnome.Papers
+          - org.gnome.SimpleScan
+          - org.gnome.TextEditor
+          - org.gnome.Weather
+          - org.gnome.Calendar
+          - org.gnome.Calculator
+          - org.gnome.clocks
+          - org.gnome.font-viewer
+          - org.gnome.baobab
+          - org.gnome.Characters
+          - org.gnome.Showtime
+          - com.mattjakeman.ExtensionManager
+          # Replaces gnome-system-monitor.
+          - net.nokyan.Resources
+
+  - type: script
+    snippets:
+      - |
+        # Install Bazaar Companion GNOME Shell extension system-wide.
+        set -euxo pipefail
+        uuid="bazaar-integration@kolunmi.github.io"
+        tmpdir="$(mktemp -d)"
+        git clone --depth=1 https://github.com/bazaar-org/bazaar-companion "$tmpdir"
+        install -d "/usr/share/gnome-shell/extensions/$uuid"
+        cp -a "$tmpdir/src/." "/usr/share/gnome-shell/extensions/$uuid/"
+        chmod -R a+rX "/usr/share/gnome-shell/extensions/$uuid"
+        rm -rf "$tmpdir"
+      - |
+        # Compile the GNOME defaults added after common.yml.
+        dconf update

@@ -1,0 +1,245 @@
+---
+# yaml-language-server: $schema=https://schema.blue-build.org/recipe-v1.json
+# Desktop-neutral layer shared by every edition.
+modules:
+  - type: files
+    files:
+      - source: system
+        destination: /
+
+  - type: dnf
+    repos:
+      copr:
+        - lilay/topgrade
+      files:
+        - https://brave-browser-rpm-nightly.s3.brave.com/brave-browser-nightly.repo
+        - https://negativo17.org/repos/fedora-steam.repo
+      keys:
+        - https://brave-browser-rpm-nightly.s3.brave.com/brave-core-nightly.asc
+        - https://negativo17.org/repos/RPM-GPG-KEY-slaanesh
+    install:
+      packages:
+        # Basics
+        - fish
+        - git
+        - gh
+        - curl
+        - btop
+        - fastfetch
+        # Editor
+        - micro
+        # Shared terminal
+        - ptyxis
+        # Container-based userland
+        - distrobox
+        # Fonts
+        - google-noto-fonts-all
+        # Tailscale
+        - tailscale
+        # Updating helper
+        - topgrade
+        # Steam/controller support
+        - steam-devices
+        # Gaming tools
+        - gamescope
+        - gamemode
+        - mangohud
+        - vkBasalt
+        - vulkan-tools
+        - winetricks
+        - protontricks
+        - evtest
+        # FUSE 2 support for AppImages (provides libfuse.so.2)
+        - fuse-libs
+        # Brave Origin
+        - brave-origin-nightly
+        # Layered Steam RPM
+        - steam
+        # Host virtualization stack; files/system grants wheel users access.
+        - virt-manager
+        - libvirt-daemon-kvm
+        - libvirt-daemon-config-network
+        - libvirt-client
+        - edk2-ovmf
+        - swtpm
+        - swtpm-tools
+    remove:
+      packages:
+        - firefox
+        - firefox-langpacks
+        - htop
+        # Distrobox replaces toolbox.
+        - toolbox
+
+  - type: script
+    snippets:
+      - |
+        # Install a versionlocked CachyOS kernel and sched-ext tools from
+        # transient COPR URLs without shipping repository files.
+        set -euxo pipefail
+
+        kernel_repo="https://download.copr.fedorainfracloud.org/results/bieszczaders/kernel-cachyos/fedora-\$releasever-\$basearch/"
+        addons_repo="https://download.copr.fedorainfracloud.org/results/bieszczaders/kernel-cachyos-addons/fedora-\$releasever-\$basearch/"
+
+        # Suppress kernel-install hooks during the bootc transaction; the recipe's
+        # initramfs module runs after depmod and any NVIDIA module build.
+        pushd /usr/lib/kernel/install.d
+        mv 05-rpmostree.install 05-rpmostree.install.bak
+        mv 50-dracut.install 50-dracut.install.bak
+        printf '%s\n' '#!/bin/sh' 'exit 0' > 05-rpmostree.install
+        printf '%s\n' '#!/bin/sh' 'exit 0' > 50-dracut.install
+        chmod +x 05-rpmostree.install 50-dracut.install
+        popd
+
+        for pkg in kernel kernel-core kernel-modules kernel-modules-core kernel-modules-extra; do
+          rpm --erase "$pkg" --nodeps || true
+        done
+        rm -rf /usr/lib/modules
+
+        dnf5 -y install --nogpgcheck \
+          --repofrompath "cachyos-kernel,$kernel_repo" \
+          kernel-cachyos kernel-cachyos-core kernel-cachyos-modules kernel-cachyos-devel-matched
+
+        pushd /usr/lib/kernel/install.d
+        mv -f 05-rpmostree.install.bak 05-rpmostree.install
+        mv -f 50-dracut.install.bak 50-dracut.install
+        popd
+
+        # Generate module metadata before later layers and initramfs creation.
+        depmod -a "$(ls /usr/lib/modules)"
+
+        # sched-ext userspace tools
+        dnf5 -y install --nogpgcheck \
+          --repofrompath "cachyos-addons,$addons_repo" \
+          scx-scheds scx-tools
+
+        # Modules are baked at build time; no persistent SELinux boolean is needed.
+
+        # Prevent runtime transactions from replacing the kernel.
+        dnf5 versionlock add \
+          kernel-cachyos \
+          kernel-cachyos-core \
+          kernel-cachyos-modules \
+          kernel-cachyos-devel-matched
+
+  # Sign the CachyOS kernel with the build-only MOK key used by NVIDIA too.
+  - type: script
+    env:
+      PUBLIC_KEY_DER_PATH: /etc/pki/akmods/certs/akmods-monolith.der
+    secrets:
+      - type: file
+        source: ./MOK.priv
+        mount:
+          type: file
+          destination: /tmp/certs/private_key.priv
+    scripts:
+      - sign-kernel.sh
+
+  - type: systemd
+    system:
+      enabled:
+        - tailscaled.service
+        - monolith-firstboot-label.service
+        # scx_loader picks the default sched-ext scheduler at boot.
+        - scx_loader.service
+        # Socket-activated modular libvirt daemons.
+        - virtqemud.socket
+        - virtnetworkd.socket
+        - virtstoraged.socket
+        - virtlogd.socket
+        - virtlockd.socket
+
+  - type: fonts
+    fonts:
+      nerd-fonts:
+        - JetBrainsMono
+
+  # Shared Flatpaks; desktop apps live in each DE layer.
+  - type: default-flatpaks
+    configurations:
+      - notify: false
+        scope: system
+        install:
+          - it.mijorus.gearlever
+          - io.github.kolunmi.Bazaar
+          - com.ranfdev.DistroShelf
+          - com.vysp3r.ProtonPlus
+          - com.github.zocker_160.SyncThingy
+          - com.saivert.pwvucontrol
+          - org.jellyfin.JellyfinDesktop
+          - io.github.getnf.embellish
+          - org.cryptomator.Cryptomator
+          - io.github.wivrn.wivrn
+          - io.github.Faugus.faugus-launcher
+          - com.system76.Popsicle
+          - com.github.tchx84.Flatseal
+          - org.mozilla.Thunderbird
+          - com.discordapp.Discord
+          - com.yubico.yubioath
+      - scope: user
+        notify: false
+
+  - type: script
+    snippets:
+      - |
+        # Add Terra repo and swap mesa to Terra build.
+        set -euxo pipefail
+        dnf5 -y install --nogpgcheck \
+          --repofrompath terra,https://repos.fyralabs.com/terra\$releasever \
+          terra-release terra-release-mesa
+        dnf5 -y config-manager setopt "*terra*".priority=1
+        dnf5 -y config-manager setopt "terra-mesa".enabled=false
+        dnf5 -y config-manager setopt "fedora-steam".exclude="mesa-*"
+        dnf5 -y config-manager setopt "*fedora*".exclude="mesa-*"
+        dnf5 --enable-repo=terra-mesa -y swap mesa-filesystem mesa-filesystem
+        dnf5 --enable-repo=terra-mesa -y install mesa-libOpenCL
+        dnf5 versionlock add \
+          mesa-dri-drivers \
+          mesa-filesystem \
+          mesa-libEGL \
+          mesa-libGL \
+          mesa-libgbm \
+          mesa-vulkan-drivers
+        dnf5 -y config-manager setopt terra.enabled=false
+        dnf5 -y config-manager setopt "fedora-steam".enabled=false
+      - |
+        # Install Vicinae from the existing, transaction-scoped Terra repo.
+        set -euxo pipefail
+        dnf5 --enable-repo=terra -y install vicinae
+        dnf5 -y config-manager setopt terra.enabled=false
+        # The package is installed after the systemd module runs.
+        systemctl --global enable vicinae.service
+      # Optional upstream CLIs are managed per-user by `monolith`.
+      - |
+        # Install Pure system-wide without a runtime plugin manager.
+        set -euxo pipefail
+        tmpdir="$(mktemp -d)"
+        git clone --depth=1 https://github.com/pure-fish/pure "$tmpdir"
+        # Keep defaults session-scoped so image updates do not write or freeze
+        # values in each user's fish_variables.
+        sed -i 's/set --universal/set --global/' "$tmpdir/functions/_pure_set_default.fish"
+        grep -q 'set --global' "$tmpdir/functions/_pure_set_default.fish"
+        ! grep -q 'set --universal' "$tmpdir/functions/_pure_set_default.fish"
+        install -d /usr/share/fish/vendor_functions.d /usr/share/fish/vendor_conf.d
+        cp -a "$tmpdir/functions/." /usr/share/fish/vendor_functions.d/
+        cp -a "$tmpdir/conf.d/."    /usr/share/fish/vendor_conf.d/
+        chmod -R a+rX /usr/share/fish/vendor_functions.d /usr/share/fish/vendor_conf.d
+        rm -rf "$tmpdir"
+        test -f /usr/share/fish/vendor_functions.d/fish_prompt.fish
+        test -f /usr/share/fish/vendor_conf.d/pure.fish
+      - |
+        # Install the shared Monolith logo under the os-release icon name.
+        set -euxo pipefail
+        src=/usr/share/pixmaps/monolith/greeter-logo.png
+        install -Dm0644 "$src" /usr/share/icons/hicolor/128x128/apps/monolith-logo-icon.png
+        install -Dm0644 "$src" /usr/share/pixmaps/monolith-logo-icon.png
+        if command -v gtk-update-icon-cache >/dev/null; then
+          gtk-update-icon-cache -f /usr/share/icons/hicolor || true
+        fi
+        # GNOME Settings uses Fedora's fixed light/dark distributor-logo paths.
+        install -Dm0644 /usr/share/pixmaps/monolith/greeter-logo-dark.png \
+          /usr/share/pixmaps/fedora_logo_med.png
+        install -Dm0644 "$src" /usr/share/pixmaps/fedora_whitelogo_med.png
+      - |
+        # Compile shared GTK/Ptyxis defaults.
+        dconf update

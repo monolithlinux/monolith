@@ -1,0 +1,128 @@
+name: Generate ISO
+
+# Build monthly or manually requested live ISOs from published images.
+# iso/build.sh prepares the live root; the patched titanoboa script creates a
+# hybrid BIOS+UEFI ISO. Boot media with Secure Boot disabled, then enroll the MOK.
+on:
+  schedule:
+    # Monthly, after the daily image build.
+    - cron: "00 10 1 * *"
+  workflow_dispatch:
+    inputs:
+      image:
+        description: Edition to build an ISO for
+        type: choice
+        default: gnome
+        options:
+          - gnome
+          - gnome-nvidia
+          - kde
+          - kde-nvidia
+          - cosmic
+          - cosmic-nvidia
+          - all
+      tag:
+        description: Published image tag to base the ISO on
+        type: string
+        default: latest
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.image }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  editions:
+    name: Pick editions
+    runs-on: ubuntu-latest
+    outputs:
+      images: ${{ steps.pick.outputs.images }}
+    steps:
+      - name: Pick editions
+        id: pick
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Keep this list in sync with workflow_dispatch choices.
+          if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ inputs.image }}" = "all" ]; then
+            echo 'images=["gnome","gnome-nvidia","kde","kde-nvidia","cosmic","cosmic-nvidia"]' >> "${GITHUB_OUTPUT}"
+          else
+            echo 'images=["${{ inputs.image }}"]' >> "${GITHUB_OUTPUT}"
+          fi
+
+  generate-iso:
+    name: Generate ISO (${{ matrix.image }}:${{ inputs.tag || 'latest' }})
+    needs: editions
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ${{ fromJSON(needs.editions.outputs.images) }}
+    permissions:
+      contents: write
+      packages: read
+    env:
+      TAG: ${{ inputs.tag || 'latest' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install podman
+        run: |
+          missing=()
+          command -v podman >/dev/null 2>&1 || missing+=(podman)
+          command -v crun   >/dev/null 2>&1 || missing+=(crun)
+          if [ ${#missing[@]} -gt 0 ]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq "${missing[@]}"
+          fi
+
+      - name: Log in to GHCR
+        run: echo "${{ github.token }}" | sudo podman login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      # Build into root's storage for the following container mount.
+      - name: Build live image
+        run: |
+          sudo podman build \
+            --cap-add sys_admin --security-opt label=disable --squash \
+            --build-arg BASE_IMAGE=ghcr.io/monolithlinux/${{ matrix.image }}:${TAG} \
+            -t localhost/monolith-live:latest \
+            -f iso/Containerfile iso/
+
+      # Run the hybrid-patched titanoboa script against the live root.
+      - name: Build ISO (hybrid BIOS+UEFI)
+        run: |
+          mkdir -p output
+          sudo podman run --rm \
+            --cap-add sys_admin --security-opt label=disable \
+            -v ${{ github.workspace }}/iso/build_iso.sh:/src/build_iso.sh:ro \
+            --mount type=image,source=localhost/monolith-live:latest,dst=/rootfs \
+            -v ${{ github.workspace }}/output:/output \
+            quay.io/fedora/fedora:latest \
+            bash /src/build_iso.sh
+
+      # Use a stable per-edition filename and checksum.
+      - name: Stage ISO
+        id: stage
+        env:
+          ISO_NAME: monolith-${{ matrix.image }}.iso
+        run: |
+          src=$(ls output/*.iso | head -1)
+          sudo chown "$(id -u):$(id -g)" "$src"
+          mv "$src" "output/$ISO_NAME"
+          (cd output && sha256sum "$ISO_NAME" | tee "$ISO_NAME.sha256")
+          ls -lh output/
+
+      - name: Publish ISO to the rolling isos release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISO_NAME: monolith-${{ matrix.image }}.iso
+        run: |
+          set -euo pipefail
+          gh release view isos >/dev/null 2>&1 || \
+            gh release create isos \
+              --title "Live ISOs (rolling)" \
+              --notes "Latest live installer ISO for each edition, refreshed monthly or on manual dispatch." \
+              --prerelease || gh release view isos >/dev/null
+          gh release upload isos \
+            "output/$ISO_NAME" "output/$ISO_NAME.sha256" \
+            --clobber

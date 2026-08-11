@@ -1,0 +1,30 @@
+---
+# yaml-language-server: $schema=https://schema.blue-build.org/recipe-v1.json
+name: kde
+description: Monolith KDE image based on Universal Blue Kinoite Main.
+base-image: ghcr.io/ublue-os/kinoite-main
+image-version: 44
+
+modules:
+  - from-file: common.yml
+
+  - from-file: kde.yml
+
+  - type: os-release
+    properties:
+      NAME: Monolith
+      PRETTY_NAME: Monolith KDE
+      ID: monolith
+      ID_LIKE: fedora
+      VARIANT: KDE
+      VARIANT_ID: kde
+      DEFAULT_HOSTNAME: monolith
+      LOGO: monolith-logo-icon
+      HOME_URL: https://github.com/monolithlinux/monolith
+      DOCUMENTATION_URL: https://github.com/monolithlinux/monolith
+      SUPPORT_URL: https://github.com/monolithlinux/monolith/issues
+      BUG_REPORT_URL: https://github.com/monolithlinux/monolith/issues
+
+  - type: initramfs
+
+  - type: signing

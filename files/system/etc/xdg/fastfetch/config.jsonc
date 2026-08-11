@@ -1,0 +1,122 @@
+{
+    "$schema": "https://github.com/fastfetch-cli/fastfetch/raw/dev/doc/json_schema.json",
+    "logo": {
+        "type": "file",
+        "source": "/usr/share/fastfetch/logos/monolith.txt",
+        "color": {
+            "1": "94",
+            "2": "47",
+            "3": "95",
+            "4": "0",
+            "5": "8",
+            "6": "55"
+        }
+    },
+    "display": {
+        "separator": " \uea9f ",
+        "color": {
+            "keys": "light_blue"
+        }
+    },
+    "modules": [
+        {
+            "type": "title",
+            "key": " \uf007",
+            "color": {
+                "user": "light_blue",
+                "at": "white",
+                "host": "magenta"
+            }
+        },
+        "break",
+        {
+            "type": "os",
+            "key": " \udb82\udcdb",
+            "format": "{pretty-name}"
+        },
+        {
+            "type": "command",
+            "key": " \uf1b2",
+            "text": "/usr/libexec/monolith-image-status"
+        },
+        {
+            "type": "kernel",
+            "key": " \uf17c",
+            "format": "{1} {2}"
+        },
+        {
+            "type": "uptime",
+            "key": " \udb80\udd50"
+        },
+        "break",
+        {
+            "type": "host",
+            "key": " \udb83\udfb0"
+        },
+        {
+            "type": "cpu",
+            "key": " \udb83\udee0"
+        },
+        {
+            "type": "gpu",
+            "key": " \udb80\udf5b"
+        },
+        {
+            "type": "command",
+            "key": " \udb80\udf5b",
+            "text": "rpm -q --qf 'Mesa %{VERSION}\\n' mesa-dri-drivers | head -n1"
+        },
+        {
+            "type": "memory",
+            "key": " \uefc5"
+        },
+        {
+            "type": "disk",
+            "key": " \uf0a0",
+            "hideFS": "overlay"
+        },
+        {
+            "type": "display",
+            "key": " \udb80\udf79"
+        },
+        {
+            "type": "battery",
+            "key": " \uf242"
+        },
+        {
+            "type": "gamepad",
+            "key": " \udb81\uddba"
+        },
+        "break",
+        {
+            "type": "de",
+            "key": " \udb81\udd6e"
+        },
+        {
+            "type": "wm",
+            "key": " \uf488"
+        },
+        {
+            "type": "shell",
+            "key": " \uf489"
+        },
+        {
+            "type": "terminal",
+            "key": " \ue795"
+        },
+        {
+            "type": "terminalfont",
+            "key": " \uf031"
+        },
+        {
+            "type": "packages",
+            "key": " \udb80\udfd6"
+        },
+        "break",
+        {
+            "type": "colors",
+            "paddingLeft": 2,
+            "symbol": "circle"
+        }
+    ]
+}

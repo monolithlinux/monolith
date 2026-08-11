@@ -1,0 +1,13 @@
+# titanoboa container-native ISO contract v0.1.0. The volume label must match
+# each root=live:CDLABEL argument so dracut-live can find the squashfs.
+label: "Monolith-Live"
+grub2:
+  timeout: 10
+  default: 0
+  entries:
+    - name: "Monolith Live"
+      linux: "/images/pxeboot/vmlinuz quiet rhgb root=live:CDLABEL=Monolith-Live enforcing=0 rd.live.image"
+      initrd: "/images/pxeboot/initrd.img"
+    - name: "Monolith Live (Safe Graphics)"
+      linux: "/images/pxeboot/vmlinuz quiet rhgb root=live:CDLABEL=Monolith-Live enforcing=0 rd.live.image nomodeset"
+      initrd: "/images/pxeboot/initrd.img"

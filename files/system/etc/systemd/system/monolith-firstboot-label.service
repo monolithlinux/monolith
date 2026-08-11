@@ -1,0 +1,13 @@
+[Unit]
+Description=Set Monolith filesystem labels on first boot
+After=local-fs.target
+ConditionPathExists=!/var/lib/monolith/firstboot-label-done
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/mkdir -p /var/lib/monolith
+ExecStart=/usr/bin/bash -c 'if [ "$(findmnt -no FSTYPE /var/home)" = "btrfs" ]; then btrfs filesystem label /var/home monolith; fi'
+ExecStart=/usr/bin/touch /var/lib/monolith/firstboot-label-done
+
+[Install]
+WantedBy=multi-user.target

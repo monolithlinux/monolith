@@ -1,0 +1,166 @@
+name: Generate Release
+
+on:
+  workflow_call:
+  workflow_dispatch:
+    inputs:
+      handwritten:
+        description: "Optional note to prepend to the changelog"
+        required: false
+
+permissions: {}
+
+jobs:
+  generate-release:
+    name: Generate Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release and its git tag
+      packages: read
+    steps:
+      - name: Checkout (full history for commit range)
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install skopeo and podman
+        # Podman supports these images' layer depth; Docker overlay2 does not.
+        run: |
+          if ! command -v skopeo >/dev/null || ! command -v podman >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq skopeo podman
+          fi
+          command -v crun >/dev/null 2>&1 || { sudo apt-get update -qq; sudo apt-get install -y -qq crun; }
+
+      - name: Log in to GHCR
+        run: echo "${{ github.token }}" | sudo podman login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Determine previous and current image tags
+        id: tags
+        run: |
+          set -euo pipefail
+          git rev-parse --verify --quiet refs/remotes/origin/main >/dev/null \
+            || git fetch --quiet origin main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "HEAD $(git rev-parse --short HEAD) is not on main; skipping release (PR or feature-branch run)."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Use GNOME to select the two dated builds.
+          registry="ghcr.io/monolithlinux"
+          image="$registry/gnome"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+
+          # Recipes are the edition source of truth.
+          editions=()
+          for r in recipes/recipe-*.yml; do
+            editions+=("$registry/$(awk '/^name:/{print $2; exit}' "$r")")
+          done
+          ( IFS=,; echo "images=${editions[*]}" >> "$GITHUB_OUTPUT" )
+
+          # Date tags identify each build day.
+          mapfile -t dates < <(sudo skopeo list-tags "docker://$image" \
+            | jq -r '.Tags[]' | grep -E '^[0-9]{8}$' | sort -u)
+
+          if [ "${#dates[@]}" -lt 2 ]; then
+            echo "Need at least two dated builds to diff; found ${#dates[@]}. Skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          prev="${dates[-2]}"
+          curr="${dates[-1]}"
+          echo "prev=$prev" >> "$GITHUB_OUTPUT"
+          echo "curr=$curr" >> "$GITHUB_OUTPUT"
+
+          # Convert image dates to release tag dates.
+          fmt() { echo "${1:0:4}-${1:4:2}-${1:6:2}"; }
+          prev_release="$(fmt "$prev")"
+          curr_release="$(fmt "$curr")"
+          echo "prev_release=$prev_release" >> "$GITHUB_OUTPUT"
+          echo "curr_release=$curr_release" >> "$GITHUB_OUTPUT"
+          echo "Previous: $prev ($prev_release)  Current: $curr ($curr_release)"
+
+          # Use the previous release tag as the commit-range start when present.
+          if git rev-parse --verify --quiet "refs/tags/$prev_release^{commit}" >/dev/null; then
+            echo "prev_rev=$prev_release" >> "$GITHUB_OUTPUT"
+          else
+            echo "prev_rev=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Extract package lists from every edition
+        if: steps.tags.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          qf='%{NAME}\t%{EPOCH}:%{VERSION}-%{RELEASE}\n'
+          prev="${{ steps.tags.outputs.prev }}"
+          curr="${{ steps.tags.outputs.curr }}"
+          mkdir -p pkgs
+
+          # Skopeo distinguishes absent tags from failed pulls. Podman extracts
+          # package lists without Docker's layer-depth limit.
+          PODMAN="sudo podman"
+          RUN_OPTS="--cap-add sys_admin --security-opt label=disable"
+          tag_exists() { sudo skopeo inspect --raw "docker://$1:$2" >/dev/null 2>&1; }
+          extract() { # img tag outfile
+            if ! $PODMAN run --rm $RUN_OPTS "$1:$2" rpm -qa --qf "$qf" | sort > "$3"; then
+              echo "::error::failed to extract $1:$2 via podman run"
+              df -h || true; $PODMAN info 2>&1 | sed -n '1,25p' || true
+              return 1
+            fi
+            $PODMAN rmi "$1:$2" >/dev/null 2>&1 || true
+          }
+
+          IFS=',' read -ra images <<< "${{ steps.tags.outputs.images }}"
+          for img in "${images[@]}"; do
+            name="${img##*/}"
+            # Skip editions absent from the current build.
+            tag_exists "$img" "$curr" || { echo "skip $name: no '$curr' tag in registry"; continue; }
+            extract "$img" "$curr" "pkgs/${name}.curr.txt"
+            # A new edition has an empty previous package list.
+            if tag_exists "$img" "$prev"; then
+              extract "$img" "$prev" "pkgs/${name}.prev.txt"
+            else
+              echo "no '$prev' tag for $name (new edition); treating as all-added"; : > "pkgs/${name}.prev.txt"
+            fi
+            echo "$name: prev $(wc -l < "pkgs/${name}.prev.txt"), curr $(wc -l < "pkgs/${name}.curr.txt")"
+          done
+
+          # Never publish an empty changelog.
+          shopt -s nullglob
+          extracted=(pkgs/*.curr.txt)
+          [ "${#extracted[@]}" -gt 0 ] || { echo "::error::no editions extracted; refusing to publish an empty release"; exit 1; }
+
+      - name: Generate changelog
+        id: changelog
+        if: steps.tags.outputs.skip != 'true'
+        run: |
+          python3 ./.github/workflows/changelog.py \
+            --packages-dir pkgs \
+            --prev-tag "${{ steps.tags.outputs.prev }}" --curr-tag "${{ steps.tags.outputs.curr }}" \
+            --prev-release-tag "${{ steps.tags.outputs.prev_release }}" --curr-release-tag "${{ steps.tags.outputs.curr_release }}" \
+            --images "${{ steps.tags.outputs.images }}" \
+            --repo "${{ github.repository }}" \
+            --workdir . \
+            --prev-rev "${{ steps.tags.outputs.prev_rev }}" --curr-rev "${{ github.sha }}" \
+            --handwritten "${{ github.event.inputs.handwritten }}" \
+            --output ./release.env --changelog ./changelog.md
+          cat ./release.env >> "$GITHUB_OUTPUT"
+
+      - name: Create release
+        if: steps.tags.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: ${{ steps.changelog.outputs.TITLE }}
+          TAG: ${{ steps.changelog.outputs.TAG }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" \
+              --target "$SHA" --title "$TITLE" --notes-file ./changelog.md
+          else
+            gh release create "$TAG" \
+              --target "$SHA" --title "$TITLE" --notes-file ./changelog.md
+          fi

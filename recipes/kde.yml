@@ -1,0 +1,66 @@
+---
+# yaml-language-server: $schema=https://schema.blue-build.org/recipe-v1.json
+# KDE layer shared by standard and NVIDIA editions.
+# TODO: SDDM branding and default global shortcuts.
+modules:
+  - type: files
+    files:
+      # Branding, launcher icons, and the default panel layout.
+      - source: kde
+        destination: /
+
+  - type: dnf
+    install:
+      packages:
+        # Oxygen theme and icons are not in kinoite-main.
+        - plasma-oxygen
+        - oxygen-icon-theme
+    remove:
+      packages:
+        # Bazaar replaces Discover.
+        - plasma-discover
+        # Plasma 6.7.2's first-run wizard crashes during initialization.
+        - plasma-welcome
+
+  # KDE desktop apps; shared Flatpaks live in common.yml.
+  - type: default-flatpaks
+    configurations:
+      - notify: false
+        scope: system
+        install:
+          - org.kde.gwenview # image viewer   (GNOME: Loupe)
+          - org.kde.okular # documents        (GNOME: Papers)
+          - org.kde.skanpage # scanning       (GNOME: SimpleScan)
+          - org.kde.kwrite # text editor      (GNOME: TextEditor)
+          - org.kde.kweather # weather        (GNOME: Weather)
+          - org.kde.merkuro # calendar        (GNOME: Calendar)
+          - org.kde.kcalc # calculator        (GNOME: Calculator)
+          - org.kde.kclock # clocks           (GNOME: clocks)
+          - org.kde.filelight # disk usage    (GNOME: baobab)
+          - org.kde.kcharselect # characters  (GNOME: Characters)
+          - org.kde.haruna # video player     (GNOME: Showtime)
+
+  - type: script
+    snippets:
+      - |
+        # Change only LookAndFeelPackage; retain Fedora's other KDE defaults.
+        set -euxo pipefail
+        command -v kwriteconfig6 >/dev/null
+        kwriteconfig6 --file /etc/xdg/kdeglobals \
+          --group KDE --key LookAndFeelPackage org.kde.breezedark.desktop
+      - |
+        # Expose the launcher mark in KDE's applications icon category.
+        set -euxo pipefail
+        for d in /usr/share/icons/hicolor/*/places; do
+          if [ -f "$d/start-here-monolith.png" ]; then
+            install -Dm0644 "$d/start-here-monolith.png" "${d%places}apps/monolith-logo.png"
+          fi
+        done
+      - |
+        # Refresh caches after replacing launcher icons.
+        set -euxo pipefail
+        for theme in hicolor oxygen; do
+          if [ -d "/usr/share/icons/$theme" ] && command -v gtk-update-icon-cache >/dev/null; then
+            gtk-update-icon-cache -f "/usr/share/icons/$theme" || true
+          fi
+        done

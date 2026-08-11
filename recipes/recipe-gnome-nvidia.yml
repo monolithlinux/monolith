@@ -1,0 +1,32 @@
+---
+# yaml-language-server: $schema=https://schema.blue-build.org/recipe-v1.json
+name: gnome-nvidia
+description: Monolith GNOME image with the open NVIDIA driver built for CachyOS.
+base-image: ghcr.io/ublue-os/silverblue-main
+image-version: 44
+
+modules:
+  - from-file: common.yml
+
+  - from-file: gnome.yml
+
+  - from-file: nvidia.yml
+
+  - type: os-release
+    properties:
+      NAME: Monolith
+      PRETTY_NAME: Monolith GNOME (NVIDIA)
+      ID: monolith
+      ID_LIKE: fedora
+      VARIANT: GNOME (NVIDIA)
+      VARIANT_ID: gnome
+      DEFAULT_HOSTNAME: monolith
+      LOGO: monolith-logo-icon
+      HOME_URL: https://github.com/monolithlinux/monolith
+      DOCUMENTATION_URL: https://github.com/monolithlinux/monolith
+      SUPPORT_URL: https://github.com/monolithlinux/monolith/issues
+      BUG_REPORT_URL: https://github.com/monolithlinux/monolith/issues
+
+  - type: initramfs
+
+  - type: signing

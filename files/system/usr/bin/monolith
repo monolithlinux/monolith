@@ -1,0 +1,830 @@
+#!/usr/bin/bash
+# Install optional software per-user without removing user data on uninstall.
+
+set -Eeuo pipefail
+
+BIN_DIR="$HOME/.local/bin"
+DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
+MANAGED_ROOT="$DATA_HOME/monolith/software"
+STATE_ROOT="$STATE_HOME/monolith/software"
+ACTIVE_TEMP=""
+
+readonly BIN_DIR DATA_HOME STATE_HOME MANAGED_ROOT STATE_ROOT
+
+ALL_TOOLS=(tea superfile nak ngit claude codex opencode herdr)
+CLI_TOOLS=(tea superfile nak ngit)
+AI_TOOLS=(claude codex opencode herdr)
+
+die() {
+    echo "Error: $*" >&2
+    exit 1
+}
+
+note() {
+    printf '\n==> %s\n' "$*"
+}
+
+warn() {
+    printf 'Warning: %s\n' "$*" >&2
+}
+
+cleanup_active_temp() {
+    [ -n "$ACTIVE_TEMP" ] || return 0
+    case "$ACTIVE_TEMP" in
+        /tmp/*|"$MANAGED_ROOT"/.stage.*)
+            rm -rf -- "$ACTIVE_TEMP"
+            ;;
+    esac
+    ACTIVE_TEMP=""
+}
+
+trap cleanup_active_temp EXIT
+trap 'cleanup_active_temp; exit 130' INT
+trap 'cleanup_active_temp; exit 143' TERM
+
+new_temp_dir() {
+    cleanup_active_temp
+    ACTIVE_TEMP="$(mktemp -d)"
+}
+
+safe_remove_tree() {
+    local path="$1"
+
+    case "$path" in
+        "$MANAGED_ROOT"/*|"$HOME/.local/share/claude"|"$HOME/.codex/packages/standalone"|"$HOME/.opencode/bin")
+            rm -rf -- "$path"
+            ;;
+        *)
+            die "refusing to remove unexpected path: $path"
+            ;;
+    esac
+}
+
+tool_name() {
+    case "$1" in
+        tea)       echo "Tea" ;;
+        superfile) echo "Superfile" ;;
+        nak)       echo "nak" ;;
+        ngit)      echo "ngit" ;;
+        claude)    echo "Claude Code" ;;
+        codex)     echo "Codex CLI" ;;
+        opencode)  echo "OpenCode" ;;
+        herdr)     echo "Herdr" ;;
+        *)         return 1 ;;
+    esac
+}
+
+tool_description() {
+    case "$1" in
+        tea)       echo "Gitea and Forgejo CLI" ;;
+        superfile) echo "terminal file manager (spf)" ;;
+        nak)       echo "Nostr relay and event CLI" ;;
+        ngit)      echo "Git collaboration over Nostr" ;;
+        claude)    echo "Anthropic coding agent" ;;
+        codex)     echo "OpenAI coding agent" ;;
+        opencode)  echo "provider-independent coding agent" ;;
+        herdr)     echo "terminal multiplexer for coding agents" ;;
+        *)         return 1 ;;
+    esac
+}
+
+tool_category() {
+    case "$1" in
+        tea|superfile|nak|ngit) echo "Developer CLIs" ;;
+        claude|codex|opencode|herdr) echo "AI coding" ;;
+        *) return 1 ;;
+    esac
+}
+
+tool_commands() {
+    case "$1" in
+        tea)       echo "tea" ;;
+        superfile) echo "spf" ;;
+        nak)       echo "nak" ;;
+        ngit)      echo "ngit git-remote-nostr" ;;
+        claude)    echo "claude" ;;
+        codex)     echo "codex" ;;
+        opencode)  echo "opencode" ;;
+        herdr)     echo "herdr" ;;
+        *)         return 1 ;;
+    esac
+}
+
+tool_root() {
+    case "$1" in
+        # Preserve Codex's official standalone layout and updater support.
+        codex) echo "$HOME/.codex/packages/standalone" ;;
+        *) echo "$MANAGED_ROOT/$1" ;;
+    esac
+}
+
+state_file() {
+    echo "$STATE_ROOT/$1.managed"
+}
+
+is_known_tool() {
+    local candidate="$1" tool
+    for tool in "${ALL_TOOLS[@]}"; do
+        [ "$candidate" = "$tool" ] && return 0
+    done
+    return 1
+}
+
+has_marker() {
+    [ -f "$(state_file "$1")" ]
+}
+
+link_points_under() {
+    local path="$1" prefix="$2" target
+    [ -L "$path" ] || return 1
+    target="$(readlink -- "$path" 2>/dev/null || true)"
+    case "$target" in
+        /*) target="$(readlink -m -- "$target")" ;;
+        *) target="$(readlink -m -- "$(dirname -- "$path")/$target")" ;;
+    esac
+    [[ "$target" == "$prefix/"* ]]
+}
+
+is_managed() {
+    local tool="$1" root
+    has_marker "$tool" || return 1
+    root="$(tool_root "$tool")"
+
+    case "$tool" in
+        tea)
+            [ -x "$root/bin/tea" ] && link_points_under "$BIN_DIR/tea" "$root"
+            ;;
+        superfile)
+            [ -x "$root/bin/spf" ] && link_points_under "$BIN_DIR/spf" "$root"
+            ;;
+        nak)
+            [ -x "$root/bin/nak" ] && link_points_under "$BIN_DIR/nak" "$root"
+            ;;
+        ngit)
+            [ -x "$root/bin/ngit" ] &&
+                [ -x "$root/bin/git-remote-nostr" ] &&
+                link_points_under "$BIN_DIR/ngit" "$root" &&
+                link_points_under "$BIN_DIR/git-remote-nostr" "$root"
+            ;;
+        claude)
+            [ -d "$HOME/.local/share/claude" ] &&
+                link_points_under "$BIN_DIR/claude" "$HOME/.local/share/claude"
+            ;;
+        codex)
+            [ -x "$BIN_DIR/codex" ] && [ -d "$root" ] && link_points_under "$BIN_DIR/codex" "$root"
+            ;;
+        opencode)
+            [ -x "$HOME/.opencode/bin/opencode" ] &&
+                [ -L "$BIN_DIR/opencode" ] &&
+                [ "$(readlink -f -- "$BIN_DIR/opencode")" = "$(readlink -f -- "$HOME/.opencode/bin/opencode")" ]
+            ;;
+        herdr)
+            [ -x "$BIN_DIR/herdr" ]
+            ;;
+    esac
+}
+
+external_path() {
+    local tool="$1" command path
+    command="$(tool_commands "$tool")"
+    command="${command%% *}"
+    path="$(command -v "$command" 2>/dev/null || true)"
+    [ -n "$path" ] && printf '%s\n' "$path"
+    # Return success when absent so command substitutions do not trip errexit.
+    return 0
+}
+
+tool_status() {
+    local tool="$1"
+    if is_managed "$tool"; then
+        echo "installed"
+    elif has_marker "$tool"; then
+        echo "needs repair"
+    elif [ -n "$(external_path "$tool")" ]; then
+        echo "external"
+    else
+        echo "not installed"
+    fi
+}
+
+status_symbol() {
+    case "$(tool_status "$1")" in
+        installed)     echo "[x]" ;;
+        "needs repair") echo "[!]" ;;
+        external)      echo "[e]" ;;
+        *)             echo "[ ]" ;;
+    esac
+}
+
+write_marker() {
+    local tool="$1" version="$2" source="$3" marker tmp
+    marker="$(state_file "$tool")"
+    mkdir -p "$STATE_ROOT"
+    tmp="$marker.tmp.$$"
+    {
+        printf 'version=%s\n' "$version"
+        printf 'source=%s\n' "$source"
+    } >"$tmp"
+    mv -f -- "$tmp" "$marker"
+}
+
+marker_version() {
+    local marker
+    marker="$(state_file "$1")"
+    [ -f "$marker" ] || return 0
+    sed -n 's/^version=//p' "$marker" | head -n 1
+}
+
+local_destination_conflict() {
+    local tool="$1" path
+    has_marker "$tool" && return 1
+
+    for path in $(tool_commands "$tool"); do
+        path="$BIN_DIR/$path"
+        if [ -e "$path" ] || [ -L "$path" ]; then
+            printf '%s\n' "$path"
+            return 0
+        fi
+    done
+
+    case "$tool" in
+        tea|superfile|nak|ngit|codex)
+            path="$(tool_root "$tool")"
+            ;;
+        herdr)
+            # Herdr's direct install is one executable; its config lives elsewhere.
+            return 1
+            ;;
+        claude)
+            path="$HOME/.local/share/claude"
+            ;;
+        opencode)
+            path="$HOME/.opencode/bin"
+            ;;
+    esac
+    if [ -e "$path" ] || [ -L "$path" ]; then
+        printf '%s\n' "$path"
+        return 0
+    fi
+    return 1
+}
+
+preflight_install() {
+    local tool="$1" conflict path
+    mkdir -p "$BIN_DIR" "$MANAGED_ROOT" "$STATE_ROOT"
+
+    if conflict="$(local_destination_conflict "$tool")"; then
+        die "$conflict already exists and is not managed by Monolith; move or uninstall it first"
+    fi
+
+    # Do not overwrite a managed command that the user later replaced.
+    if has_marker "$tool"; then
+        case "$tool" in
+            tea|superfile|nak|ngit|codex)
+                for path in $(tool_commands "$tool"); do
+                    if { [ -e "$BIN_DIR/$path" ] || [ -L "$BIN_DIR/$path" ]; } &&
+                        ! link_points_under "$BIN_DIR/$path" "$(tool_root "$tool")"; then
+                        die "$BIN_DIR/$path no longer points to the Monolith-managed copy; move it before updating"
+                    fi
+                done
+                ;;
+            opencode)
+                if { [ -e "$BIN_DIR/opencode" ] || [ -L "$BIN_DIR/opencode" ]; } &&
+                    { [ ! -L "$BIN_DIR/opencode" ] ||
+                      [ "$(readlink -f -- "$BIN_DIR/opencode" 2>/dev/null || true)" != "$(readlink -f -- "$HOME/.opencode/bin/opencode" 2>/dev/null || true)" ]; }; then
+                    die "$BIN_DIR/opencode no longer points to the Monolith-managed copy; move it before updating"
+                fi
+                ;;
+            claude)
+                if { [ -e "$BIN_DIR/claude" ] || [ -L "$BIN_DIR/claude" ]; } &&
+                    ! link_points_under "$BIN_DIR/claude" "$HOME/.local/share/claude"; then
+                    die "$BIN_DIR/claude no longer points to the managed native install; move it before updating"
+                fi
+                ;;
+        esac
+    fi
+
+    if ! has_marker "$tool"; then
+        path="$(external_path "$tool")"
+        if [ -n "$path" ]; then
+            warn "an unmanaged $(tool_name "$tool") is already available at $path; ~/.local/bin will take precedence"
+        fi
+    fi
+}
+
+link_command() {
+    local command="$1" target="$2" path="$BIN_DIR/$command"
+    mkdir -p "$BIN_DIR"
+    if [ -e "$path" ] || [ -L "$path" ]; then
+        rm -f -- "$path"
+    fi
+    ln -s -- "$target" "$path"
+}
+
+latest_github_tag() {
+    local repo="$1" json tag
+    json="$(curl -fsSL "https://api.github.com/repos/$repo/releases/latest")"
+    tag="$(printf '%s\n' "$json" | sed -nE 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' | head -n 1)"
+    [ -n "$tag" ] || die "could not resolve the latest release for $repo"
+    printf '%s\n' "$tag"
+}
+
+require_amd64() {
+    case "$(uname -m)" in
+        x86_64|amd64) ;;
+        *) die "$1 is currently configured for Monolith's x86_64 images only" ;;
+    esac
+}
+
+commit_static_install() {
+    local tool="$1" stage="$2" version="$3" source="$4" root command
+    root="$(tool_root "$tool")"
+
+    if [ -e "$root" ] || [ -L "$root" ]; then
+        safe_remove_tree "$root"
+    fi
+    mv -- "$stage" "$root"
+    ACTIVE_TEMP=""
+
+    for command in $(tool_commands "$tool"); do
+        link_command "$command" "$root/bin/$command"
+    done
+    write_marker "$tool" "$version" "$source"
+}
+
+install_tea() {
+    local tool=tea json version filename url tmp
+    require_amd64 "Tea"
+    preflight_install "$tool"
+    note "Installing Tea"
+
+    json="$(curl -fsSL https://gitea.com/api/v1/repos/gitea/tea/releases/latest)"
+    version="$(printf '%s\n' "$json" | sed -nE 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v([^"]+)".*/\1/p' | head -n 1)"
+    [ -n "$version" ] || die "could not resolve the latest Tea release"
+    filename="tea-${version}-linux-amd64"
+    url="https://dl.gitea.com/tea/${version}/${filename}"
+
+    new_temp_dir
+    tmp="$ACTIVE_TEMP"
+    mkdir -p "$tmp/bin"
+    curl -fsSL -o "$tmp/$filename" "$url"
+    curl -fsSL -o "$tmp/$filename.sha256" "$url.sha256"
+    ( cd "$tmp" && sha256sum -c "$filename.sha256" )
+    install -m0755 "$tmp/$filename" "$tmp/bin/tea"
+    rm -f -- "$tmp/$filename" "$tmp/$filename.sha256"
+    "$tmp/bin/tea" --version >/dev/null
+    commit_static_install "$tool" "$tmp" "$version" "$url"
+}
+
+install_superfile() {
+    local tool=superfile tag filename base tmp
+    require_amd64 "Superfile"
+    preflight_install "$tool"
+    note "Installing Superfile"
+
+    tag="$(latest_github_tag yorukot/superfile)"
+    filename="superfile-linux-${tag}-amd64.tar.gz"
+    base="https://github.com/yorukot/superfile/releases/download/${tag}"
+
+    new_temp_dir
+    tmp="$ACTIVE_TEMP"
+    curl -fsSL -o "$tmp/$filename" "$base/$filename"
+    curl -fsSL -o "$tmp/checksums.txt" "$base/superfile-${tag}-checksums.txt"
+    ( cd "$tmp" && grep -F " $filename" checksums.txt | sha256sum -c - )
+    tar -xzf "$tmp/$filename" -C "$tmp"
+    mkdir -p "$tmp/bin"
+    install -m0755 "$tmp/dist/superfile-linux-${tag}-amd64/spf" "$tmp/bin/spf"
+    rm -rf -- "$tmp/dist" "$tmp/$filename" "$tmp/checksums.txt"
+    "$tmp/bin/spf" --version >/dev/null
+    commit_static_install "$tool" "$tmp" "$tag" "$base"
+}
+
+install_nak() {
+    local tool=nak tag url tmp
+    require_amd64 "nak"
+    preflight_install "$tool"
+    note "Installing nak"
+
+    tag="$(latest_github_tag fiatjaf/nak)"
+    url="https://github.com/fiatjaf/nak/releases/download/${tag}/nak-${tag}-linux-amd64"
+    new_temp_dir
+    tmp="$ACTIVE_TEMP"
+    mkdir -p "$tmp/bin"
+    curl -fsSL -o "$tmp/bin/nak" "$url"
+    chmod 0755 "$tmp/bin/nak"
+    "$tmp/bin/nak" --version >/dev/null
+    warn "nak does not publish a checksum; the upstream HTTPS release and version smoke test are used"
+    commit_static_install "$tool" "$tmp" "$tag" "$url"
+}
+
+install_ngit() {
+    local tool=ngit tag filename url tmp
+    require_amd64 "ngit"
+    preflight_install "$tool"
+    note "Installing ngit"
+
+    tag="$(latest_github_tag DanConwayDev/ngit-cli)"
+    filename="ngit-${tag}-x86_64-unknown-linux-musl.tar.gz"
+    url="https://github.com/DanConwayDev/ngit-cli/releases/download/${tag}/${filename}"
+    new_temp_dir
+    tmp="$ACTIVE_TEMP"
+    curl -fsSL -o "$tmp/$filename" "$url"
+    tar -xzf "$tmp/$filename" -C "$tmp"
+    mkdir -p "$tmp/bin"
+    install -m0755 "$tmp/ngit" "$tmp/bin/ngit"
+    install -m0755 "$tmp/git-remote-nostr" "$tmp/bin/git-remote-nostr"
+    rm -f -- "$tmp/ngit" "$tmp/git-remote-nostr" "$tmp/$filename"
+    "$tmp/bin/ngit" --version >/dev/null
+    "$tmp/bin/git-remote-nostr" --version >/dev/null
+    warn "ngit does not publish a checksum; the upstream HTTPS release and version smoke tests are used"
+    commit_static_install "$tool" "$tmp" "$tag" "$url"
+}
+
+download_installer() {
+    local url="$1"
+    new_temp_dir
+    curl -fsSL -o "$ACTIVE_TEMP/install.sh" "$url"
+    chmod 0700 "$ACTIVE_TEMP/install.sh"
+}
+
+install_claude() {
+    local tool=claude version
+    preflight_install "$tool"
+    note "Installing Claude Code with Anthropic's native installer"
+    download_installer https://claude.ai/install.sh
+    bash "$ACTIVE_TEMP/install.sh" stable
+    [ -x "$BIN_DIR/claude" ] || die "Claude Code installer did not create $BIN_DIR/claude"
+    version="$("$BIN_DIR/claude" --version 2>/dev/null | head -n 1)"
+    write_marker "$tool" "${version:-unknown}" "https://claude.ai/install.sh"
+    cleanup_active_temp
+}
+
+install_codex() {
+    local tool=codex root version
+    preflight_install "$tool"
+    root="$(tool_root "$tool")"
+    mkdir -p "$BIN_DIR" "$HOME/.codex"
+    note "Installing Codex CLI with OpenAI's standalone installer"
+    download_installer https://chatgpt.com/codex/install.sh
+    PATH="$BIN_DIR:/usr/bin:/bin" \
+        CODEX_INSTALL_DIR="$BIN_DIR" \
+        CODEX_NON_INTERACTIVE=true \
+        bash "$ACTIVE_TEMP/install.sh"
+    [ -x "$BIN_DIR/codex" ] || die "Codex installer did not create $BIN_DIR/codex"
+    link_points_under "$BIN_DIR/codex" "$root" || die "Codex installer created an unexpected launcher at $BIN_DIR/codex"
+    version="$("$BIN_DIR/codex" --version 2>/dev/null | head -n 1)"
+    write_marker "$tool" "${version:-unknown}" "https://chatgpt.com/codex/install.sh"
+    cleanup_active_temp
+}
+
+install_opencode() {
+    local tool=opencode version
+    preflight_install "$tool"
+    note "Installing OpenCode with its upstream installer"
+    download_installer https://opencode.ai/install
+    PATH="/usr/bin:/bin" bash "$ACTIVE_TEMP/install.sh" --no-modify-path
+    [ -x "$HOME/.opencode/bin/opencode" ] || die "OpenCode installer did not create $HOME/.opencode/bin/opencode"
+    link_command opencode "$HOME/.opencode/bin/opencode"
+    version="$("$HOME/.opencode/bin/opencode" --version 2>/dev/null | head -n 1)"
+    write_marker "$tool" "${version:-unknown}" "https://opencode.ai/install"
+    cleanup_active_temp
+}
+
+install_herdr() {
+    local tool=herdr version
+    preflight_install "$tool"
+    mkdir -p "$BIN_DIR"
+    note "Installing Herdr with its upstream installer"
+    download_installer https://herdr.dev/install.sh
+    PATH="$BIN_DIR:/usr/bin:/bin" \
+        HERDR_INSTALL_DIR="$BIN_DIR" \
+        sh "$ACTIVE_TEMP/install.sh"
+    [ -x "$BIN_DIR/herdr" ] || die "Herdr installer did not create $BIN_DIR/herdr"
+    version="$("$BIN_DIR/herdr" --version 2>/dev/null | head -n 1)"
+    write_marker "$tool" "${version:-unknown}" "https://herdr.dev/install.sh"
+    cleanup_active_temp
+}
+
+can_adopt() {
+    local tool="$1" command
+    case "$tool" in
+        tea|superfile|nak|ngit)
+            [ ! -e "$(tool_root "$tool")" ] && [ ! -L "$(tool_root "$tool")" ] || return 1
+            for command in $(tool_commands "$tool"); do
+                [ -f "$BIN_DIR/$command" ] &&
+                    [ ! -L "$BIN_DIR/$command" ] &&
+                    [ -x "$BIN_DIR/$command" ] || return 1
+            done
+            ;;
+        claude)
+            [ -d "$HOME/.local/share/claude" ] &&
+                link_points_under "$BIN_DIR/claude" "$HOME/.local/share/claude"
+            ;;
+        codex)
+            [ -d "$HOME/.codex/packages/standalone" ] &&
+                link_points_under "$BIN_DIR/codex" "$HOME/.codex/packages/standalone"
+            ;;
+        opencode)
+            [ -x "$HOME/.opencode/bin/opencode" ] &&
+                { [ ! -e "$BIN_DIR/opencode" ] && [ ! -L "$BIN_DIR/opencode" ] ||
+                  { [ -L "$BIN_DIR/opencode" ] &&
+                    [ "$(readlink -f -- "$BIN_DIR/opencode" 2>/dev/null || true)" = "$(readlink -f -- "$HOME/.opencode/bin/opencode")" ]; }; }
+            ;;
+        herdr)
+            [ -x "$BIN_DIR/herdr" ]
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+adopt_tool() {
+    local tool="$1" executable version root command primary
+    case "$tool" in
+        tea|superfile|nak|ngit)
+            root="$(tool_root "$tool")"
+            mkdir -p "$root/bin"
+            for command in $(tool_commands "$tool"); do
+                mv -- "$BIN_DIR/$command" "$root/bin/$command"
+                link_command "$command" "$root/bin/$command"
+            done
+            primary="$(tool_commands "$tool")"
+            primary="${primary%% *}"
+            executable="$root/bin/$primary"
+            ;;
+        claude) executable="$BIN_DIR/claude" ;;
+        codex) executable="$BIN_DIR/codex" ;;
+        opencode)
+            executable="$HOME/.opencode/bin/opencode"
+            link_command opencode "$executable"
+            ;;
+        herdr) executable="$BIN_DIR/herdr" ;;
+        *) return 1 ;;
+    esac
+
+    note "Adopting the existing supported $(tool_name "$tool") installation"
+    version="$("$executable" --version 2>/dev/null | head -n 1)"
+    write_marker "$tool" "${version:-unknown}" "adopted-supported-layout"
+}
+
+install_tool() {
+    local tool="$1"
+    is_known_tool "$tool" || die "unknown tool: $tool"
+    if ! has_marker "$tool" && can_adopt "$tool"; then
+        adopt_tool "$tool"
+    fi
+    "install_$tool"
+    printf '\nInstalled %s.\n' "$(tool_name "$tool")"
+}
+
+remove_link_if_managed() {
+    local command="$1" prefix="$2" path="$BIN_DIR/$command"
+    if link_points_under "$path" "$prefix"; then
+        rm -f -- "$path"
+    elif [ -e "$path" ] || [ -L "$path" ]; then
+        warn "left $path in place because it no longer points to Monolith-managed files"
+    fi
+}
+
+remove_tool() {
+    local tool="$1" root marker command
+    is_known_tool "$tool" || die "unknown tool: $tool"
+    marker="$(state_file "$tool")"
+    has_marker "$tool" || die "$(tool_name "$tool") is not managed by Monolith"
+    root="$(tool_root "$tool")"
+
+    note "Removing $(tool_name "$tool")"
+    case "$tool" in
+        tea|superfile|nak|ngit|codex)
+            for command in $(tool_commands "$tool"); do
+                remove_link_if_managed "$command" "$root"
+            done
+            if [ -e "$root" ] || [ -L "$root" ]; then
+                safe_remove_tree "$root"
+            fi
+            if [ "$tool" = "codex" ]; then
+                rmdir -- "$HOME/.codex/packages" 2>/dev/null || true
+            fi
+            ;;
+        claude)
+            # Preserve Claude login, configuration, and session data.
+            remove_link_if_managed claude "$HOME/.local/share/claude"
+            if [ -e "$HOME/.local/share/claude" ] || [ -L "$HOME/.local/share/claude" ]; then
+                safe_remove_tree "$HOME/.local/share/claude"
+            fi
+            ;;
+        opencode)
+            remove_link_if_managed opencode "$HOME/.opencode/bin"
+            if [ -e "$HOME/.opencode/bin" ] || [ -L "$HOME/.opencode/bin" ]; then
+                safe_remove_tree "$HOME/.opencode/bin"
+            fi
+            rmdir -- "$HOME/.opencode" 2>/dev/null || true
+            ;;
+        herdr)
+            # Preserve Herdr configuration and sessions outside the executable.
+            rm -f -- "$BIN_DIR/herdr"
+            ;;
+    esac
+
+    rm -f -- "$marker"
+    rmdir -- "$STATE_ROOT" "$STATE_HOME/monolith" 2>/dev/null || true
+    rmdir -- "$MANAGED_ROOT" "$DATA_HOME/monolith" 2>/dev/null || true
+    printf '\nRemoved %s. Settings, authentication, sessions, and project files were kept.\n' "$(tool_name "$tool")"
+}
+
+list_tools() {
+    local tool status version
+    printf '%-16s  %-14s  %-14s  %s\n' "CATEGORY" "TOOL" "STATUS" "VERSION"
+    printf '%-16s  %-14s  %-14s  %s\n' "----------------" "--------------" "--------------" "-------"
+    for tool in "${ALL_TOOLS[@]}"; do
+        status="$(tool_status "$tool")"
+        version="$(marker_version "$tool")"
+        [ -n "$version" ] || version="-"
+        printf '%-16s  %-14s  %-14s  %s\n' \
+            "$(tool_category "$tool")" "$(tool_name "$tool")" "$status" "$version"
+    done
+}
+
+confirm_action() {
+    local prompt="$1" answer
+    if command -v fzf >/dev/null 2>&1 && [ -t 0 ] && [ -t 1 ]; then
+        answer="$(printf 'No\nYes\n' | fzf \
+            --layout=reverse \
+            --height='~20%' \
+            --bind='enter:accept' \
+            --header='Enter: confirm  •  Esc: cancel' \
+            --prompt="$prompt ")" || return 1
+        [ "$answer" = "Yes" ]
+    else
+        read -r -p "$prompt [y/N] " answer
+        case "$answer" in
+            y|Y|yes|YES) return 0 ;;
+            *) return 1 ;;
+        esac
+    fi
+}
+
+choose_line() {
+    local prompt="$1"
+    shift
+    if command -v fzf >/dev/null 2>&1; then
+        printf '%s\n' "$@" | fzf \
+            --layout=reverse \
+            --height='~45%' \
+            --border \
+            --bind='enter:accept' \
+            --header='Enter: select  •  Esc: back  •  Type to filter' \
+            --delimiter=$'\t' \
+            --with-nth=1 \
+            --prompt="$prompt"
+    else
+        local PS3="$prompt" choice
+        select choice in "$@"; do
+            [ -n "$choice" ] && printf '%s\n' "$choice"
+            return
+        done
+    fi
+}
+
+pause_after_action() {
+    [ -t 0 ] || return 0
+    printf '\nPress Enter to return to the menu... '
+    read -r _
+}
+
+manage_category() {
+    local title="$1"
+    shift
+    local tools=("$@") options=() tool line choice action path
+
+    while true; do
+        options=()
+        for tool in "${tools[@]}"; do
+            line="$(status_symbol "$tool") $(tool_name "$tool") - $(tool_description "$tool")"
+            if [ "$(tool_status "$tool")" = "external" ]; then
+                path="$(external_path "$tool")"
+                line="$line (external: $path)"
+            fi
+            options+=("$line"$'\t'"tool:$tool")
+        done
+        options+=("Update every installed item in this category"$'\t'"update")
+        options+=("Back to categories"$'\t'"back")
+
+        choice="$(choose_line "$title > " "${options[@]}")" || return 0
+        action="${choice##*$'\t'}"
+        case "$action" in
+            back) return 0 ;;
+            update)
+                for tool in "${tools[@]}"; do
+                    has_marker "$tool" && install_tool "$tool"
+                done
+                pause_after_action
+                ;;
+            tool:*)
+                tool="${action#tool:}"
+                if is_managed "$tool"; then
+                    if confirm_action "Remove $(tool_name "$tool")? Its settings and login will be kept."; then
+                        remove_tool "$tool"
+                        pause_after_action
+                    fi
+                else
+                    if [ "$(tool_status "$tool")" = "external" ]; then
+                        path="$(external_path "$tool")"
+                        if can_adopt "$tool"; then
+                            confirm_action "A supported install exists at $path. Adopt and update it with Monolith?" || continue
+                        else
+                            confirm_action "An external copy exists at $path. Install a Monolith-managed copy too?" || continue
+                        fi
+                    fi
+                    install_tool "$tool"
+                    pause_after_action
+                fi
+                ;;
+        esac
+    done
+}
+
+interactive_menu() {
+    local choice action
+    [ -t 0 ] && [ -t 1 ] || die "interactive mode needs a terminal; use list, install, remove, or update"
+
+    while true; do
+        choice="$(choose_line "Monolith Software > " \
+            "Developer CLIs - Tea, Superfile, nak, ngit"$'\t'"cli" \
+            "AI coding - Claude Code, Codex, OpenCode, Herdr"$'\t'"ai" \
+            "Show status"$'\t'"list" \
+            "Update all installed software"$'\t'"update" \
+            "Exit"$'\t'"exit")" || return 0
+        action="${choice##*$'\t'}"
+        case "$action" in
+            cli) manage_category "Developer CLIs" "${CLI_TOOLS[@]}" ;;
+            ai) manage_category "AI coding" "${AI_TOOLS[@]}" ;;
+            list) list_tools; pause_after_action ;;
+            update)
+                update_tools
+                pause_after_action
+                ;;
+            exit) return 0 ;;
+        esac
+    done
+}
+
+update_tools() {
+    local requested=("$@") tool updated=0
+    if [ "${#requested[@]}" -eq 0 ]; then
+        requested=("${ALL_TOOLS[@]}")
+    fi
+    for tool in "${requested[@]}"; do
+        is_known_tool "$tool" || die "unknown tool: $tool"
+        if has_marker "$tool"; then
+            install_tool "$tool"
+            updated=1
+        elif [ "$#" -gt 0 ]; then
+            die "$(tool_name "$tool") is not installed by Monolith"
+        fi
+    done
+    [ "$updated" -eq 1 ] || echo "No Monolith-managed software is installed."
+}
+
+usage() {
+    cat <<'EOF'
+Usage: monolith [command] [tool ...]
+
+Without a command, opens the interactive category menu.
+
+Commands:
+  list                  Show every tool and its current state
+  install TOOL [...]    Install or update one or more tools
+  remove TOOL [...]     Remove managed program files; keep user settings
+  update [TOOL ...]     Update selected tools, or every managed tool
+  help                  Show this help
+
+Tool IDs:
+  tea superfile nak ngit claude codex opencode herdr
+EOF
+}
+
+main() {
+    local command="${1:-menu}" tool
+    [ "$#" -eq 0 ] || shift
+
+    case "$command" in
+        menu) interactive_menu ;;
+        list) [ "$#" -eq 0 ] || die "list takes no tool arguments"; list_tools ;;
+        install)
+            [ "$#" -gt 0 ] || die "install needs at least one tool ID"
+            for tool in "$@"; do install_tool "$tool"; done
+            ;;
+        remove|uninstall)
+            [ "$#" -gt 0 ] || die "remove needs at least one tool ID"
+            for tool in "$@"; do remove_tool "$tool"; done
+            ;;
+        update) update_tools "$@" ;;
+        help|-h|--help) usage ;;
+        *) die "unknown command: $command (run monolith help)" ;;
+    esac
+}
+
+main "$@"
