@@ -25,6 +25,8 @@ jobs:
         run: tests/monolith-paths.sh
       - name: Test edition-specific software
         run: tests/vicinae-editions.sh
+      - name: Test Protontricks desktop icon
+        run: tests/protontricks-icon.sh
 
   # Skip no-op nightlies and limit PR builds to affected editions.
   # Unknown PR paths build everything; non-image paths build nothing.
