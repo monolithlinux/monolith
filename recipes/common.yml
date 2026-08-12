@@ -72,6 +72,8 @@ modules:
         - toolbox
 
   - type: script
+    scripts:
+      - fix-protontricks-icon.sh
     snippets:
       - |
         # Install a versionlocked CachyOS kernel and sched-ext tools from
