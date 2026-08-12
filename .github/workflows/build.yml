@@ -23,6 +23,8 @@ jobs:
           persist-credentials: false
       - name: Test Monolith software manager
         run: tests/monolith-paths.sh
+      - name: Test edition-specific software
+        run: tests/vicinae-editions.sh
 
   # Skip no-op nightlies and limit PR builds to affected editions.
   # Unknown PR paths build everything; non-image paths build nothing.

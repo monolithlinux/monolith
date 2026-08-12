@@ -201,13 +201,6 @@ modules:
           mesa-vulkan-drivers
         dnf5 -y config-manager setopt terra.enabled=false
         dnf5 -y config-manager setopt "fedora-steam".enabled=false
-      - |
-        # Install Vicinae from the existing, transaction-scoped Terra repo.
-        set -euxo pipefail
-        dnf5 --enable-repo=terra -y install vicinae
-        dnf5 -y config-manager setopt terra.enabled=false
-        # The package is installed after the systemd module runs.
-        systemctl --global enable vicinae.service
       # Optional upstream CLIs are managed per-user by `monolith`.
       - |
         # Install Pure system-wide without a runtime plugin manager.
