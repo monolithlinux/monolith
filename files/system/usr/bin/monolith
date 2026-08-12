@@ -138,6 +138,8 @@ has_marker() {
 link_points_under() {
     local path="$1" prefix="$2" target
     [ -L "$path" ] || return 1
+    # Resolve both sides because Fedora Atomic aliases /home to /var/home.
+    prefix="$(readlink -m -- "$prefix")"
     target="$(readlink -- "$path" 2>/dev/null || true)"
     case "$target" in
         /*) target="$(readlink -m -- "$target")" ;;
