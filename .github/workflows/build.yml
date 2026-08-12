@@ -14,6 +14,16 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref || github.run_id }}
   cancel-in-progress: true
 jobs:
+  test:
+    name: Test scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Test Monolith software manager
+        run: tests/monolith-paths.sh
+
   # Skip no-op nightlies and limit PR builds to affected editions.
   # Unknown PR paths build everything; non-image paths build nothing.
   check:
