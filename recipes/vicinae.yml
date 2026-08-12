@@ -1,0 +1,13 @@
+---
+# yaml-language-server: $schema=https://schema.blue-build.org/recipe-v1.json
+# Vicinae launcher for GNOME; KDE and COSMIC use their native launchers.
+modules:
+  - type: script
+    snippets:
+      - |
+        # Install Vicinae from the transaction-scoped Terra repo in common.yml.
+        set -euxo pipefail
+        dnf5 --enable-repo=terra -y install vicinae
+        dnf5 -y config-manager setopt terra.enabled=false
+        # The package is installed after the common systemd module runs.
+        systemctl --global enable vicinae.service
