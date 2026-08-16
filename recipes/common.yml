@@ -76,6 +76,28 @@ modules:
       - fix-protontricks-icon.sh
     snippets:
       - |
+        # Keep AMD GPU firmware on the last known-good build. Fedora firmware
+        # subpackages require the exact matching linux-firmware-whence version,
+        # so downgrade every installed subpackage from the source build together.
+        set -euxo pipefail
+
+        firmware_version="20260622-1.fc44"
+        firmware_base="https://kojipkgs.fedoraproject.org/packages/linux-firmware/20260622/1.fc44/noarch"
+        firmware_packages=()
+        firmware_rpms=()
+
+        while IFS=$'\t' read -r package source_rpm; do
+          [[ "$source_rpm" == linux-firmware-*.src.rpm ]] || continue
+          firmware_packages+=("$package")
+          firmware_rpms+=("${firmware_base}/${package}-${firmware_version}.noarch.rpm")
+        done < <(rpm -qa --qf $'%{NAME}\t%{SOURCERPM}\n')
+
+        test "${#firmware_rpms[@]}" -gt 0
+        dnf5 -y install --allow-downgrade "${firmware_rpms[@]}"
+        test "$(rpm -q --qf '%{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}\n' amd-gpu-firmware)" = \
+          "amd-gpu-firmware-${firmware_version}.noarch"
+        dnf5 versionlock add "${firmware_packages[@]}"
+      - |
         # Install a versionlocked CachyOS kernel and sched-ext tools from
         # transient COPR URLs without shipping repository files.
         set -euxo pipefail
