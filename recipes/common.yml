@@ -193,7 +193,9 @@ modules:
         dnf5 -y config-manager setopt "fedora-steam".exclude="mesa-*"
         dnf5 -y config-manager setopt "*fedora*".exclude="mesa-*"
         dnf5 --enable-repo=terra-mesa -y swap mesa-filesystem mesa-filesystem
-        dnf5 --enable-repo=terra-mesa -y install mesa-libOpenCL
+        dnf5 --enable-repo=terra-mesa -y install \
+          mesa-libOpenCL \
+          mesa-libEGL.i686
         dnf5 versionlock add \
           mesa-dri-drivers \
           mesa-filesystem \
