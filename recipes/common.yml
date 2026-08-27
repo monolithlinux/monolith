@@ -14,9 +14,11 @@ modules:
       files:
         - https://brave-browser-rpm-nightly.s3.brave.com/brave-browser-nightly.repo
         - https://negativo17.org/repos/fedora-steam.repo
+        - https://pkgs.tailscale.com/stable/fedora/tailscale.repo
       keys:
         - https://brave-browser-rpm-nightly.s3.brave.com/brave-core-nightly.asc
         - https://negativo17.org/repos/RPM-GPG-KEY-slaanesh
+        - https://pkgs.tailscale.com/stable/fedora/repo.gpg
     install:
       packages:
         # Basics
@@ -34,7 +36,7 @@ modules:
         - distrobox
         # Fonts
         - google-noto-fonts-all
-        # Tailscale
+        # Tailscale's official stable RPM
         - tailscale
         # Updating helper
         - topgrade
