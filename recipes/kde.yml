@@ -3,12 +3,6 @@
 # KDE layer shared by standard and NVIDIA editions.
 # TODO: SDDM branding and default global shortcuts.
 modules:
-  - type: files
-    files:
-      # Branding, launcher icons, and the default panel layout.
-      - source: kde
-        destination: /
-
   - type: dnf
     install:
       packages:
@@ -17,10 +11,31 @@ modules:
         - oxygen-icon-theme
     remove:
       packages:
+        # Ghostty replaces the shared terminal in the KDE editions.
+        - ptyxis
         # Bazaar replaces Discover.
         - plasma-discover
         # Plasma 6.7.2's first-run wizard crashes during initialization.
         - plasma-welcome
+
+  - type: script
+    snippets:
+      - |
+        # common.yml installs Terra's repo definitions but leaves it disabled.
+        # Install shell integration explicitly; these are weak RPM supplements.
+        set -euxo pipefail
+        dnf5 --enable-repo=terra -y install \
+          ghostty ghostty-shell-integration ghostty-fish-completion ghostty-kio
+
+  - type: files
+    files:
+      # Apply branding and terminal compatibility files after package changes.
+      - source: kde
+        destination: /
+
+  - type: script
+    scripts:
+      - install-ghostty-themes.sh
 
   # KDE desktop apps; shared Flatpaks live in common.yml.
   - type: default-flatpaks
@@ -48,6 +63,51 @@ modules:
         command -v kwriteconfig6 >/dev/null
         kwriteconfig6 --file /etc/xdg/kdeglobals \
           --group KDE --key LookAndFeelPackage org.kde.breezedark.desktop
+        kwriteconfig6 --file /etc/xdg/kdeglobals \
+          --group General --key TerminalApplication monolith-ghostty
+        kwriteconfig6 --file /etc/xdg/kdeglobals \
+          --group General --key TerminalService com.mitchellh.ghostty.desktop
+      - |
+        # Initialize defaults for every entry point, including direct CLI use.
+        # Keep the real binary beside its original path for resource discovery.
+        set -euxo pipefail
+        test -x /usr/bin/monolith-ghostty
+        test -x /usr/bin/monolith-ghostty-window-size
+        bash -n /usr/bin/monolith-ghostty-window-size
+        test -f /usr/share/kwin/scripts/monolith-ghostty-window-size/metadata.json
+        test -f /usr/share/kwin/scripts/monolith-ghostty-window-size/contents/ui/main.qml
+        test -f /usr/share/kwin/scripts/monolith-ghostty-window-size/contents/code/persistence.js
+        mv /usr/bin/ghostty /usr/bin/ghostty.real
+        ln -s monolith-ghostty /usr/bin/ghostty
+        # Dolphin passes its folder as the launcher's working directory.
+        # A remote D-Bus activation loses it; start the requested window directly.
+        desktop=/usr/share/applications/com.mitchellh.ghostty.desktop
+        sed -i \
+          -e 's/^DBusActivatable=true$/DBusActivatable=false/' \
+          -e '/^Exec=/s/--gtk-single-instance=true/--gtk-single-instance=false/g' \
+          "$desktop"
+        # Ghostty owns the default Ctrl+Alt+T shortcut for new profiles.
+        # Existing user shortcut assignments, including Super+T, take priority.
+        for entry in /usr/share/applications/org.kde.konsole.desktop \
+          /usr/share/kglobalaccel/org.kde.konsole.desktop; do
+          if [ -f "$entry" ]; then
+            sed -i '/^X-KDE-Shortcuts=/d' "$entry"
+          fi
+        done
+        test -x /usr/bin/fish
+        test -f /usr/share/fish/vendor_functions.d/fish_prompt.fish
+        test -f /usr/share/fish/vendor_conf.d/pure.fish
+        ghostty.real +validate-config --config-file=/usr/share/monolith/ghostty/config
+        # Fail the image build if the catalog is missing, incomplete, or invalid.
+        theme_list="$(ghostty.real +list-themes --plain)"
+        test "$(printf '%s\n' "$theme_list" | wc -l)" -ge 554
+        grep -F 'Catppuccin Frappe' <<<"$theme_list"
+        grep -F 'base16-gruvbox-dark-medium' <<<"$theme_list"
+        for theme in /usr/share/ghostty/themes/*; do
+          ghostty.real +validate-config --config-file="$theme"
+        done
+        fc-match --format '%{family}\n' 'JetBrainsMono Nerd Font' \
+          | grep -F 'JetBrainsMono Nerd Font'
       - |
         # Expose the launcher mark in KDE's applications icon category.
         set -euxo pipefail

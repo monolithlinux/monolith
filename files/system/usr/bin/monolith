@@ -8,13 +8,15 @@ DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
 STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
 MANAGED_ROOT="$DATA_HOME/monolith/software"
 STATE_ROOT="$STATE_HOME/monolith/software"
+GHOSTTY_THEMES_HELPER="$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/../libexec/monolith/ghostty-themes"
 ACTIVE_TEMP=""
 
-readonly BIN_DIR DATA_HOME STATE_HOME MANAGED_ROOT STATE_ROOT
+readonly BIN_DIR DATA_HOME STATE_HOME MANAGED_ROOT STATE_ROOT GHOSTTY_THEMES_HELPER
 
-ALL_TOOLS=(tea superfile nak ngit claude codex opencode herdr)
+ALL_TOOLS=(tea superfile nak ngit claude codex opencode herdr ghostty-themes)
 CLI_TOOLS=(tea superfile nak ngit)
 AI_TOOLS=(claude codex opencode herdr)
+APPEARANCE_TOOLS=(ghostty-themes)
 
 die() {
     echo "Error: $*" >&2
@@ -71,6 +73,7 @@ tool_name() {
         codex)     echo "Codex CLI" ;;
         opencode)  echo "OpenCode" ;;
         herdr)     echo "Herdr" ;;
+        ghostty-themes) echo "Ghostty Themes" ;;
         *)         return 1 ;;
     esac
 }
@@ -85,6 +88,7 @@ tool_description() {
         codex)     echo "OpenAI coding agent" ;;
         opencode)  echo "provider-independent coding agent" ;;
         herdr)     echo "terminal multiplexer for coding agents" ;;
+        ghostty-themes) echo "official Ghostty theme collection" ;;
         *)         return 1 ;;
     esac
 }
@@ -93,6 +97,7 @@ tool_category() {
     case "$1" in
         tea|superfile|nak|ngit) echo "Developer CLIs" ;;
         claude|codex|opencode|herdr) echo "AI coding" ;;
+        ghostty-themes) echo "Appearance" ;;
         *) return 1 ;;
     esac
 }
@@ -107,6 +112,7 @@ tool_commands() {
         codex)     echo "codex" ;;
         opencode)  echo "opencode" ;;
         herdr)     echo "herdr" ;;
+        ghostty-themes) return 0 ;;
         *)         return 1 ;;
     esac
 }
@@ -184,12 +190,16 @@ is_managed() {
         herdr)
             [ -x "$BIN_DIR/herdr" ]
             ;;
+        ghostty-themes)
+            [ "$(ghostty_themes status)" = installed ]
+            ;;
     esac
 }
 
 external_path() {
     local tool="$1" command path
     command="$(tool_commands "$tool")"
+    [ -n "$command" ] || return 0
     command="${command%% *}"
     path="$(command -v "$command" 2>/dev/null || true)"
     [ -n "$path" ] && printf '%s\n' "$path"
@@ -577,8 +587,18 @@ install_tool() {
     if ! has_marker "$tool" && can_adopt "$tool"; then
         adopt_tool "$tool"
     fi
-    "install_$tool"
+    if [ "$tool" = ghostty-themes ]; then
+        ghostty_themes install
+    else
+        "install_$tool"
+    fi
     printf '\nInstalled %s.\n' "$(tool_name "$tool")"
+}
+
+ghostty_themes() {
+    command -v python3 >/dev/null 2>&1 || die "Ghostty Themes requires Python 3"
+    [ -f "$GHOSTTY_THEMES_HELPER" ] || die "Ghostty theme helper is missing: $GHOSTTY_THEMES_HELPER"
+    python3 "$GHOSTTY_THEMES_HELPER" "$@"
 }
 
 remove_link_if_managed() {
@@ -627,6 +647,9 @@ remove_tool() {
         herdr)
             # Preserve Herdr configuration and sessions outside the executable.
             rm -f -- "$BIN_DIR/herdr"
+            ;;
+        ghostty-themes)
+            ghostty_themes remove
             ;;
     esac
 
@@ -756,6 +779,7 @@ interactive_menu() {
         choice="$(choose_line "Monolith Software > " \
             "Developer CLIs - Tea, Superfile, nak, ngit"$'\t'"cli" \
             "AI coding - Claude Code, Codex, OpenCode, Herdr"$'\t'"ai" \
+            "Appearance - Ghostty Themes"$'\t'"appearance" \
             "Show status"$'\t'"list" \
             "Update all installed software"$'\t'"update" \
             "Exit"$'\t'"exit")" || return 0
@@ -763,6 +787,7 @@ interactive_menu() {
         case "$action" in
             cli) manage_category "Developer CLIs" "${CLI_TOOLS[@]}" ;;
             ai) manage_category "AI coding" "${AI_TOOLS[@]}" ;;
+            appearance) manage_category "Appearance" "${APPEARANCE_TOOLS[@]}" ;;
             list) list_tools; pause_after_action ;;
             update)
                 update_tools
@@ -799,12 +824,12 @@ Without a command, opens the interactive category menu.
 Commands:
   list                  Show every tool and its current state
   install TOOL [...]    Install or update one or more tools
-  remove TOOL [...]     Remove managed program files; keep user settings
+  remove TOOL [...]     Remove managed files; keep user settings and edited themes
   update [TOOL ...]     Update selected tools, or every managed tool
   help                  Show this help
 
 Tool IDs:
-  tea superfile nak ngit claude codex opencode herdr
+  tea superfile nak ngit claude codex opencode herdr ghostty-themes
 EOF
 }
 

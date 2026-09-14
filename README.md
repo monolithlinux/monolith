@@ -19,6 +19,34 @@ Choose a standard image for AMD, Intel, or Nouveau/NVK. Use an NVIDIA image for 
 | **COSMIC** | `cosmic` | COSMIC with the standard Mesa graphics stack. |
 | **COSMIC — NVIDIA** | `cosmic-nvidia` | COSMIC with the NVIDIA open driver built for the CachyOS kernel. |
 
+KDE editions use Ghostty with Fish, the Pure prompt, and JetBrainsMono Nerd Font
+at 12 points. First launch creates defaults in `~/.config/ghostty/` when no
+Ghostty configuration exists. Existing shell settings and user-installed tools
+continue to work, and existing Ghostty configurations are preserved.
+
+The image includes 554 themes: the full Tinted Terminal Ghostty catalog, including
+19 Gruvbox variants, plus the four official Catppuccin themes. Browse and preview
+them with `ghostty +list-themes`, then set, for example,
+`theme = base16-gruvbox-dark-medium` in your Ghostty configuration and reload with
+Ctrl+Shift+Comma. Terra's Ghostty package omits the upstream theme collection;
+Monolith supplies these catalogs with their MIT licenses.
+
+For the original collection bundled with Ghostty 1.3.1, run
+`monolith install ghostty-themes` or choose Ghostty Themes in the Appearance menu
+of `monolith`. This downloads Ghostty's official 463-theme bundle for your user,
+including names such as `Gruvbox Dark`. The original collection is downloaded
+on request rather than included in the image. Existing custom theme files and
+your selected theme are preserved. Use `monolith update ghostty-themes` to repair
+or refresh the managed collection, or `monolith remove ghostty-themes` to remove
+its unchanged files while keeping your edits.
+
+On KDE, Ghostty remembers its last normal window size across logins and reboots.
+A KWin script saves the dimensions, and a window rule restores them on launch.
+Existing custom rules take priority. Control recording with "Remember Ghostty
+Window Size" in Plasma's KWin Scripts settings, and edit or remove "Ghostty:
+remember window size" in Window Rules to change restoration. Monolith will not
+recreate a removed rule after the first setup.
+
 All images live under `ghcr.io/monolithlinux/`. In the commands below, replace `<edition>` with the image name from the table (for example, `gnome` or `gnome-nvidia`).
 
 All other historical editions have been retired. Anyone tracking an image not listed above must choose one of these six images to keep receiving updates:

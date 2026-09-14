@@ -1,0 +1,217 @@
+#!/usr/bin/env python3
+"""Manage a user's optional, checksum-pinned official Ghostty theme bundle."""
+
+import contextlib
+import fcntl
+import hashlib
+import io
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import sys
+import tarfile
+import tempfile
+import urllib.request
+
+
+RELEASE = "20260216-151611-fc73ce3"
+URL = f"https://deps.files.ghostty.org/ghostty-themes-release-{RELEASE}.tgz"
+SHA256 = "14200bb86a0c814ab69609d500b280b396b6d2eb835edf0676de4a789c0aa8fd"
+EXPECTED_COUNT = 463
+MAX_ARCHIVE_BYTES = 16 * 1024 * 1024
+
+
+def paths():
+    home = Path.home()
+    themes = Path(os.environ.get("XDG_CONFIG_HOME") or home / ".config") / "ghostty/themes"
+    root = Path(os.environ.get("XDG_DATA_HOME") or home / ".local/share") / "monolith/software/ghostty-themes"
+    marker = Path(os.environ.get("XDG_STATE_HOME") or home / ".local/state") / "monolith/software/ghostty-themes.managed"
+    return themes.resolve(), root.resolve(), marker
+
+
+def valid_name(name):
+    return (isinstance(name, str) and name not in ("", ".", "..")
+            and not any(character in name for character in "/\\")
+            and not any(ord(character) < 32 or ord(character) == 127 for character in name))
+
+
+def digest(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def regular_hash(path):
+    """Never follow a replacement symlink when checking managed ownership."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except (FileNotFoundError, IsADirectoryError):
+        return None
+    except OSError:
+        if path.is_symlink():
+            return None
+        raise
+    if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+        os.close(descriptor)
+        return None
+    with os.fdopen(descriptor, "rb") as file:
+        return hashlib.file_digest(file, "sha256").hexdigest()
+
+
+def download_themes():
+    # The public CDN rejects urllib's generic default User-Agent.
+    request = urllib.request.Request(URL, headers={"User-Agent": "monolith-ghostty-themes/1"})
+    with urllib.request.urlopen(request, timeout=30) as response:
+        archive = response.read(MAX_ARCHIVE_BYTES + 1)
+    if len(archive) > MAX_ARCHIVE_BYTES or digest(archive) != SHA256:
+        raise ValueError("Ghostty theme download failed its pinned SHA256 check; existing themes were kept")
+    themes = {}
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as bundle:
+        for member in bundle:
+            if member.name == "ghostty" and member.isdir():
+                continue
+            name = member.name.removeprefix("ghostty/")
+            if (member.name != f"ghostty/{name}" or not valid_name(name)
+                    or not member.isfile() or name in themes or not 0 < member.size <= 1024 * 1024):
+                raise ValueError(f"Unsafe or unexpected Ghostty theme archive entry: {member.name!r}")
+            with bundle.extractfile(member) as file:
+                themes[name] = file.read()
+    if len(themes) != EXPECTED_COUNT:
+        raise ValueError(f"Expected {EXPECTED_COUNT} Ghostty themes, found {len(themes)}")
+    return themes
+
+
+def load_manifest(root, themes):
+    path = root / "manifest.json"
+    if not os.path.lexists(path):
+        return None
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(f"Expected a regular theme manifest at {path}")
+    manifest = json.loads(path.read_text())
+    if (not isinstance(manifest, dict) or manifest.get("version") != 1
+            or manifest.get("themes_dir") != str(themes)
+            or not isinstance(manifest.get("files"), dict)):
+        raise ValueError("Ghostty theme manifest is invalid or belongs to another configuration directory")
+    for name, checksum in manifest["files"].items():
+        if not valid_name(name) or not isinstance(checksum, str) or not re.fullmatch("[0-9a-f]{64}", checksum):
+            raise ValueError("Ghostty theme manifest contains an invalid filename or checksum")
+    return manifest
+
+
+@contextlib.contextmanager
+def locked(root):
+    root.mkdir(parents=True, exist_ok=True)
+    with (root / ".lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
+def atomic_write(path, data, previous=None, create_only=False):
+    """Publish complete files, preserving collisions and changed user files."""
+    descriptor, name = tempfile.mkstemp(prefix=".monolith-theme-", dir=path.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, "wb") as file:
+            file.write(data)
+            file.flush()
+            os.fsync(file.fileno())
+        temporary.chmod(0o644)
+        if create_only:
+            try:
+                os.link(temporary, path)
+            except FileExistsError:
+                return False
+        else:
+            if previous is not None and regular_hash(path) != previous:
+                return False
+            os.replace(temporary, path)
+        return True
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def install():
+    # Validate the complete download before creating or changing user files.
+    downloaded = download_themes()
+    themes, root, marker = paths()
+    with locked(root):
+        previous = load_manifest(root, themes)
+        owned = previous["files"] if previous else {}
+        themes.mkdir(parents=True, exist_ok=True)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        managed = {}
+        preserved = 0
+        for name, data in downloaded.items():
+            path = themes / name
+            checksum = digest(data)
+            if not os.path.lexists(path):
+                installed = atomic_write(path, data, create_only=True)
+            elif name in owned and regular_hash(path) == owned[name]:
+                installed = checksum == owned[name] or atomic_write(path, data, previous=owned[name])
+            else:
+                installed = False
+            if installed:
+                managed[name] = checksum
+            else:
+                preserved += 1
+
+        # A future pinned bundle can retire themes, but only unedited copies.
+        for name in owned.keys() - downloaded.keys():
+            path = themes / name
+            if regular_hash(path) == owned[name]:
+                path.unlink()
+
+        manifest = {"version": 1, "release": RELEASE, "source": URL,
+                    "sha256": SHA256, "themes_dir": str(themes), "files": managed}
+        atomic_write(root / "manifest.json", (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode())
+        atomic_write(marker, f"version={RELEASE}\nsource={URL}\nsha256={SHA256}\n".encode())
+    print(f"Ghostty themes: {len(managed)} managed; {preserved} existing or edited files preserved.")
+
+
+def remove():
+    themes, root, marker = paths()
+    with locked(root):
+        manifest = load_manifest(root, themes)
+        if manifest is None:
+            raise ValueError("Ghostty theme manifest is missing; refusing to remove untracked files")
+        removed = preserved = 0
+        for name, checksum in manifest["files"].items():
+            path = themes / name
+            if regular_hash(path) == checksum:
+                path.unlink()
+                removed += 1
+            elif os.path.lexists(path):
+                preserved += 1
+        (root / "manifest.json").unlink()
+        marker.unlink(missing_ok=True)
+    print(f"Ghostty themes: removed {removed} unedited managed files; preserved {preserved} changed files.")
+
+
+def status():
+    themes, root, marker = paths()
+    if not marker.is_file():
+        return "not installed"
+    try:
+        manifest = load_manifest(root, themes)
+        if manifest is None or any(not (themes / name).is_file() for name in manifest["files"]):
+            return "needs repair"
+    except (OSError, ValueError):
+        return "needs repair"
+    return "installed"
+
+
+def main():
+    if len(sys.argv) != 2 or sys.argv[1] not in ("install", "remove", "status"):
+        raise ValueError("usage: ghostty-themes install|remove|status")
+    if sys.argv[1] == "status":
+        print(status())
+    else:
+        globals()[sys.argv[1]]()
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (OSError, ValueError, tarfile.TarError) as error:
+        print(f"Error: {error}", file=sys.stderr)
+        sys.exit(1)

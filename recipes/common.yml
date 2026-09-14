@@ -23,6 +23,8 @@ modules:
       packages:
         # Basics
         - fish
+        # Optional software helpers and terminal compatibility commands.
+        - python3
         - git
         - gh
         - curl

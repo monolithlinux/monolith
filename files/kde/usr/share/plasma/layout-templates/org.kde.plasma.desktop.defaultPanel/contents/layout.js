@@ -2,8 +2,8 @@
 // 6.7.2). Fedora's org.fedoraproject.fedora* look-and-feel layouts all load
 // this template by name, so overwriting it here changes what a first login
 // creates. Two deviations from upstream, both at the bottom:
-//   - the icons-only task manager gets an explicit launcher list matching the
-//     GNOME edition's favorite-apps (Files is Dolphin here), instead of the
+//   - the icons-only task manager gets an explicit launcher list with Ghostty
+//     and Dolphin for KDE, instead of the
 //     applet default that pins Discover (removed from the image) and System
 //     Settings;
 //   - Kickoff gets the same list as its initial favorites (kactivitymanagerd
@@ -89,13 +89,11 @@ panel.addWidget("org.kde.plasma.systemtray")
 panel.addWidget("org.kde.plasma.digitalclock")
 panel.addWidget("org.kde.plasma.showdesktop")
 
-// Monolith pins, mirroring the GNOME edition's favorite-apps in
-// zzz-monolith.gschema.override: Brave, Ptyxis, file manager (Dolphin here,
-// Nautilus there), Steam, Bazaar.
+// Monolith KDE pins: Brave, Ghostty, Dolphin, Steam, Bazaar.
 tasks.currentConfigGroup = ["General"]
 tasks.writeConfig("launchers",
     "applications:brave-origin-nightly.desktop," +
-    "applications:org.gnome.Ptyxis.desktop," +
+    "applications:com.mitchellh.ghostty.desktop," +
     "applications:org.kde.dolphin.desktop," +
     "applications:steam.desktop," +
     "applications:io.github.kolunmi.Bazaar.desktop")
@@ -115,7 +113,7 @@ kickoff.currentConfigGroup = ["General"]
 kickoff.writeConfig("icon", "start-here-monolith")
 kickoff.writeConfig("favorites",
     "brave-origin-nightly.desktop," +
-    "org.gnome.Ptyxis.desktop," +
+    "com.mitchellh.ghostty.desktop," +
     "org.kde.dolphin.desktop," +
     "steam.desktop," +
     "io.github.kolunmi.Bazaar.desktop")
