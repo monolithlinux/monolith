@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# CLI actions can run without opening a window, including inside another
+# terminal. Everything after -e belongs to the child command.
+for argument in "$@"; do
+    case "$argument" in
+        -e|--) break ;;
+        +*|--help|-h|--version|-v) exit 0 ;;
+    esac
+done
+
+[[ ":${XDG_CURRENT_DESKTOP:-}:" == *:KDE:* ]] || exit 0
+[[ -n ${WAYLAND_DISPLAY:-} || -n ${DISPLAY:-} ]] || exit 0
+[[ -n ${DBUS_SESSION_BUS_ADDRESS:-} ]] || exit 0
+
+state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/monolith"
+marker="$state_dir/ghostty-window-size-v1"
+[[ ! -e "$marker" ]] || exit 0
+
+for program in kreadconfig6 kwriteconfig6 gdbus flock; do
+    command -v "$program" >/dev/null || exit 0
+done
+
+umask 077
+mkdir -p -- "$state_dir"
+exec {lock_fd}>"$state_dir/ghostty-window-size.lock"
+flock -w 2 "$lock_fd"
+[[ ! -e "$marker" ]] || exit 0
+
+rule_id=monolith-ghostty-window-size
+missing=__monolith_missing_entry__
+read_entry() {
+    kreadconfig6 --file kwinrulesrc --group "$1" --key "$2" --default "$missing"
+}
+write_entry() {
+    kwriteconfig6 --file kwinrulesrc --group "$1" --key "$2" "$3"
+}
+
+# Read the existing ordering through KConfig so other rules retain their
+# values and precedence. Newer KWin versions use "order" instead of "rules".
+order_key=order
+rule_order="$(read_entry General "$order_key")"
+if [[ "$rule_order" == "$missing" ]]; then
+    order_key=rules
+    rule_order="$(read_entry General "$order_key")"
+    if [[ "$rule_order" == "$missing" ]]; then
+        rule_order=
+        # Older configurations named their groups 1 through General/count.
+        old_count="$(read_entry General count)"
+        if [[ "$old_count" =~ ^[0-9]+$ ]]; then
+            for ((index=1; index<=10#$old_count; index++)); do
+                rule_order+="${rule_order:+,}$index"
+            done
+        fi
+    fi
+fi
+
+# Do not replace an existing value, including a user's disabled rule. This
+# also makes retrying an interrupted initialization safe. KWin accepts an
+# omitted initial size for Remember and learns it from the first window.
+while IFS='=' read -r key value; do
+    if [[ "$(read_entry "$rule_id" "$key")" == "$missing" ]]; then
+        write_entry "$rule_id" "$key" "$value"
+    fi
+done <<'EOF'
+Description=Ghostty: remember window size
+wmclass=com.mitchellh.ghostty
+wmclassmatch=1
+wmclasscomplete=false
+types=1
+sizerule=4
+EOF
+
+case ",$rule_order," in
+    *",$rule_id,"*) ;;
+    *) rule_order+="${rule_order:+,}$rule_id"
+       write_entry General "$order_key" "$rule_order" ;;
+esac
+
+if [[ "$order_key" == rules ]]; then
+    # Keep the legacy count consistent, including escaped commas in IDs.
+    count=1
+    escaped=false
+    for ((index=0; index<${#rule_order}; index++)); do
+        character="${rule_order:index:1}"
+        if "$escaped"; then
+            escaped=false
+        elif [[ "$character" == \\ ]]; then
+            escaped=true
+        elif [[ "$character" == , ]]; then
+            count=$((count + 1))
+        fi
+    done
+    write_entry General count "$count"
+fi
+
+# Reload before opening the first terminal so upgraded profiles benefit
+# immediately. If this fails, retry on a future graphical launch.
+gdbus call --session --dest org.kde.KWin --object-path /KWin \
+    --method org.kde.KWin.reconfigure >/dev/null
+
+# Once installed, respect later edits or deletion in KDE's Window Rules UI.
+: > "$marker"

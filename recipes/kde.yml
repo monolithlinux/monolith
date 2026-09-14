@@ -35,6 +35,10 @@ modules:
       - source: kde
         destination: /
 
+  - type: script
+    scripts:
+      - install-ghostty-themes.sh
+
   # KDE desktop apps; shared Flatpaks live in common.yml.
   - type: default-flatpaks
     configurations:
@@ -70,6 +74,8 @@ modules:
         # Keep the real binary beside its original path for resource discovery.
         set -euxo pipefail
         test -x /usr/bin/monolith-ghostty
+        test -x /usr/bin/monolith-ghostty-window-size
+        bash -n /usr/bin/monolith-ghostty-window-size
         mv /usr/bin/ghostty /usr/bin/ghostty.real
         ln -s monolith-ghostty /usr/bin/ghostty
         # Dolphin passes its folder as the launcher's working directory.
@@ -91,6 +97,14 @@ modules:
         test -f /usr/share/fish/vendor_functions.d/fish_prompt.fish
         test -f /usr/share/fish/vendor_conf.d/pure.fish
         ghostty.real +validate-config --config-file=/usr/share/monolith/ghostty/config
+        # Fail the image build if the catalog is missing, incomplete, or invalid.
+        theme_list="$(ghostty.real +list-themes --plain)"
+        test "$(printf '%s\n' "$theme_list" | wc -l)" -ge 554
+        grep -F 'Catppuccin Frappe' <<<"$theme_list"
+        grep -F 'base16-gruvbox-dark-medium' <<<"$theme_list"
+        for theme in /usr/share/ghostty/themes/*; do
+          ghostty.real +validate-config --config-file="$theme"
+        done
         fc-match --format '%{family}\n' 'JetBrainsMono Nerd Font' \
           | grep -F 'JetBrainsMono Nerd Font'
       - |

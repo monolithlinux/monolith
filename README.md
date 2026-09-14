@@ -24,6 +24,18 @@ at 12 points. First launch creates defaults in `~/.config/ghostty/` when no
 Ghostty configuration exists. Existing shell settings and user-installed tools
 continue to work, and existing Ghostty configurations are preserved.
 
+The image includes 554 themes: the full Tinted Terminal Ghostty catalog, including
+19 Gruvbox variants, plus the four official Catppuccin themes. Browse and preview
+them with `ghostty +list-themes`, then set, for example,
+`theme = base16-gruvbox-dark-medium` in your Ghostty configuration and reload with
+Ctrl+Shift+Comma. Terra's Ghostty package omits the upstream theme collection;
+Monolith supplies these catalogs with their MIT licenses.
+
+On KDE, Ghostty remembers its last normal window size through a window rule
+created on the first graphical launch. Existing custom rules take priority.
+You can edit or remove "Ghostty: remember window size" in Plasma's Window Rules
+settings; Monolith will not recreate it after that first setup.
+
 All images live under `ghcr.io/monolithlinux/`. In the commands below, replace `<edition>` with the image name from the table (for example, `gnome` or `gnome-nvidia`).
 
 All other historical editions have been retired. Anyone tracking an image not listed above must choose one of these six images to keep receiving updates:

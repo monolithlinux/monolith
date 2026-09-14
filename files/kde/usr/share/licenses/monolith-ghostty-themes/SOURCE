@@ -1,0 +1,7 @@
+Catppuccin for Ghostty
+https://github.com/catppuccin/ghostty
+Commit: b0b03ccee7ae8f16b13bd4fdfe267616defdb2b7
+
+The four themes are unmodified upstream themes/catppuccin-*.conf files.
+Filenames use Ghostty display names (for example, Catppuccin Frappe).
+License: MIT; see LICENSE in this directory.

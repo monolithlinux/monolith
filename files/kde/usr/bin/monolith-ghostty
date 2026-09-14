@@ -31,4 +31,10 @@ if ! has_config; then
     )
 fi
 
+# KDE remembers window dimensions through a per-user KWin rule. Failure to
+# initialize it must never prevent opening the terminal.
+if [[ -x /usr/bin/monolith-ghostty-window-size ]]; then
+    /usr/bin/monolith-ghostty-window-size "$@" || true
+fi
+
 exec /usr/bin/ghostty.real "$@"
