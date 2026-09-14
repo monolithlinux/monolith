@@ -40,10 +40,12 @@ your selected theme are preserved. Use `monolith update ghostty-themes` to repai
 or refresh the managed collection, or `monolith remove ghostty-themes` to remove
 its unchanged files while keeping your edits.
 
-On KDE, Ghostty remembers its last normal window size through a window rule
-created on the first graphical launch. Existing custom rules take priority.
-You can edit or remove "Ghostty: remember window size" in Plasma's Window Rules
-settings; Monolith will not recreate it after that first setup.
+On KDE, Ghostty remembers its last normal window size across logins and reboots.
+A KWin script saves the dimensions, and a window rule restores them on launch.
+Existing custom rules take priority. Control recording with "Remember Ghostty
+Window Size" in Plasma's KWin Scripts settings, and edit or remove "Ghostty:
+remember window size" in Window Rules to change restoration. Monolith will not
+recreate a removed rule after the first setup.
 
 All images live under `ghcr.io/monolithlinux/`. In the commands below, replace `<edition>` with the image name from the table (for example, `gnome` or `gnome-nvidia`).
 

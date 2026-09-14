@@ -74,6 +74,9 @@ modules:
         test -x /usr/bin/monolith-ghostty
         test -x /usr/bin/monolith-ghostty-window-size
         bash -n /usr/bin/monolith-ghostty-window-size
+        test -f /usr/share/kwin/scripts/monolith-ghostty-window-size/metadata.json
+        test -f /usr/share/kwin/scripts/monolith-ghostty-window-size/contents/ui/main.qml
+        test -f /usr/share/kwin/scripts/monolith-ghostty-window-size/contents/code/persistence.js
         mv /usr/bin/ghostty /usr/bin/ghostty.real
         ln -s monolith-ghostty /usr/bin/ghostty
         # Dolphin passes its folder as the launcher's working directory.

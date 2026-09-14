@@ -7,9 +7,10 @@ test_root="$(mktemp -d)"
 trap 'rm -rf -- "$test_root"' EXIT
 mkdir -p "$test_root/bin"
 
-# Mock only KConfig and D-Bus; run the installed shell logic and real flock.
+# Mock KConfig, D-Bus and its short settling delay; use the real shell/flock.
 cat > "$test_root/bin/kconfig-mock" <<'PY'
 #!/usr/bin/env python3
+import configparser
 import json
 import os
 from pathlib import Path
@@ -23,10 +24,27 @@ if kind == 'gdbus':
     assert args == ['call', '--session', '--dest', 'org.kde.KWin',
                     '--object-path', '/KWin', '--method', 'org.kde.KWin.reconfigure']
     sys.exit(int(os.environ.get('GHOSTTY_RULES_TEST_DBUS_FAILURE', '0')))
+if kind == 'sleep':
+    assert args == ['0.25']
+    sys.exit(0)
 
-path = Path(os.environ['GHOSTTY_RULES_TEST_CONFIG'])
-config = json.loads(path.read_text()) if path.exists() else {}
-assert args[:2] == ['--file', 'kwinrulesrc']
+assert args[0] == '--file'
+filename = args[1]
+if filename == 'kwinrulesrc':
+    path = Path(os.environ['GHOSTTY_RULES_TEST_CONFIG'])
+elif filename == 'kwinrc':
+    path = Path(os.environ['GHOSTTY_RULES_TEST_PLUGIN_CONFIG'])
+else:
+    path = Path(os.environ['XDG_STATE_HOME']) / 'monolith/ghostty-window-size.ini'
+    assert filename == str(path), filename
+    assert kind == 'kreadconfig6'
+if path.suffix == '.ini':
+    parser = configparser.ConfigParser(interpolation=None)
+    parser.optionxform = str
+    parser.read(path)
+    config = {group: dict(parser[group]) for group in parser.sections()}
+else:
+    config = json.loads(path.read_text()) if path.exists() else {}
 group = args[args.index('--group') + 1]
 key = args[args.index('--key') + 1]
 if kind == 'kreadconfig6':
@@ -38,7 +56,7 @@ else:
     path.write_text(json.dumps(config))
 PY
 chmod +x "$test_root/bin/kconfig-mock"
-for program in kreadconfig6 kwriteconfig6 gdbus; do
+for program in kreadconfig6 kwriteconfig6 gdbus sleep; do
     ln -s kconfig-mock "$test_root/bin/$program"
 done
 export PATH="$test_root/bin:$PATH"
@@ -52,8 +70,40 @@ new_case() {
     export XDG_CONFIG_HOME="$case_root/config with spaces"
     export XDG_STATE_HOME="$case_root/state with spaces"
     export GHOSTTY_RULES_TEST_CONFIG="$case_root/rules.json"
+    export GHOSTTY_RULES_TEST_PLUGIN_CONFIG="$case_root/plugins.json"
     export GHOSTTY_RULES_TEST_CALLS="$case_root/calls.jsonl"
     marker="$XDG_STATE_HOME/monolith/ghostty-window-size-v1"
+    window_size_state="$XDG_STATE_HOME/monolith/ghostty-window-size.ini"
+}
+
+save_size() {
+    mkdir -p -- "$(dirname -- "$window_size_state")"
+    printf '[Window]\nwidth=%s\nheight=%s\n' "$1" "$2" > "$window_size_state"
+}
+
+assert_no_mutations() {
+    if [[ -e "$case_root/expected" ]]; then
+        cmp "$case_root/expected" "$GHOSTTY_RULES_TEST_CONFIG"
+    else
+        [[ ! -e "$GHOSTTY_RULES_TEST_CONFIG" ]]
+    fi
+    python3 - <<'PY'
+import json, os
+from pathlib import Path
+path = Path(os.environ['GHOSTTY_RULES_TEST_CALLS'])
+calls = [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+assert all(call[0] == 'kreadconfig6' for call in calls), calls
+PY
+}
+
+existing_rule() {
+    new_case "$1"
+    mkdir -p -- "$(dirname -- "$marker")"
+    : > "$marker"
+    cat > "$GHOSTTY_RULES_TEST_CONFIG" <<'JSON'
+{"General":{"rules":"custom-ghostty,monolith-ghostty-window-size","count":"2"},"custom-ghostty":{"wmclass":"com.mitchellh.ghostty","sizerule":"2","size":"900,600"},"monolith-ghostty-window-size":{"Description":"Ghostty: remember window size","wmclass":"com.mitchellh.ghostty","wmclassmatch":"1","wmclasscomplete":"false","types":"1","sizerule":"4","size":"800,500"}}
+JSON
+    save_size 1234 789
 }
 
 new_case first-launch
@@ -78,10 +128,135 @@ PY
 # Once the user deletes the default rule, subsequent launches leave it deleted.
 printf '{"General":{"rules":"","count":"0"}}\n' > "$GHOSTTY_RULES_TEST_CONFIG"
 cp "$GHOSTTY_RULES_TEST_CONFIG" "$case_root/expected"
-cp "$GHOSTTY_RULES_TEST_CALLS" "$case_root/expected-calls"
+: > "$GHOSTTY_RULES_TEST_CALLS"
 "$helper"
-cmp "$case_root/expected" "$GHOSTTY_RULES_TEST_CONFIG"
-cmp "$case_root/expected-calls" "$GHOSTTY_RULES_TEST_CALLS"
+assert_no_mutations
+
+# A fresh helper process restores the durable size even with the old marker.
+# The custom rule ahead of the stock default keeps its original priority.
+for format in rules order; do
+    existing_rule "persisted-$format"
+    if [[ "$format" == order ]]; then
+        python3 - <<'PY'
+import json, os
+from pathlib import Path
+path = Path(os.environ['GHOSTTY_RULES_TEST_CONFIG'])
+config = json.loads(path.read_text())
+config['General']['order'] = config['General'].pop('rules')
+path.write_text(json.dumps(config))
+PY
+    fi
+    cp "$GHOSTTY_RULES_TEST_CONFIG" "$case_root/expected"
+    "$helper"
+    python3 - "$case_root/expected" <<'PY'
+import json, os, sys
+from pathlib import Path
+before = json.loads(Path(sys.argv[1]).read_text())
+after = json.loads(Path(os.environ['GHOSTTY_RULES_TEST_CONFIG']).read_text())
+before['monolith-ghostty-window-size']['size'] = '1234,789'
+assert after == before
+calls = [json.loads(line) for line in Path(os.environ['GHOSTTY_RULES_TEST_CALLS']).read_text().splitlines()]
+writes = [call for call in calls if call[0] == 'kwriteconfig6']
+assert writes == [['kwriteconfig6', '--file', 'kwinrulesrc', '--group',
+                   'monolith-ghostty-window-size', '--key', 'size', '1234,789']], writes
+assert sum(call[0] == 'gdbus' for call in calls) == 1
+PY
+
+    # Repeated launches with the same persisted size do not rewrite/reload.
+    cp "$GHOSTTY_RULES_TEST_CONFIG" "$case_root/expected"
+    : > "$GHOSTTY_RULES_TEST_CALLS"
+    "$helper"
+    assert_no_mutations
+done
+
+# Persistent restoration respects explicit plugin and rule opt-outs.
+for disabled in false 0 no off FaLsE OFF; do
+    for target in plugin rule; do
+        existing_rule "disabled-$target-$disabled"
+        python3 - "$target" "$disabled" <<'PY'
+import json, os, sys
+from pathlib import Path
+if sys.argv[1] == 'plugin':
+    path = Path(os.environ['GHOSTTY_RULES_TEST_PLUGIN_CONFIG'])
+    config = {'Plugins': {'monolith-ghostty-window-sizeEnabled': sys.argv[2]}}
+else:
+    path = Path(os.environ['GHOSTTY_RULES_TEST_CONFIG'])
+    config = json.loads(path.read_text())
+    config['monolith-ghostty-window-size']['Enabled'] = sys.argv[2]
+path.write_text(json.dumps(config))
+PY
+        cp "$GHOSTTY_RULES_TEST_CONFIG" "$case_root/expected"
+        "$helper"
+        assert_no_mutations
+    done
+done
+
+# Turning off the KWin plugin before the first launch also opts out of rule
+# initialization; this must not create a completion marker or state directory.
+new_case disabled-first-launch
+printf '{"Plugins":{"monolith-ghostty-window-sizeEnabled":"false"}}\n' > "$GHOSTTY_RULES_TEST_PLUGIN_CONFIG"
+"$helper"
+[[ ! -e "$XDG_STATE_HOME" ]]
+assert_no_mutations
+
+# Deletion, removal from the active order, or changed matching/size policy
+# means the stock rule is no longer ours to seed with a recorded size.
+for change in deleted unlisted wmclass wmclassmatch wmclasscomplete types sizerule \
+        titlematch windowrolematch clientmachinematch tagmatch hastransientparentmatch; do
+    existing_rule "changed-$change"
+    python3 - "$change" <<'PY'
+import json, os, sys
+from pathlib import Path
+path = Path(os.environ['GHOSTTY_RULES_TEST_CONFIG'])
+config = json.loads(path.read_text())
+change = sys.argv[1]
+if change == 'deleted':
+    del config['monolith-ghostty-window-size']
+elif change == 'unlisted':
+    config['General'] = {'rules': 'custom-ghostty', 'count': '1'}
+else:
+    config['monolith-ghostty-window-size'][change] = {
+        'wmclass': 'another.application', 'wmclassmatch': '2',
+        'wmclasscomplete': 'true', 'types': '0', 'sizerule': '3',
+        'titlematch': '1', 'windowrolematch': '2', 'clientmachinematch': '3',
+        'tagmatch': '1', 'hastransientparentmatch': '1',
+    }[change]
+path.write_text(json.dumps(config))
+PY
+    cp "$GHOSTTY_RULES_TEST_CONFIG" "$case_root/expected"
+    "$helper"
+    assert_no_mutations
+done
+
+# Missing, malformed and out-of-range state must not replace a working size.
+for dimension in width height; do
+    for invalid in '' 0 -1 +900 01 12.5 abc 32768 999999999999999999999999; do
+        existing_rule "invalid-$dimension-${invalid:-empty}"
+        if [[ "$dimension" == width ]]; then
+            save_size "$invalid" 789
+        else
+            save_size 1234 "$invalid"
+        fi
+        cp "$GHOSTTY_RULES_TEST_CONFIG" "$case_root/expected"
+        "$helper"
+        assert_no_mutations
+    done
+done
+existing_rule missing-state
+rm -- "$window_size_state"
+cp "$GHOSTTY_RULES_TEST_CONFIG" "$case_root/expected"
+"$helper"
+assert_no_mutations
+
+existing_rule valid-boundaries
+save_size 1 32767
+"$helper"
+python3 - <<'PY'
+import json, os
+from pathlib import Path
+config = json.loads(Path(os.environ['GHOSTTY_RULES_TEST_CONFIG']).read_text())
+assert config['monolith-ghostty-window-size']['size'] == '1,32767'
+PY
 
 # Append below existing rules so explicit user choices retain priority. Cover
 # the current format and the newer order key without rewriting either rule.
@@ -114,7 +289,7 @@ done
 
 new_case existing-disabled
 cat > "$GHOSTTY_RULES_TEST_CONFIG" <<'JSON'
-{"General":{"rules":"monolith-ghostty-window-size","count":"1"},"monolith-ghostty-window-size":{"Description":"My rule","wmclass":"com.mitchellh.ghostty","wmclassmatch":"1","wmclasscomplete":"false","types":"1","sizerule":"0","size":"1200,840","enabled":"false"}}
+{"General":{"rules":"monolith-ghostty-window-size","count":"1"},"monolith-ghostty-window-size":{"Description":"My rule","wmclass":"com.mitchellh.ghostty","wmclassmatch":"1","wmclasscomplete":"false","types":"1","sizerule":"0","size":"1200,840","Enabled":"false"}}
 JSON
 cp "$GHOSTTY_RULES_TEST_CONFIG" "$case_root/expected"
 "$helper"
@@ -166,6 +341,33 @@ from pathlib import Path
 config = json.loads(Path(os.environ['GHOSTTY_RULES_TEST_CONFIG']).read_text())
 assert config['General'] == {'rules': 'monolith-ghostty-window-size', 'count': '1'}
 PY
+done
+
+# After initialization, interrupted writes and reloads must still be retryable.
+# A successful size write followed by failed D-Bus leaves the same-size retry
+# responsible for reloading KWin before clearing its pending marker.
+for failure in WRITE DBUS; do
+    existing_rule "restore-failure-$failure"
+    if env "GHOSTTY_RULES_TEST_${failure}_FAILURE=1" "$helper"; then
+        printf 'Expected restore %s failure\n' "$failure" >&2
+        exit 1
+    fi
+    [[ -f "$marker" && -f "$XDG_STATE_HOME/monolith/ghostty-window-size-reload" ]]
+    "$helper"
+    [[ ! -e "$XDG_STATE_HOME/monolith/ghostty-window-size-reload" ]]
+    python3 - "$failure" <<'PY'
+import json, os, sys
+from pathlib import Path
+config = json.loads(Path(os.environ['GHOSTTY_RULES_TEST_CONFIG']).read_text())
+assert config['monolith-ghostty-window-size']['size'] == '1234,789'
+assert config['custom-ghostty']['size'] == '900,600'
+calls = [json.loads(line) for line in Path(os.environ['GHOSTTY_RULES_TEST_CALLS']).read_text().splitlines()]
+assert sum(call[0] == 'gdbus' for call in calls) == (2 if sys.argv[1] == 'DBUS' else 1)
+PY
+    cp "$GHOSTTY_RULES_TEST_CONFIG" "$case_root/expected"
+    : > "$GHOSTTY_RULES_TEST_CALLS"
+    "$helper"
+    assert_no_mutations
 done
 
 new_case concurrent-launches

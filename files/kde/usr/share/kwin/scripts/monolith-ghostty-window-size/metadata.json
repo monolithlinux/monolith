@@ -1,0 +1,13 @@
+{
+    "KPackageStructure": "KWin/Script",
+    "KPlugin": {
+        "Id": "monolith-ghostty-window-size",
+        "Name": "Remember Ghostty Window Size",
+        "Description": "Save Ghostty's normal window dimensions across logins and reboots",
+        "Icon": "preferences-system-windows",
+        "License": "Apache-2.0",
+        "Version": "1.0",
+        "EnabledByDefault": true
+    },
+    "X-Plasma-API": "declarativescript"
+}
