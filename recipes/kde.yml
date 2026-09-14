@@ -6,8 +6,6 @@ modules:
   - type: dnf
     install:
       packages:
-        # Preserve GLib's command parsing in the old Ptyxis launcher adapter.
-        - python3
         # Oxygen theme and icons are not in kinoite-main.
         - plasma-oxygen
         - oxygen-icon-theme

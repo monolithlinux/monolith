@@ -31,6 +31,15 @@ them with `ghostty +list-themes`, then set, for example,
 Ctrl+Shift+Comma. Terra's Ghostty package omits the upstream theme collection;
 Monolith supplies these catalogs with their MIT licenses.
 
+For the original collection bundled with Ghostty 1.3.1, run
+`monolith install ghostty-themes` or choose Ghostty Themes in the Appearance menu
+of `monolith`. This downloads Ghostty's official 463-theme bundle for your user,
+including names such as `Gruvbox Dark`. The original collection is downloaded
+on request rather than included in the image. Existing custom theme files and
+your selected theme are preserved. Use `monolith update ghostty-themes` to repair
+or refresh the managed collection, or `monolith remove ghostty-themes` to remove
+its unchanged files while keeping your edits.
+
 On KDE, Ghostty remembers its last normal window size through a window rule
 created on the first graphical launch. Existing custom rules take priority.
 You can edit or remove "Ghostty: remember window size" in Plasma's Window Rules

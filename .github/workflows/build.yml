@@ -27,11 +27,12 @@ jobs:
         run: tests/vicinae-editions.sh
       - name: Test Protontricks desktop icon
         run: tests/protontricks-icon.sh
-      - name: Test Ghostty launcher migration
+      - name: Test Ghostty integration
         run: |
           tests/ghostty-launcher.sh
           tests/ptyxis-compat.sh
           tests/ghostty-window-size.sh
+          python3 tests/ghostty-themes.py
           node tests/ghostty-plasma.js
 
   # Skip no-op nightlies and limit PR builds to affected editions.
