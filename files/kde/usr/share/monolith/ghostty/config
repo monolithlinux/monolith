@@ -1,0 +1,5 @@
+# Keep Monolith's terminal shell and font when moving from Ptyxis.
+# Copied on first launch only; subsequent changes belong to the user.
+command = /usr/bin/fish
+font-family = JetBrainsMono Nerd Font
+font-size = 12

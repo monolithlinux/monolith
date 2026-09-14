@@ -19,6 +19,11 @@ Choose a standard image for AMD, Intel, or Nouveau/NVK. Use an NVIDIA image for 
 | **COSMIC** | `cosmic` | COSMIC with the standard Mesa graphics stack. |
 | **COSMIC — NVIDIA** | `cosmic-nvidia` | COSMIC with the NVIDIA open driver built for the CachyOS kernel. |
 
+KDE editions use Ghostty with Fish, the Pure prompt, and JetBrainsMono Nerd Font
+at 12 points. First launch creates defaults in `~/.config/ghostty/` when no
+Ghostty configuration exists. Existing shell settings and user-installed tools
+continue to work, and existing Ghostty configurations are preserved.
+
 All images live under `ghcr.io/monolithlinux/`. In the commands below, replace `<edition>` with the image name from the table (for example, `gnome` or `gnome-nvidia`).
 
 All other historical editions have been retired. Anyone tracking an image not listed above must choose one of these six images to keep receiving updates:

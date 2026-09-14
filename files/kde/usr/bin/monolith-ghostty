@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/ghostty"
+
+has_config() {
+    [[ -e "$config_dir/config" || -L "$config_dir/config" ||
+       -e "$config_dir/config.ghostty" || -L "$config_dir/config.ghostty" ]]
+}
+
+# Ghostty has no system-wide config location. Seed the user's first launch,
+# including existing accounts, while leaving either supported config untouched.
+if ! has_config; then
+    (
+        umask 077
+        mkdir -p -- "$config_dir"
+        temporary_config="$(mktemp -- "$config_dir/.monolith-config.XXXXXX")"
+        trap 'rm -f -- "$temporary_config"' EXIT
+        cat /usr/share/monolith/ghostty/config > "$temporary_config"
+
+        # Publish only complete files, without replacing another launch's config.
+        # -T also prevents following a config path that became a directory.
+        if ! has_config; then
+            if ! ln -T -- "$temporary_config" "$config_dir/config.ghostty" 2>/dev/null; then
+                if ! has_config; then
+                    printf 'Unable to create Ghostty config in %s\n' "$config_dir" >&2
+                    exit 1
+                fi
+            fi
+        fi
+    )
+fi
+
+exec /usr/bin/ghostty.real "$@"

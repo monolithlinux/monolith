@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Keep saved Ptyxis shortcuts and command launchers useful after the KDE switch.
+fail() {
+    printf 'Ptyxis compatibility launcher: %s\n' "$*" >&2
+    exit 2
+}
+
+options=()
+command=()
+execute_set=false
+while (($#)); do
+    case "$1" in
+        --new-window|-s|--standalone)
+            ;;
+        -d|--working-directory|-T|--title)
+            (($# >= 2)) || fail "$1 requires a value"
+            option="$1"
+            [[ "$option" != -d ]] || option=--working-directory
+            [[ "$option" != -T ]] || option=--title
+            options+=("$option=$2")
+            shift
+            ;;
+        --working-directory=*|--title=*)
+            options+=("$1")
+            ;;
+        --maximize|--fullscreen)
+            options+=("$1=true")
+            ;;
+        -x|--execute|--execute=*)
+            [[ "$execute_set" == false ]] || fail 'only one command may be specified'
+            if [[ "$1" == --execute=* ]]; then
+                shell_command="${1#*=}"
+            else
+                (($# >= 2)) || fail "$1 requires a command string"
+                shell_command="$2"
+                shift
+            fi
+            execute_set=true
+            ;;
+        --)
+            shift
+            (($#)) || fail 'expected a command after --'
+            [[ "$execute_set" == false ]] || fail 'cannot combine --execute with -- COMMAND'
+            command=(-e "$@")
+            break
+            ;;
+        --version)
+            exec /usr/bin/monolith-ghostty --version
+            ;;
+        -h|--help)
+            printf '%s\n' \
+                'Ptyxis compatibility launcher for Ghostty' \
+                'Usage: ptyxis [--new-window] [-s|--standalone]' \
+                '              [-d|--working-directory DIR] [-T|--title TITLE]' \
+                '              [--maximize] [--fullscreen]' \
+                '              [-x|--execute COMMAND | -- PROGRAM ARGUMENTS...]' \
+                'Ptyxis tabs, preferences, profiles, and container options are unsupported.'
+            exit 0
+            ;;
+        -*)
+            fail "unsupported Ptyxis option '$1'; use Ghostty directly for its options"
+            ;;
+        *)
+            fail "unexpected argument '$1'; use -- before a command"
+            ;;
+    esac
+    shift
+done
+
+# Ptyxis parses --execute with GLib quoting rules, without shell expansion.
+# Use the same parser from Ghostty's GTK dependency, rather than executing a
+# shell or approximating its treatment of quotes, escapes, and comments.
+if [[ "$execute_set" == true ]]; then
+    exec /usr/bin/python3 - "$shell_command" "${options[@]}" <<'PY'
+import ctypes
+import os
+import sys
+
+
+class GError(ctypes.Structure):
+    _fields_ = [("domain", ctypes.c_uint), ("code", ctypes.c_int),
+                ("message", ctypes.c_char_p)]
+
+
+glib = ctypes.CDLL("libglib-2.0.so.0")
+argv_type = ctypes.POINTER(ctypes.c_char_p)
+error_type = ctypes.POINTER(GError)
+glib.g_shell_parse_argv.argtypes = [ctypes.c_char_p, ctypes.POINTER(ctypes.c_int),
+                                  ctypes.POINTER(argv_type), ctypes.POINTER(error_type)]
+glib.g_shell_parse_argv.restype = ctypes.c_int
+glib.g_error_free.argtypes = [error_type]
+glib.g_error_free.restype = None
+glib.g_strfreev.argtypes = [argv_type]
+glib.g_strfreev.restype = None
+argc, argv, error = ctypes.c_int(), argv_type(), error_type()
+if not glib.g_shell_parse_argv(os.fsencode(sys.argv[1]), ctypes.byref(argc),
+                             ctypes.byref(argv), ctypes.byref(error)):
+    message = error.contents.message.decode(errors="replace")
+    glib.g_error_free(error)
+    print(f"Ptyxis compatibility launcher: cannot parse --execute: {message}", file=sys.stderr)
+    sys.exit(2)
+command = [os.fsdecode(argv[index]) for index in range(argc.value)]
+glib.g_strfreev(argv)
+os.execv("/usr/bin/monolith-ghostty", ["monolith-ghostty", "--gtk-single-instance=false",
+                                    *sys.argv[2:], "-e", *command])
+PY
+fi
+
+# A separate instance preserves the caller's cwd, including KDE launches that
+# do not pass --working-directory, and applies explicit title/window settings.
+exec /usr/bin/monolith-ghostty --gtk-single-instance=false \
+    "${options[@]}" "${command[@]}"
