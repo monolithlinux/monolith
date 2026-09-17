@@ -43,7 +43,7 @@ modules:
       - notify: false
         scope: system
         install:
-          - org.kde.gwenview # image viewer   (GNOME: Loupe)
+          - org.kde.koko # Photos image viewer (GNOME: Loupe)
           - org.kde.okular # documents        (GNOME: Papers)
           - org.kde.skanpage # scanning       (GNOME: SimpleScan)
           - org.kde.kwrite # text editor      (GNOME: TextEditor)

@@ -38,7 +38,7 @@ modules:
           - org.gnome.SimpleScan # scanning     (KDE: skanpage)
           - org.gnome.baobab # disk usage       (KDE: filelight)
           - org.gnome.Characters # characters   (KDE: kcharselect)
-          - org.gnome.Loupe # image viewer      (KDE: gwenview)
+          - org.gnome.Loupe # image viewer      (KDE: Photos)
           # Native cosmic-utils apps.
           - dev.edfloreshz.Calculator
           - com.jwestall.Forecast
