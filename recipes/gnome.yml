@@ -26,7 +26,8 @@ modules:
       - 4839
       - Tiling Shell
       - Caffeine
-      - User Themes
+      # User Themes: use its ID to avoid unreliable name-search results.
+      - 19
       - Add to Steam
       - Restart To
       - Dash to Dock
