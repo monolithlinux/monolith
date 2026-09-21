@@ -43,17 +43,17 @@ modules:
       - notify: false
         scope: system
         install:
-          - org.kde.koko # Photos image viewer (GNOME: Loupe)
-          - org.kde.okular # documents        (GNOME: Papers)
-          - org.kde.skanpage # scanning       (GNOME: SimpleScan)
-          - org.kde.kwrite # text editor      (GNOME: TextEditor)
-          - org.kde.kweather # weather        (GNOME: Weather)
-          - org.kde.merkuro # calendar        (GNOME: Calendar)
-          - org.kde.kcalc # calculator        (GNOME: Calculator)
-          - org.kde.kclock # clocks           (GNOME: clocks)
-          - org.kde.filelight # disk usage    (GNOME: baobab)
-          - org.kde.kcharselect # characters  (GNOME: Characters)
-          - org.kde.haruna # video player     (GNOME: Showtime)
+          - org.kde.koko # Photos image viewer
+          - org.kde.okular # documents
+          - org.kde.skanpage # scanning
+          - org.kde.kwrite # text editor
+          - org.kde.kweather # weather
+          - org.kde.merkuro # calendar
+          - org.kde.kcalc # calculator
+          - org.kde.kclock # clocks
+          - org.kde.filelight # disk usage
+          - org.kde.kcharselect # characters
+          - org.kde.haruna # video player
 
   - type: script
     snippets:

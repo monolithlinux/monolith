@@ -47,9 +47,9 @@ jobs:
             exit 0
           fi
 
-          # Use GNOME to select the two dated builds.
+          # Use KDE to select the two dated builds.
           registry="ghcr.io/monolithlinux"
-          image="$registry/gnome"
+          image="$registry/kde"
           echo "image=$image" >> "$GITHUB_OUTPUT"
 
           # Recipes are the edition source of truth.

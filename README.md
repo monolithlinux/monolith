@@ -4,7 +4,7 @@
 
 [![Build](https://github.com/monolithlinux/monolith/actions/workflows/build.yml/badge.svg)](https://github.com/monolithlinux/monolith/actions/workflows/build.yml)
 
-Monolith is a Fedora Atomic desktop image built with BlueBuild on Universal Blue. It publishes GNOME, KDE, and COSMIC variants with the CachyOS kernel and a shared set of desktop and gaming tools.
+Monolith is a Fedora Atomic desktop image built with BlueBuild on Universal Blue. It publishes KDE Plasma editions with the CachyOS kernel and a set of desktop and gaming tools.
 
 ## Pick your edition
 
@@ -12,12 +12,8 @@ Choose a standard image for AMD, Intel, or Nouveau/NVK. Use an NVIDIA image for 
 
 | Edition | Image | Use this if… |
 | --- | --- | --- |
-| **GNOME** | `gnome` | GNOME with the standard Mesa graphics stack. |
-| **GNOME — NVIDIA** | `gnome-nvidia` | GNOME with the NVIDIA open driver built for the CachyOS kernel. |
 | **KDE** | `kde` | KDE Plasma with the standard Mesa graphics stack. |
 | **KDE — NVIDIA** | `kde-nvidia` | KDE Plasma with the NVIDIA open driver built for the CachyOS kernel. |
-| **COSMIC** | `cosmic` | COSMIC with the standard Mesa graphics stack. |
-| **COSMIC — NVIDIA** | `cosmic-nvidia` | COSMIC with the NVIDIA open driver built for the CachyOS kernel. |
 
 KDE editions use Ghostty with Fish, the Pure prompt, and JetBrainsMono Nerd Font
 at 12 points. First launch creates defaults in `~/.config/ghostty/` when no
@@ -47,13 +43,13 @@ Window Size" in Plasma's KWin Scripts settings, and edit or remove "Ghostty:
 remember window size" in Window Rules to change restoration. Monolith will not
 recreate a removed rule after the first setup.
 
-All images live under `ghcr.io/monolithlinux/`. In the commands below, replace `<edition>` with the image name from the table (for example, `gnome` or `gnome-nvidia`).
+All images live under `ghcr.io/monolithlinux/`. In the commands below, replace `<edition>` with the image name from the table (for example, `kde` or `kde-nvidia`).
 
-All other historical editions have been retired. Anyone tracking an image not listed above must choose one of these six images to keep receiving updates:
+GNOME and COSMIC editions, including their NVIDIA variants, are retired and no longer receive image or ISO builds. Previously published images are historical builds. Users of these or other retired editions must rebase to `kde` or `kde-nvidia` to keep receiving updates:
 
 ```bash
-# Replace gnome with the desired image name from the table.
-rpm-ostree rebase ostree-image-signed:docker://ghcr.io/monolithlinux/gnome:latest
+# Use kde-nvidia instead if you need the NVIDIA driver.
+rpm-ostree rebase ostree-image-signed:docker://ghcr.io/monolithlinux/kde:latest
 systemctl reboot
 ```
 

@@ -23,8 +23,8 @@ jobs:
           persist-credentials: false
       - name: Test Monolith software manager
         run: tests/monolith-paths.sh
-      - name: Test edition-specific software
-        run: tests/vicinae-editions.sh
+      - name: Test edition selection
+        run: bash tests/pick-editions.sh
       - name: Test Protontricks desktop icon
         run: tests/protontricks-icon.sh
       - name: Test Ghostty integration
@@ -69,12 +69,8 @@ jobs:
           has() { case " ${built[*]:-} " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 
           entries=()
-          if has gnome; then entries+=('{"label":"GNOME","recipe":"recipe-gnome.yml"}'); fi
-          if has gnome-nvidia; then entries+=('{"label":"GNOME NVIDIA","recipe":"recipe-gnome-nvidia.yml"}'); fi
           if has kde; then entries+=('{"label":"KDE","recipe":"recipe-kde.yml"}'); fi
           if has kde-nvidia; then entries+=('{"label":"KDE NVIDIA","recipe":"recipe-kde-nvidia.yml"}'); fi
-          if has cosmic; then entries+=('{"label":"COSMIC","recipe":"recipe-cosmic.yml"}'); fi
-          if has cosmic-nvidia; then entries+=('{"label":"COSMIC NVIDIA","recipe":"recipe-cosmic-nvidia.yml"}'); fi
 
           if [ "${#entries[@]}" -gt 0 ]; then
             ( IFS=,; echo "editions=[${entries[*]}]" >> "${GITHUB_OUTPUT}" )
