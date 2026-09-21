@@ -62,7 +62,7 @@ menu_auto_hide = True
 EOF
 
 # Install the source image from the registry; it is not embedded in the ISO.
-: "${INSTALL_IMAGEREF:=ghcr.io/monolithlinux/gnome:latest}"
+: "${INSTALL_IMAGEREF:=ghcr.io/monolithlinux/kde:latest}"
 cat >/usr/share/anaconda/interactive-defaults.ks <<EOF
 ostreecontainer --url=${INSTALL_IMAGEREF} --transport=registry --no-signature-verification
 
@@ -83,16 +83,6 @@ for base in /mnt/sysroot /mnt/sysimage; do
 done
 %end
 EOF
-
-# Keep image defaults; only suppress GNOME's welcome dialog in the live session.
-if [ "$variant_id" = gnome ]; then
-    mkdir -p /usr/share/glib-2.0/schemas
-    cat >/usr/share/glib-2.0/schemas/zzzz-monolith-live.gschema.override <<'EOF'
-[org.gnome.shell]
-welcome-dialog-last-shown-version='4294967295'
-EOF
-    glib-compile-schemas /usr/share/glib-2.0/schemas
-fi
 
 # Materialize /opt links normally created by boot-time tmpfiles.
 if [ -d /usr/lib/opt ]; then

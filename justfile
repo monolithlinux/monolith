@@ -10,7 +10,7 @@ _default:
     @just --list
 
 # Build a recipe locally (needs MOK.priv present; run generate-secureboot-key first).
-build recipe="recipes/recipe-gnome.yml":
+build recipe="recipes/recipe-kde.yml":
     bluebuild build {{recipe}}
 
 # Generate the private CI secret and public image certificate. Regeneration
@@ -27,7 +27,7 @@ generate-secureboot-key:
     @echo "  base64 -w0 MOK.priv | gh secret set KERNEL_SIGNING_SECRET -R monolithlinux/monolith"
 
 # Build a live ISO into .iso/ using the same path as Generate ISO.
-generate-iso image="ghcr.io/monolithlinux/gnome:latest":
+generate-iso image="ghcr.io/monolithlinux/kde:latest":
     mkdir -p .iso
     sudo podman build \
         --cap-add sys_admin --security-opt label=disable --squash \

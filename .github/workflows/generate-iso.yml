@@ -12,14 +12,10 @@ on:
       image:
         description: Edition to build an ISO for
         type: choice
-        default: gnome
+        default: kde
         options:
-          - gnome
-          - gnome-nvidia
           - kde
           - kde-nvidia
-          - cosmic
-          - cosmic-nvidia
           - all
       tag:
         description: Published image tag to base the ISO on
@@ -44,7 +40,7 @@ jobs:
           set -euo pipefail
           # Keep this list in sync with workflow_dispatch choices.
           if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ inputs.image }}" = "all" ]; then
-            echo 'images=["gnome","gnome-nvidia","kde","kde-nvidia","cosmic","cosmic-nvidia"]' >> "${GITHUB_OUTPUT}"
+            echo 'images=["kde","kde-nvidia"]' >> "${GITHUB_OUTPUT}"
           else
             echo 'images=["${{ inputs.image }}"]' >> "${GITHUB_OUTPUT}"
           fi

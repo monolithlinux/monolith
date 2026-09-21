@@ -8,7 +8,7 @@
 # Output: one edition key per line; no output means no image changes.
 set -euo pipefail
 
-ALL=(gnome gnome-nvidia kde kde-nvidia cosmic cosmic-nvidia)
+ALL=(kde kde-nvidia)
 
 arg="${1:?usage: pick-editions.sh all|-|<git diff range>}"
 
@@ -26,19 +26,10 @@ mark() { local e; for e in "$@"; do want[$e]=1; done; }
 
 while IFS= read -r f; do
   case "$f" in
-    recipes/recipe-gnome.yml) mark gnome ;;
-    recipes/recipe-gnome-nvidia.yml) mark gnome-nvidia ;;
     recipes/recipe-kde.yml) mark kde ;;
     recipes/recipe-kde-nvidia.yml) mark kde-nvidia ;;
-    recipes/recipe-cosmic.yml) mark cosmic ;;
-    recipes/recipe-cosmic-nvidia.yml) mark cosmic-nvidia ;;
-    recipes/gnome.yml|files/gnome/*) mark gnome gnome-nvidia ;;
-    files/gschema-overrides/*) mark gnome gnome-nvidia ;;
     recipes/kde.yml|files/kde/*) mark kde kde-nvidia ;;
-    recipes/cosmic.yml|files/cosmic/*) mark cosmic cosmic-nvidia ;;
-    recipes/vicinae.yml) mark gnome gnome-nvidia ;;
-    recipes/base-main.yml) mark cosmic cosmic-nvidia ;;
-    recipes/nvidia.yml) mark gnome-nvidia kde-nvidia cosmic-nvidia ;;
+    recipes/nvidia.yml) mark kde-nvidia ;;
     # These files do not change an image.
     *.md|LICENSE|.gitignore|justfile|iso/*|tests/*|.github/dependabot.yml) ;;
     .github/workflows/generate-iso.yml) ;;
