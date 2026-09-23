@@ -22,7 +22,9 @@ jobs:
         with:
           persist-credentials: false
       - name: Test Monolith software manager
-        run: tests/monolith-paths.sh
+        run: |
+          tests/monolith-paths.sh
+          tests/monolith-software.sh
       - name: Test edition selection
         run: bash tests/pick-editions.sh
       - name: Test Protontricks desktop icon

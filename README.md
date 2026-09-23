@@ -92,8 +92,8 @@ Run the interactive per-user software manager:
 monolith
 ```
 
-The menu contains Developer CLIs and AI coding tools. Selecting an unchecked
-item installs it; selecting a checked item removes its managed program files
+The menu contains Developer CLIs, AI coding tools, and Appearance options.
+Selecting an unchecked item installs it; selecting a checked item removes its managed program files
 while preserving settings and data. The `ujust monolith`, `ujust software`, and
 `ujust monolith-software` aliases open the same menu.
 
@@ -102,9 +102,25 @@ The underlying command also supports scripting and troubleshooting:
 ```bash
 monolith list
 monolith install codex herdr
+monolith install omp
 monolith update
 monolith remove codex
 ```
+
+Oh My Pi (`omp`) is available in the AI coding category. Monolith installs its
+standalone Linux binary from the [official releases](https://github.com/can1357/oh-my-pi/releases)
+and verifies the release checksum; Bun and npm are not required. Use
+`monolith update omp` to update it and `monolith remove omp` to uninstall the
+managed executable. Your `~/.omp/` settings, authentication, sessions, and project
+files are preserved.
+
+Updates to Tea, Superfile, nak, ngit, Oh My Pi, and Herdr keep the previous
+installation until the new executable, launchers, and version record have been
+published successfully.
+Commands that you replace yourself are preserved on removal and must be moved
+out of the way before updating. Older Herdr installs that placed a binary
+directly in `~/.local/bin/herdr` may show `needs repair`: move that executable
+aside, then run `monolith install herdr` to use the managed layout.
 
 ## Secure Boot
 
