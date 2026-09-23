@@ -13,9 +13,9 @@ ACTIVE_TEMP=""
 
 readonly BIN_DIR DATA_HOME STATE_HOME MANAGED_ROOT STATE_ROOT GHOSTTY_THEMES_HELPER
 
-ALL_TOOLS=(tea superfile nak ngit claude codex opencode herdr ghostty-themes)
+ALL_TOOLS=(tea superfile nak ngit claude codex opencode omp herdr ghostty-themes)
 CLI_TOOLS=(tea superfile nak ngit)
-AI_TOOLS=(claude codex opencode herdr)
+AI_TOOLS=(claude codex opencode omp herdr)
 APPEARANCE_TOOLS=(ghostty-themes)
 
 die() {
@@ -47,7 +47,9 @@ trap 'cleanup_active_temp; exit 143' TERM
 
 new_temp_dir() {
     cleanup_active_temp
-    ACTIVE_TEMP="$(mktemp -d)"
+    # Keep publication on the same filesystem and cleanup independent of TMPDIR.
+    mkdir -p "$MANAGED_ROOT"
+    ACTIVE_TEMP="$(mktemp -d "$MANAGED_ROOT/.stage.XXXXXX")"
 }
 
 safe_remove_tree() {
@@ -72,6 +74,7 @@ tool_name() {
         claude)    echo "Claude Code" ;;
         codex)     echo "Codex CLI" ;;
         opencode)  echo "OpenCode" ;;
+        omp)       echo "Oh My Pi" ;;
         herdr)     echo "Herdr" ;;
         ghostty-themes) echo "Ghostty Themes" ;;
         *)         return 1 ;;
@@ -87,6 +90,7 @@ tool_description() {
         claude)    echo "Anthropic coding agent" ;;
         codex)     echo "OpenAI coding agent" ;;
         opencode)  echo "provider-independent coding agent" ;;
+        omp)       echo "coding agent with built-in development tools" ;;
         herdr)     echo "terminal multiplexer for coding agents" ;;
         ghostty-themes) echo "official Ghostty theme collection" ;;
         *)         return 1 ;;
@@ -96,7 +100,7 @@ tool_description() {
 tool_category() {
     case "$1" in
         tea|superfile|nak|ngit) echo "Developer CLIs" ;;
-        claude|codex|opencode|herdr) echo "AI coding" ;;
+        claude|codex|opencode|omp|herdr) echo "AI coding" ;;
         ghostty-themes) echo "Appearance" ;;
         *) return 1 ;;
     esac
@@ -111,6 +115,7 @@ tool_commands() {
         claude)    echo "claude" ;;
         codex)     echo "codex" ;;
         opencode)  echo "opencode" ;;
+        omp)       echo "omp" ;;
         herdr)     echo "herdr" ;;
         ghostty-themes) return 0 ;;
         *)         return 1 ;;
@@ -187,8 +192,8 @@ is_managed() {
                 [ -L "$BIN_DIR/opencode" ] &&
                 [ "$(readlink -f -- "$BIN_DIR/opencode")" = "$(readlink -f -- "$HOME/.opencode/bin/opencode")" ]
             ;;
-        herdr)
-            [ -x "$BIN_DIR/herdr" ]
+        omp|herdr)
+            [ -x "$root/bin/$tool" ] && link_points_under "$BIN_DIR/$tool" "$root"
             ;;
         ghostty-themes)
             [ "$(ghostty_themes status)" = installed ]
@@ -234,11 +239,17 @@ write_marker() {
     marker="$(state_file "$tool")"
     mkdir -p "$STATE_ROOT"
     tmp="$marker.tmp.$$"
-    {
+    if ! {
         printf 'version=%s\n' "$version"
         printf 'source=%s\n' "$source"
-    } >"$tmp"
-    mv -f -- "$tmp" "$marker"
+    } >"$tmp"; then
+        rm -f -- "$tmp"
+        return 1
+    fi
+    if ! mv -f -- "$tmp" "$marker"; then
+        rm -f -- "$tmp"
+        return 1
+    fi
 }
 
 marker_version() {
@@ -261,12 +272,8 @@ local_destination_conflict() {
     done
 
     case "$tool" in
-        tea|superfile|nak|ngit|codex)
+        tea|superfile|nak|ngit|omp|herdr|codex)
             path="$(tool_root "$tool")"
-            ;;
-        herdr)
-            # Herdr's direct install is one executable; its config lives elsewhere.
-            return 1
             ;;
         claude)
             path="$HOME/.local/share/claude"
@@ -293,7 +300,7 @@ preflight_install() {
     # Do not overwrite a managed command that the user later replaced.
     if has_marker "$tool"; then
         case "$tool" in
-            tea|superfile|nak|ngit|codex)
+            tea|superfile|nak|ngit|omp|herdr|codex)
                 for path in $(tool_commands "$tool"); do
                     if { [ -e "$BIN_DIR/$path" ] || [ -L "$BIN_DIR/$path" ]; } &&
                         ! link_points_under "$BIN_DIR/$path" "$(tool_root "$tool")"; then
@@ -326,12 +333,16 @@ preflight_install() {
 }
 
 link_command() {
-    local command="$1" target="$2" path="$BIN_DIR/$command"
+    local command="$1" target="$2" path temporary
+    path="$BIN_DIR/$command"
+    temporary="$path.monolith.$$"
     mkdir -p "$BIN_DIR"
-    if [ -e "$path" ] || [ -L "$path" ]; then
-        rm -f -- "$path"
+    # Publish atomically so a failed link replacement leaves the old launcher.
+    ln -s -- "$target" "$temporary"
+    if ! mv -Tf -- "$temporary" "$path"; then
+        rm -f -- "$temporary"
+        return 1
     fi
-    ln -s -- "$target" "$path"
 }
 
 latest_github_tag() {
@@ -350,19 +361,78 @@ require_amd64() {
 }
 
 commit_static_install() {
-    local tool="$1" stage="$2" version="$3" source="$4" root command
-    root="$(tool_root "$tool")"
+    # A subshell scopes rollback traps to this transaction. Keep the previous
+    # program, launchers, and marker until every part of publication succeeds.
+    (
+        local tool="$1" stage="$2" version="$3" source="$4" root marker backup command
+        local published=0 links_changed=0 committed=0
+        root="$(tool_root "$tool")"
+        marker="$(state_file "$tool")"
+        backup="$(mktemp -d "$MANAGED_ROOT/.rollback.XXXXXX")"
 
-    if [ -e "$root" ] || [ -L "$root" ]; then
-        safe_remove_tree "$root"
-    fi
-    mv -- "$stage" "$root"
+        rollback_static_install() {
+            local result=$? restore_failed=0
+            trap - EXIT
+            for command in $(tool_commands "$tool"); do
+                rm -f -- "$BIN_DIR/$command.monolith.$$" || restore_failed=1
+            done
+            rm -f -- "$marker.tmp.$$" || restore_failed=1
+            if [ "$committed" -eq 0 ]; then
+                if [ "$published" -eq 1 ]; then
+                    rm -rf -- "$root" || restore_failed=1
+                fi
+                if [ -e "$backup/root" ] || [ -L "$backup/root" ]; then
+                    mv -T -- "$backup/root" "$root" || restore_failed=1
+                fi
+                if [ "$links_changed" -eq 1 ]; then
+                    for command in $(tool_commands "$tool"); do
+                        if [ -L "$backup/links/$command" ]; then
+                            mv -Tf -- "$backup/links/$command" "$BIN_DIR/$command" || restore_failed=1
+                        else
+                            rm -f -- "$BIN_DIR/$command" || restore_failed=1
+                        fi
+                    done
+                    if [ -f "$backup/marker" ]; then
+                        mv -Tf -- "$backup/marker" "$marker" || restore_failed=1
+                    else
+                        rm -f -- "$marker" || restore_failed=1
+                    fi
+                fi
+            fi
+            if [ "$restore_failed" -eq 1 ]; then
+                warn "could not fully restore $(tool_name "$tool"); recovery files were kept at $backup"
+                exit 1
+            fi
+            rm -rf -- "$backup"
+            exit "$result"
+        }
+
+        trap rollback_static_install EXIT
+        trap 'exit 130' INT
+        trap 'exit 143' TERM
+        mkdir -p "$backup/links"
+        for command in $(tool_commands "$tool"); do
+            if [ -L "$BIN_DIR/$command" ]; then
+                cp -P -- "$BIN_DIR/$command" "$backup/links/$command"
+            fi
+        done
+        if [ -f "$marker" ]; then
+            cp -- "$marker" "$backup/marker"
+        fi
+        if [ -e "$root" ] || [ -L "$root" ]; then
+            mv -T -- "$root" "$backup/root"
+        fi
+        # Record cleanup intent before rename, including signals after it succeeds.
+        published=1
+        mv -T -- "$stage" "$root"
+        links_changed=1
+        for command in $(tool_commands "$tool"); do
+            link_command "$command" "$root/bin/$command"
+        done
+        write_marker "$tool" "$version" "$source"
+        committed=1
+    )
     ACTIVE_TEMP=""
-
-    for command in $(tool_commands "$tool"); do
-        link_command "$command" "$root/bin/$command"
-    done
-    write_marker "$tool" "$version" "$source"
 }
 
 install_tea() {
@@ -503,25 +573,46 @@ install_opencode() {
     cleanup_active_temp
 }
 
-install_herdr() {
-    local tool=herdr version
+install_omp() {
+    local tool=omp tag filename=omp-linux-x64 base tmp
+    require_amd64 "Oh My Pi"
     preflight_install "$tool"
-    mkdir -p "$BIN_DIR"
+    note "Installing Oh My Pi"
+
+    tag="$(latest_github_tag can1357/oh-my-pi)"
+    base="https://github.com/can1357/oh-my-pi/releases/download/$tag"
+    new_temp_dir
+    tmp="$ACTIVE_TEMP"
+    curl -fsSL -o "$tmp/$filename" "$base/$filename"
+    curl -fsSL -o "$tmp/SHA256SUMS.txt" "$base/SHA256SUMS.txt"
+    ( cd "$tmp" && awk -v file="$filename" '$2 == file || $2 == "*" file' SHA256SUMS.txt | sha256sum -c - )
+    mkdir -p "$tmp/bin"
+    install -m0755 "$tmp/$filename" "$tmp/bin/omp"
+    rm -f -- "$tmp/$filename" "$tmp/SHA256SUMS.txt"
+    "$tmp/bin/omp" --version >/dev/null
+    commit_static_install "$tool" "$tmp" "$tag" "$base"
+}
+
+install_herdr() {
+    local tool=herdr version tmp
+    preflight_install "$tool"
     note "Installing Herdr with its upstream installer"
     download_installer https://herdr.dev/install.sh
-    PATH="$BIN_DIR:/usr/bin:/bin" \
-        HERDR_INSTALL_DIR="$BIN_DIR" \
-        sh "$ACTIVE_TEMP/install.sh"
-    [ -x "$BIN_DIR/herdr" ] || die "Herdr installer did not create $BIN_DIR/herdr"
-    version="$("$BIN_DIR/herdr" --version 2>/dev/null | head -n 1)"
-    write_marker "$tool" "${version:-unknown}" "https://herdr.dev/install.sh"
-    cleanup_active_temp
+    tmp="$ACTIVE_TEMP"
+    mkdir -p "$tmp/bin"
+    PATH="$tmp/bin:/usr/bin:/bin" \
+        HERDR_INSTALL_DIR="$tmp/bin" \
+        sh "$tmp/install.sh"
+    [ -x "$tmp/bin/herdr" ] || die "Herdr installer did not create $tmp/bin/herdr"
+    version="$("$tmp/bin/herdr" --version 2>/dev/null | head -n 1)"
+    rm -f -- "$tmp/install.sh"
+    commit_static_install "$tool" "$tmp" "${version:-unknown}" "https://herdr.dev/install.sh"
 }
 
 can_adopt() {
     local tool="$1" command
     case "$tool" in
-        tea|superfile|nak|ngit)
+        tea|superfile|nak|ngit|herdr)
             [ ! -e "$(tool_root "$tool")" ] && [ ! -L "$(tool_root "$tool")" ] || return 1
             for command in $(tool_commands "$tool"); do
                 [ -f "$BIN_DIR/$command" ] &&
@@ -543,9 +634,6 @@ can_adopt() {
                   { [ -L "$BIN_DIR/opencode" ] &&
                     [ "$(readlink -f -- "$BIN_DIR/opencode" 2>/dev/null || true)" = "$(readlink -f -- "$HOME/.opencode/bin/opencode")" ]; }; }
             ;;
-        herdr)
-            [ -x "$BIN_DIR/herdr" ]
-            ;;
         *)
             return 1
             ;;
@@ -555,7 +643,7 @@ can_adopt() {
 adopt_tool() {
     local tool="$1" executable version root command primary
     case "$tool" in
-        tea|superfile|nak|ngit)
+        tea|superfile|nak|ngit|herdr)
             root="$(tool_root "$tool")"
             mkdir -p "$root/bin"
             for command in $(tool_commands "$tool"); do
@@ -572,7 +660,6 @@ adopt_tool() {
             executable="$HOME/.opencode/bin/opencode"
             link_command opencode "$executable"
             ;;
-        herdr) executable="$BIN_DIR/herdr" ;;
         *) return 1 ;;
     esac
 
@@ -602,7 +689,8 @@ ghostty_themes() {
 }
 
 remove_link_if_managed() {
-    local command="$1" prefix="$2" path="$BIN_DIR/$command"
+    local command="$1" prefix="$2" path
+    path="$BIN_DIR/$command"
     if link_points_under "$path" "$prefix"; then
         rm -f -- "$path"
     elif [ -e "$path" ] || [ -L "$path" ]; then
@@ -619,7 +707,7 @@ remove_tool() {
 
     note "Removing $(tool_name "$tool")"
     case "$tool" in
-        tea|superfile|nak|ngit|codex)
+        tea|superfile|nak|ngit|omp|herdr|codex)
             for command in $(tool_commands "$tool"); do
                 remove_link_if_managed "$command" "$root"
             done
@@ -643,10 +731,6 @@ remove_tool() {
                 safe_remove_tree "$HOME/.opencode/bin"
             fi
             rmdir -- "$HOME/.opencode" 2>/dev/null || true
-            ;;
-        herdr)
-            # Preserve Herdr configuration and sessions outside the executable.
-            rm -f -- "$BIN_DIR/herdr"
             ;;
         ghostty-themes)
             ghostty_themes remove
@@ -778,7 +862,7 @@ interactive_menu() {
     while true; do
         choice="$(choose_line "Monolith Software > " \
             "Developer CLIs - Tea, Superfile, nak, ngit"$'\t'"cli" \
-            "AI coding - Claude Code, Codex, OpenCode, Herdr"$'\t'"ai" \
+            "AI coding - Claude Code, Codex, OpenCode, Oh My Pi, Herdr"$'\t'"ai" \
             "Appearance - Ghostty Themes"$'\t'"appearance" \
             "Show status"$'\t'"list" \
             "Update all installed software"$'\t'"update" \
@@ -805,11 +889,14 @@ update_tools() {
     fi
     for tool in "${requested[@]}"; do
         is_known_tool "$tool" || die "unknown tool: $tool"
+        if [ "$#" -gt 0 ] && ! has_marker "$tool"; then
+            die "$(tool_name "$tool") is not installed by Monolith"
+        fi
+    done
+    for tool in "${requested[@]}"; do
         if has_marker "$tool"; then
             install_tool "$tool"
             updated=1
-        elif [ "$#" -gt 0 ]; then
-            die "$(tool_name "$tool") is not installed by Monolith"
         fi
     done
     [ "$updated" -eq 1 ] || echo "No Monolith-managed software is installed."
@@ -829,7 +916,7 @@ Commands:
   help                  Show this help
 
 Tool IDs:
-  tea superfile nak ngit claude codex opencode herdr ghostty-themes
+  tea superfile nak ngit claude codex opencode omp herdr ghostty-themes
 EOF
 }
 
@@ -842,10 +929,15 @@ main() {
         list) [ "$#" -eq 0 ] || die "list takes no tool arguments"; list_tools ;;
         install)
             [ "$#" -gt 0 ] || die "install needs at least one tool ID"
+            for tool in "$@"; do is_known_tool "$tool" || die "unknown tool: $tool"; done
             for tool in "$@"; do install_tool "$tool"; done
             ;;
         remove|uninstall)
             [ "$#" -gt 0 ] || die "remove needs at least one tool ID"
+            for tool in "$@"; do
+                is_known_tool "$tool" || die "unknown tool: $tool"
+                has_marker "$tool" || die "$(tool_name "$tool") is not managed by Monolith"
+            done
             for tool in "$@"; do remove_tool "$tool"; done
             ;;
         update) update_tools "$@" ;;
