@@ -122,6 +122,24 @@ out of the way before updating. Older Herdr installs that placed a binary
 directly in `~/.local/bin/herdr` may show `needs repair`: move that executable
 aside, then run `monolith install herdr` to use the managed layout.
 
+### Waywallen wallpapers
+
+Both KDE images include the [Waywallen KDE companion plugin](https://github.com/waywallen/waywallen-display).
+The image build installs a pinned, checksum-verified upstream package and its
+native QML module system-wide. The Waywallen application remains optional:
+install `org.waywallen.waywallen` from Flathub through Bazaar.
+
+After booting the updated image, launch Waywallen, right-click the desktop, open
+**Configure Desktop and Wallpaper…**, select **Waywallen** as the wallpaper type,
+and apply it. Repeat for each display you want Waywallen to control. No RPM
+layering or separate companion-plugin installation is needed. Monolith leaves
+your existing wallpaper selection and autostart settings unchanged.
+
+An existing per-user `org.waywallen.kde` installation takes precedence over the
+image's copy. To use the bundled version, remove only that user-installed plugin
+with `kpackagetool6 --type Plasma/Wallpaper --remove org.waywallen.kde` (without
+`sudo` or `--global`), then log out and back in.
+
 ## Secure Boot
 
 Monolith signs the CachyOS kernel and NVIDIA modules with its own Machine Owner Key (MOK). Enroll the public certificate once to enable Secure Boot.
