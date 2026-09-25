@@ -6,6 +6,11 @@
 
 Monolith is a Fedora Atomic desktop image built with BlueBuild on Universal Blue. It publishes KDE Plasma editions with the CachyOS kernel and a set of desktop and gaming tools.
 
+Brave Origin stays on the Nightly channel. The shared recipe excludes only
+`brave-origin-nightly-1.98.28-1.*`, whose upstream RPM no longer matches its
+repository checksum. Builds select the newest other available nightly with
+normal checksum and signature verification; newer nightly releases remain eligible.
+
 ## Pick your edition
 
 Choose a standard image for AMD, Intel, or Nouveau/NVK. Use an NVIDIA image for the packaged open driver on Turing-or-newer GPUs.
@@ -121,6 +126,24 @@ Commands that you replace yourself are preserved on removal and must be moved
 out of the way before updating. Older Herdr installs that placed a binary
 directly in `~/.local/bin/herdr` may show `needs repair`: move that executable
 aside, then run `monolith install herdr` to use the managed layout.
+
+### Waywallen wallpapers
+
+Both KDE images include the [Waywallen KDE companion plugin](https://github.com/waywallen/waywallen-display).
+The image build installs a pinned, checksum-verified upstream package and its
+native QML module system-wide. The Waywallen application remains optional:
+install `org.waywallen.waywallen` from Flathub through Bazaar.
+
+After booting the updated image, launch Waywallen, right-click the desktop, open
+**Configure Desktop and Wallpaper…**, select **Waywallen** as the wallpaper type,
+and apply it. Repeat for each display you want Waywallen to control. No RPM
+layering or separate companion-plugin installation is needed. Monolith leaves
+your existing wallpaper selection and autostart settings unchanged.
+
+An existing per-user `org.waywallen.kde` installation takes precedence over the
+image's copy. To use the bundled version, remove only that user-installed plugin
+with `kpackagetool6 --type Plasma/Wallpaper --remove org.waywallen.kde` (without
+`sudo` or `--global`), then log out and back in.
 
 ## Secure Boot
 

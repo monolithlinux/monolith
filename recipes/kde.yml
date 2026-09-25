@@ -36,6 +36,7 @@ modules:
   - type: script
     scripts:
       - install-ghostty-themes.sh
+      - install-waywallen-display.sh
 
   # KDE desktop apps; shared Flatpaks live in common.yml.
   - type: default-flatpaks

@@ -20,6 +20,10 @@ modules:
         - https://negativo17.org/repos/RPM-GPG-KEY-slaanesh
         - https://pkgs.tailscale.com/stable/fedora/repo.gpg
     install:
+      exclude:
+        # This RPM was replaced upstream without updating its repository checksum.
+        # Quarantine only that build; newer nightly releases remain eligible.
+        - brave-origin-nightly-1.98.28-1.*
       packages:
         # Basics
         - fish
