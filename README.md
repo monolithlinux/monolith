@@ -6,6 +6,11 @@
 
 Monolith is a Fedora Atomic desktop image built with BlueBuild on Universal Blue. It publishes KDE Plasma editions with the CachyOS kernel and a set of desktop and gaming tools.
 
+Brave Origin stays on the Nightly channel. The shared recipe excludes only
+`brave-origin-nightly-1.98.28-1.*`, whose upstream RPM no longer matches its
+repository checksum. Builds select the newest other available nightly with
+normal checksum and signature verification; newer nightly releases remain eligible.
+
 ## Pick your edition
 
 Choose a standard image for AMD, Intel, or Nouveau/NVK. Use an NVIDIA image for the packaged open driver on Turing-or-newer GPUs.
