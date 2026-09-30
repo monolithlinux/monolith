@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Monolith News
+GenericName=Announcements
+Comment=Read Monolith project announcements
+Exec=/usr/bin/monolith-news
+Icon=monolith-logo
+Terminal=false
+StartupNotify=true
+Categories=System;
+Keywords=announcements;news;monolith;

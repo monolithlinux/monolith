@@ -34,6 +34,7 @@ check iso/build.sh ''
 check .github/workflows/generate-iso.yml ''
 check .github/workflows/generate_release.yml ''
 check tests/pick-editions.sh ''
+check news/announcements.toml ''
 # Multiple changed paths are deduplicated and keep the canonical order.
 check $'recipes/nvidia.yml\nrecipes/kde.yml\nrecipes/recipe-kde.yml' "$all"
 

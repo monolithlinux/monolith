@@ -31,7 +31,7 @@ while IFS= read -r f; do
     recipes/kde.yml|files/kde/*) mark kde kde-nvidia ;;
     recipes/nvidia.yml) mark kde-nvidia ;;
     # These files do not change an image.
-    *.md|LICENSE|.gitignore|justfile|iso/*|tests/*|.github/dependabot.yml) ;;
+    *.md|LICENSE|.gitignore|justfile|iso/*|tests/*|news/*|.github/dependabot.yml) ;;
     .github/workflows/generate-iso.yml) ;;
     .github/workflows/generate_release.yml|.github/workflows/changelog.py) ;;
     .github/workflows/prune-buildkit.yml|.github/workflows/pr-rebase-hint.yml) ;;

@@ -145,6 +145,24 @@ image's copy. To use the bundled version, remove only that user-installed plugin
 with `kpackagetool6 --type Plasma/Wallpaper --remove org.waywallen.kde` (without
 `sudo` or `--global`), then log out and back in.
 
+## Monolith News
+
+KDE editions include Monolith News, a small window for project announcements such
+as required actions and notable changes. At login it downloads
+[`news/announcements.toml`](news/announcements.toml) from the `main` branch and
+opens only when an announcement you have not dismissed is available; closing the
+window dismisses what it showed. Open **Monolith News** from the application menu
+to read past announcements. To stop the login check, clear **Check for
+announcements at login** in the window or disable Monolith News in Plasma's
+Autostart settings. Dismissals are stored per user in
+`~/.local/state/monolith/news/`.
+
+To publish an announcement, add an entry with a new `id` at the top of
+`news/announcements.toml`; the file's header describes the fields. Merged changes
+reach users without an image rebuild, and editing an existing entry does not
+reopen it for people who dismissed it. Preview a change before opening a pull
+request with `files/kde/usr/bin/monolith-news --preview news/announcements.toml`.
+
 ## Secure Boot
 
 Monolith signs the CachyOS kernel and NVIDIA modules with its own Machine Owner Key (MOK). Enroll the public certificate once to enable Secure Boot.
