@@ -1,0 +1,547 @@
+#!/usr/bin/python3 -sP
+"""Show Monolith announcements from the project repository."""
+
+import argparse
+import configparser
+import contextlib
+import dataclasses
+import datetime
+import fcntl
+import http.client
+import json
+import os
+from pathlib import Path
+import re
+import sys
+import tempfile
+import threading
+import time
+import tomllib
+import urllib.error
+import urllib.request
+
+
+REPOSITORY_URL = "https://github.com/monolithlinux/monolith"
+FEED_URL = "https://raw.githubusercontent.com/monolithlinux/monolith/main/news/announcements.toml"
+USER_AGENT = "monolith-news/1"
+MAX_FEED_BYTES = 256 * 1024
+FETCH_TIMEOUT_SECONDS = 15
+# Login can start before the network is up; keep trying for a few minutes.
+LOGIN_ATTEMPTS = 6
+LOGIN_RETRY_SECONDS = 30
+ID_PATTERN = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
+URL_PATTERN = re.compile(r"https://\S+")
+MAX_TITLE_CHARS = 120
+MAX_LINKS = 3
+MAX_LABEL_CHARS = 40
+FOOTER_LINKS = (
+    ("Issues", REPOSITORY_URL + "/issues"),
+    ("Releases", REPOSITORY_URL + "/releases"),
+    ("Project Page", REPOSITORY_URL),
+)
+STATUS_CHECKING = "Checking for announcements…"
+STATUS_CACHED = "Could not check for new announcements. Showing saved announcements."
+STATUS_UNAVAILABLE = "Could not check for announcements. Check your connection and try again."
+# The system autostart entry plus Hidden=true. Plasma's Autostart page lists this
+# user copy as a disabled entry, and the systemd generator skips it at login.
+LOGIN_OVERRIDE = (
+    "[Desktop Entry]\nType=Application\nName=Monolith News\n"
+    "Comment=Show new Monolith announcements at login\n"
+    "Exec=/usr/bin/monolith-news --autostart\nIcon=monolith-logo\n"
+    "Terminal=false\nOnlyShowIn=KDE;\nHidden=true\n"
+)
+
+
+@dataclasses.dataclass(frozen=True)
+class Link:
+    label: str
+    url: str
+
+
+@dataclasses.dataclass(frozen=True)
+class Announcement:
+    id: str
+    date: datetime.date
+    title: str
+    body: str
+    links: tuple[Link, ...]
+
+
+@dataclasses.dataclass(frozen=True)
+class FeedResult:
+    announcements: tuple[Announcement, ...]
+    source: str  # "network" | "cache" | "none"
+
+
+class FeedError(ValueError):
+    """The feed as a whole cannot be used."""
+
+
+def warn(message: str) -> None:
+    # Autostart stderr lands in the user journal.
+    print(f"monolith-news: {message}", file=sys.stderr)
+
+
+def xdg_dir(variable: str, default: str) -> Path:
+    # The XDG base directory spec says to ignore relative values.
+    path = Path(os.environ.get(variable, ""))
+    return path if path.is_absolute() else Path.home() / default
+
+
+def state_path() -> Path:
+    return xdg_dir("XDG_STATE_HOME", ".local/state") / "monolith/news/state.json"
+
+
+def cache_path() -> Path:
+    return xdg_dir("XDG_CACHE_HOME", ".cache") / "monolith/news/announcements.toml"
+
+
+def login_override_path() -> Path:
+    return xdg_dir("XDG_CONFIG_HOME", ".config") / "autostart/monolith-news.desktop"
+
+
+def atomic_write(path: Path, data: bytes) -> None:
+    """Replace a file only with complete contents."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, name = tempfile.mkstemp(prefix=".monolith-news-", dir=path.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, "wb") as file:
+            file.write(data)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+@contextlib.contextmanager
+def locked(directory: Path):
+    directory.mkdir(parents=True, exist_ok=True)
+    with (directory / ".lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
+def one_line(value: object, limit: int) -> str | None:
+    """Return value stripped if it is one line of 1-limit characters."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not 0 < len(text) <= limit or "\n" in text or "\r" in text:
+        return None
+    return text
+
+
+def parse_announcement(entry: object) -> Announcement:
+    """Validate one feed entry; ValueError says why it cannot be shown."""
+    if not isinstance(entry, dict):
+        raise ValueError("not a table")
+    identifier = entry.get("id")
+    if not isinstance(identifier, str) or not ID_PATTERN.fullmatch(identifier):
+        raise ValueError("id must be 1-64 lowercase letters, digits, or hyphens")
+    date = entry.get("date")
+    # Date-times load as datetime.datetime, a subclass of datetime.date.
+    if type(date) is not datetime.date:
+        raise ValueError("date must be a plain date such as 2026-01-31")
+    title = one_line(entry.get("title"), MAX_TITLE_CHARS)
+    if title is None:
+        raise ValueError(f"title must be one line of 1-{MAX_TITLE_CHARS} characters")
+    body = entry.get("body")
+    if not isinstance(body, str) or not body.strip():
+        raise ValueError("body must be non-empty text")
+    links = entry.get("links", [])
+    if not isinstance(links, list) or len(links) > MAX_LINKS:
+        raise ValueError(f"links must be a list of at most {MAX_LINKS} tables")
+    parsed = []
+    for link in links:
+        if not isinstance(link, dict):
+            raise ValueError("each link must be a table")
+        label = one_line(link.get("label"), MAX_LABEL_CHARS)
+        if label is None:
+            raise ValueError(f"link labels must be one line of 1-{MAX_LABEL_CHARS} characters")
+        url = link.get("url")
+        if not isinstance(url, str) or not URL_PATTERN.fullmatch(url):
+            raise ValueError("link urls must start with https:// and contain no spaces")
+        parsed.append(Link(label, url))
+    return Announcement(identifier, date, title, body.strip(), tuple(parsed))
+
+
+def parse_feed(data: bytes) -> tuple[list[Announcement], list[str]]:
+    """Return valid announcements, newest first, and why others were skipped."""
+    if len(data) > MAX_FEED_BYTES:
+        raise FeedError(f"feed is larger than {MAX_FEED_BYTES} bytes")
+    try:
+        document = tomllib.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        raise FeedError(f"feed is not valid TOML: {error}") from error
+    entries = document.get("announcements")
+    if not isinstance(entries, list):
+        raise FeedError("feed has no announcements array; use announcements = [] for none")
+    valid = []
+    problems = []
+    ids = set()
+    for index, entry in enumerate(entries, 1):
+        try:
+            announcement = parse_announcement(entry)
+        except ValueError as error:
+            problems.append(f"announcement {index}: {error}")
+            continue
+        if announcement.id in ids:
+            problems.append(f"announcement {index}: duplicate id {announcement.id}")
+            continue
+        ids.add(announcement.id)
+        valid.append(announcement)
+    # Stable: entries with the same date keep their file order.
+    return sorted(valid, key=lambda a: a.date, reverse=True), problems
+
+
+def download_feed(url: str) -> bytes:
+    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(request, timeout=FETCH_TIMEOUT_SECONDS) as response:
+        # parse_feed rejects the extra byte, so oversized feeds never reach the cache.
+        return response.read(MAX_FEED_BYTES + 1)
+
+
+def load_cached_feed() -> list[Announcement] | None:
+    path = cache_path()
+    try:
+        announcements, _problems = parse_feed(path.read_bytes())
+    except FileNotFoundError:
+        return None
+    except (OSError, FeedError) as error:
+        warn(f"ignoring saved announcements {path}: {error}")
+        return None
+    return announcements
+
+
+def refresh_feed(attempts: int) -> FeedResult:
+    """Download the feed, falling back to the last valid download."""
+    for attempt in range(1, attempts + 1):
+        try:
+            data = download_feed(FEED_URL)
+        except urllib.error.HTTPError as error:
+            # The server answered, so retrying will not help.
+            error.close()
+            warn(f"could not download announcements: {error}")
+            break
+        except (OSError, http.client.HTTPException) as error:
+            if attempt < attempts:
+                time.sleep(LOGIN_RETRY_SECONDS)
+                continue
+            warn(f"could not download announcements: {error}")
+            break
+        try:
+            announcements, problems = parse_feed(data)
+        except FeedError as error:
+            warn(f"ignoring downloaded announcements: {error}")
+            break
+        for problem in problems:
+            warn(f"skipped {problem}")
+        try:
+            atomic_write(cache_path(), data)
+        except OSError as error:
+            warn(f"could not save announcements: {error}")
+        return FeedResult(tuple(announcements), "network")
+    cached = load_cached_feed()
+    if cached is not None:
+        return FeedResult(tuple(cached), "cache")
+    return FeedResult((), "none")
+
+
+def load_dismissed() -> set[str]:
+    path = state_path()
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return set()
+    except (OSError, ValueError):
+        state = None
+    if (isinstance(state, dict) and state.get("version") == 1
+            and isinstance(state.get("dismissed"), list)
+            and all(isinstance(item, str) for item in state["dismissed"])):
+        return set(state["dismissed"])
+    # Showing announcements again is the safe failure.
+    warn(f"ignoring invalid state file {path}")
+    return set()
+
+
+def save_dismissed(ids) -> None:
+    # Never prune ids missing from the feed; a reverted commit would reopen them.
+    path = state_path()
+    with locked(path.parent):
+        merged = load_dismissed() | set(ids)
+        state = {"version": 1, "dismissed": sorted(merged)}
+        atomic_write(path, (json.dumps(state, indent=2) + "\n").encode())
+
+
+def unseen(announcements, dismissed) -> list[Announcement]:
+    return [a for a in announcements if a.id not in dismissed]
+
+
+def login_check_enabled() -> bool:
+    """Honor the user copy that Plasma's Autostart page and the checkbox manage."""
+    parser = configparser.ConfigParser(interpolation=None, strict=False)
+    parser.optionxform = str
+    try:
+        if not parser.read(login_override_path(), encoding="utf-8"):
+            return True
+        return not parser.getboolean("Desktop Entry", "Hidden", fallback=False)
+    except (configparser.Error, ValueError):
+        return True
+
+
+def set_login_check(enabled: bool) -> None:
+    path = login_override_path()
+    if enabled:
+        path.unlink(missing_ok=True)
+    else:
+        atomic_write(path, LOGIN_OVERRIDE.encode())
+
+
+def status_for(feed: FeedResult) -> str:
+    return {"network": "", "cache": STATUS_CACHED, "none": STATUS_UNAVAILABLE}[feed.source]
+
+
+def run_gui(result: FeedResult, dismissed: set[str], *, refresh: bool, record: bool) -> int:
+    """Show announcements; any close dismisses every announcement it rendered."""
+    # Qt loads only when there is something to show, keeping quiet logins cheap.
+    from PySide6 import QtCore, QtGui, QtNetwork, QtWidgets
+    Qt = QtCore.Qt
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv[:1])
+    app.setApplicationName("monolith-news")
+    app.setApplicationDisplayName("Monolith News")
+    # The Wayland app_id then matches the launcher's name and icon.
+    app.setDesktopFileName("monolith-news")
+    app.setWindowIcon(QtGui.QIcon.fromTheme("monolith-logo"))
+
+    # Previews skip this so they never raise or replace the real window.
+    server_name = None
+    runtime = os.environ.get("XDG_RUNTIME_DIR", "")
+    if record and os.path.isabs(runtime):
+        server_name = os.path.join(runtime, "monolith-news.socket")
+        probe = QtNetwork.QLocalSocket()
+        probe.connectToServer(server_name)
+        if probe.waitForConnected(1000):
+            # The running window raises itself and records its own dismissals.
+            probe.disconnectFromServer()
+            return 0
+
+    def plain_label(text=""):
+        label = QtWidgets.QLabel(text)
+        label.setTextFormat(Qt.TextFormat.PlainText)
+        return label
+
+    def emphasize(label, scale=1.0):
+        font = label.font()
+        font.setBold(True)
+        if scale != 1.0 and font.pointSizeF() > 0:
+            font.setPointSizeF(font.pointSizeF() * scale)
+        label.setFont(font)
+
+    def open_url(url):
+        # Feed link buttons are validated, but Markdown links in bodies are not.
+        if url.startswith("https://"):
+            QtGui.QDesktopServices.openUrl(QtCore.QUrl(url))
+
+    window = QtWidgets.QWidget()
+    window.setObjectName("newsWindow")
+    window.setWindowTitle("Monolith News")
+    window.resize(560, 520)
+    window.setMinimumSize(420, 320)
+    layout = QtWidgets.QVBoxLayout(window)
+
+    # The monolith-logo mark is white and would vanish on light color schemes.
+    header = plain_label("Monolith News")
+    emphasize(header, 1.4)
+    layout.addWidget(header)
+
+    status_label = plain_label()
+    status_label.setObjectName("statusLabel")
+    status_label.setWordWrap(True)
+    layout.addWidget(status_label)
+
+    scroll = QtWidgets.QScrollArea()
+    scroll.setWidgetResizable(True)
+    scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+    cards = QtWidgets.QWidget()
+    cards_layout = QtWidgets.QVBoxLayout(cards)
+    cards_layout.addStretch()
+    scroll.setWidget(cards)
+    layout.addWidget(scroll, 1)
+
+    login = QtWidgets.QCheckBox("Check for announcements at login")
+    login.setObjectName("loginCheckBox")
+    login.setChecked(login_check_enabled())
+
+    def toggle_login(checked):
+        try:
+            set_login_check(checked)
+        except OSError as error:
+            warn(f"could not change the login check: {error}")
+            login.blockSignals(True)
+            login.setChecked(not checked)
+            login.blockSignals(False)
+
+    login.toggled.connect(toggle_login)
+    layout.addWidget(login)
+
+    footer = QtWidgets.QHBoxLayout()
+    for label, url in FOOTER_LINKS:
+        button = QtWidgets.QPushButton(label)
+        button.clicked.connect(lambda _checked=False, url=url: open_url(url))
+        footer.addWidget(button)
+    footer.addStretch()
+    close_button = QtWidgets.QPushButton()
+    close_button.setObjectName("dismissButton")
+    close_button.clicked.connect(window.close)
+    footer.addWidget(close_button)
+    layout.addLayout(footer)
+    QtGui.QShortcut(QtGui.QKeySequence(Qt.Key.Key_Escape), window).activated.connect(window.close)
+
+    def card(announcement):
+        frame = QtWidgets.QFrame()
+        frame.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
+        box = QtWidgets.QVBoxLayout(frame)
+
+        heading = QtWidgets.QHBoxLayout()
+        title = plain_label(announcement.title)
+        title.setWordWrap(True)
+        emphasize(title, 1.15)
+        heading.addWidget(title, 1)
+        if announcement.id not in dismissed:
+            badge = plain_label("New")
+            emphasize(badge)
+            badge.setForegroundRole(QtGui.QPalette.ColorRole.Highlight)
+            heading.addWidget(badge, 0, Qt.AlignmentFlag.AlignTop)
+        box.addLayout(heading)
+
+        day = announcement.date
+        date = plain_label(QtCore.QLocale().toString(
+            QtCore.QDate(day.year, day.month, day.day), QtCore.QLocale.FormatType.LongFormat))
+        date.setForegroundRole(QtGui.QPalette.ColorRole.PlaceholderText)
+        box.addWidget(date)
+
+        # Qt's Markdown importer shows raw HTML as text instead of rendering it.
+        document = QtGui.QTextDocument()
+        document.setMarkdown(announcement.body,
+                             QtGui.QTextDocument.MarkdownFeature.MarkdownDialectGitHub
+                             | QtGui.QTextDocument.MarkdownFeature.MarkdownNoHTML)
+        body = QtWidgets.QLabel()
+        body.setTextFormat(Qt.TextFormat.RichText)
+        body.setText(document.toHtml())
+        body.setWordWrap(True)
+        body.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+        body.setOpenExternalLinks(False)
+        body.linkActivated.connect(open_url)
+        box.addWidget(body)
+
+        if announcement.links:
+            row = QtWidgets.QHBoxLayout()
+            for link in announcement.links:
+                # Keep & literal instead of marking a keyboard mnemonic.
+                button = QtWidgets.QPushButton(link.label.replace("&", "&&"))
+                button.clicked.connect(lambda _checked=False, url=link.url: open_url(url))
+                row.addWidget(button)
+            row.addStretch()
+            box.addLayout(row)
+        return frame
+
+    shown = set()
+
+    def render(feed, status):
+        # Keep the trailing stretch that holds the cards at the top.
+        while cards_layout.count() > 1:
+            cards_layout.takeAt(0).widget().deleteLater()
+        for announcement in feed.announcements:
+            cards_layout.insertWidget(cards_layout.count() - 1, card(announcement))
+        if not feed.announcements and feed.source != "none":
+            empty = plain_label("No announcements yet.")
+            empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            cards_layout.insertWidget(0, empty)
+        status_label.setText(status)
+        status_label.setVisible(bool(status))
+        shown.clear()
+        shown.update(announcement.id for announcement in feed.announcements)
+        close_button.setText("Dismiss" if shown - dismissed else "Close")
+
+    render(result, STATUS_CHECKING if refresh else status_for(result))
+
+    if server_name is not None:
+        QtNetwork.QLocalServer.removeServer(server_name)
+        server = QtNetwork.QLocalServer(window)
+        if server.listen(server_name):
+            def activate():
+                while server.hasPendingConnections():
+                    server.nextPendingConnection().deleteLater()
+                window.showNormal()
+                window.raise_()
+                window.activateWindow()
+
+            server.newConnection.connect(activate)
+        else:
+            warn(f"could not listen on {server_name}: {server.errorString()}")
+
+    if refresh:
+        class Bridge(QtCore.QObject):
+            finished = QtCore.Signal(object)
+
+        def refreshed(feed):
+            # A download finishing as the window closes must not change what it dismisses.
+            if window.isVisible():
+                render(feed, status_for(feed))
+
+        # Render on the GUI thread. The daemon thread lets closing the window exit
+        # during a slow download.
+        bridge = Bridge()
+        bridge.finished.connect(refreshed, Qt.ConnectionType.QueuedConnection)
+        threading.Thread(target=lambda: bridge.finished.emit(refresh_feed(1)), daemon=True).start()
+
+    window.show()
+    code = app.exec()
+    if record and shown:
+        try:
+            save_dismissed(shown)
+        except OSError as error:
+            warn(f"could not save dismissed announcements: {error}")
+    return code
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="monolith-news", description="Show Monolith announcements from the project repository.")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--autostart", action="store_true",
+                      help="open only when there are new announcements; used at login")
+    mode.add_argument("--preview", metavar="PATH", type=Path,
+                      help="show a local feed file without saving anything")
+    args = parser.parse_args(argv)
+
+    if args.preview is not None:
+        try:
+            announcements, problems = parse_feed(args.preview.read_bytes())
+        except (OSError, FeedError) as error:
+            warn(str(error))
+            return 1
+        for problem in problems:
+            warn(problem)
+        return run_gui(FeedResult(tuple(announcements), "network"), set(), refresh=False, record=False)
+
+    if args.autostart:
+        # Also covers a user manager that has not rerun the autostart generator.
+        if not login_check_enabled():
+            return 0
+        result = refresh_feed(LOGIN_ATTEMPTS)
+        dismissed = load_dismissed()
+        if not unseen(result.announcements, dismissed):
+            return 0
+        return run_gui(result, dismissed, refresh=False, record=True)
+
+    cached = load_cached_feed()
+    initial = FeedResult(tuple(cached), "cache") if cached is not None else FeedResult((), "none")
+    return run_gui(initial, load_dismissed(), refresh=True, record=True)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

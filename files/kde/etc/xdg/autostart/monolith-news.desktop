@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Monolith News
+Comment=Show new Monolith announcements at login
+Exec=/usr/bin/monolith-news --autostart
+Icon=monolith-logo
+Terminal=false
+OnlyShowIn=KDE;

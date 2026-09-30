@@ -1,0 +1,37 @@
+# Monolith News feed.
+#
+# Monolith KDE systems download this file from the main branch at login and
+# whenever Monolith News is opened, so merged changes reach users without an
+# image update (GitHub may serve the previous copy for up to five minutes).
+#
+# Add new announcements at the top and delete ones that no longer apply.
+# People who dismissed the window see it again only when an announcement with a
+# new id appears. Editing an existing entry, including its date, does not show it
+# again; publish a new id instead.
+#
+#   id     unique; 1-64 lowercase letters, digits, or hyphens; never reuse one
+#   date   publication date shown to users (YYYY-MM-DD)
+#   title  one line, at most 120 characters
+#   body   Markdown; raw HTML is shown as plain text
+#   links  optional, at most 3 buttons: { label = "...", url = "https://..." }
+#          (labels: one line, at most 40 characters)
+#
+# Preview before opening a pull request (does not touch your dismissals):
+#   files/kde/usr/bin/monolith-news --preview news/announcements.toml
+
+[[announcements]]
+id = "2026-09-30-monolith-news"
+date = 2026-09-30
+title = "Welcome to Monolith News"
+body = """
+Monolith News shares project announcements, such as required actions and notable
+changes. It checks the Monolith GitHub repository when you log in and opens only
+when there is something new.
+
+After you dismiss this window, it stays closed until the next announcement. Open
+**Monolith News** from the application menu to read past announcements, or clear
+**Check for announcements at login** below to stop the login check.
+"""
+links = [
+  { label = "Read the README", url = "https://github.com/monolithlinux/monolith#readme" },
+]

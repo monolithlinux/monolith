@@ -28,6 +28,9 @@ fi
 sed -i "s/^livesys_session=.*/livesys_session=${variant_id}/" /etc/sysconfig/livesys
 systemctl enable livesys.service livesys-late.service
 
+# Live sessions forget dismissals on every boot; keep Monolith News manual there.
+rm -f /etc/xdg/autostart/monolith-news.desktop
+
 # Match Fedora live media's passwordless liveuser polkit rule.
 mkdir -p /etc/polkit-1/rules.d
 cat > /etc/polkit-1/rules.d/50-liveuser.rules << 'EOF'

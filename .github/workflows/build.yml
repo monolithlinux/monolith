@@ -7,6 +7,8 @@ on:
     branches: [main]
     paths-ignore:
       - "**.md"
+      # Announcements are fetched from main at runtime and never change an image.
+      - "news/**"
 
   pull_request:
   workflow_dispatch:
@@ -27,6 +29,8 @@ jobs:
           tests/monolith-software.sh
       - name: Test edition selection
         run: bash tests/pick-editions.sh
+      - name: Test Monolith News
+        run: python3 tests/monolith-news.py
       - name: Test Protontricks desktop icon
         run: tests/protontricks-icon.sh
       - name: Test Ghostty integration
@@ -105,9 +109,20 @@ jobs:
             base_name=$(jq -r '.Labels["org.opencontainers.image.base.name"] // ""' <<<"${latest}")
             base_then=$(jq -r '.Labels["org.opencontainers.image.base.digest"] // ""' <<<"${latest}")
             fedora=$(jq -r '.Labels["org.opencontainers.image.version"] // ""' <<<"${latest}" | cut -d. -f1)
-            sha_tag="${GITHUB_SHA::7}-${fedora}"
-            if ! skopeo inspect --no-tags --format ok "${ref}:${sha_tag}" >/dev/null 2>&1; then
-              echo "${img}:${sha_tag} not in the registry; this commit needs a build"
+            # Announcement and documentation commits never trigger a build, so accept the
+            # newest published main commit whose image inputs match this one.
+            sha_tag=""
+            for commit in $(git rev-list --first-parent "${GITHUB_SHA}"); do
+              if ! changed=$(.github/workflows/pick-editions.sh "${commit}..${GITHUB_SHA}") || [ -n "${changed}" ]; then
+                break
+              fi
+              if skopeo inspect --no-tags --format ok "${ref}:${commit::7}-${fedora}" >/dev/null 2>&1; then
+                sha_tag="${commit::7}-${fedora}"
+                break
+              fi
+            done
+            if [ -z "${sha_tag}" ]; then
+              echo "${img}: no published image matches ${GITHUB_SHA::7}'s image inputs; this commit needs a build"
               skip=false
               break
             fi
@@ -117,7 +132,7 @@ jobs:
               skip=false
               break
             fi
-            echo "${img}: ${sha_tag} already published and base ${base_name} unchanged"
+            echo "${img}: ${sha_tag} matches ${GITHUB_SHA::7}'s image inputs and base ${base_name} unchanged"
           done
           [ "${skip}" = true ] && echo "Nothing changed since the last build; skipping the nightly."
           echo "skip=${skip}" >> "${GITHUB_OUTPUT}"
