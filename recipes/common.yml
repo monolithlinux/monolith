@@ -30,6 +30,9 @@ modules:
         - curl
         - btop
         - fastfetch
+        # The monolith software dashboard and the WowUp-CF helper's readelf.
+        - fzf
+        - binutils
         # Editor
         - micro
         # Shared terminal
@@ -210,6 +213,19 @@ modules:
         dnf5 -y config-manager setopt terra.enabled=false
         dnf5 -y config-manager setopt "fedora-steam".enabled=false
       # Optional upstream CLIs are managed per-user by `monolith`.
+      - |
+        # Fail the build if the software manager or its helpers cannot start.
+        set -euxo pipefail
+        test -x /usr/bin/monolith
+        test -x /usr/libexec/monolith/ghostty-themes
+        test -x /usr/libexec/monolith/wowup-cf
+        bash -n /usr/bin/monolith
+        # Help must not need or touch a home directory.
+        HOME=/nonexistent /usr/bin/monolith help >/dev/null
+        HOME=/nonexistent python3 -B /usr/libexec/monolith/wowup-cf --help >/dev/null
+        for command in fzf python3 curl flock readelf; do
+          command -v "$command" >/dev/null
+        done
       - |
         # Install Pure system-wide without a runtime plugin manager.
         set -euxo pipefail

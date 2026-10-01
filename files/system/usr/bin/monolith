@@ -2,21 +2,47 @@
 # Install optional software per-user without removing user data on uninstall.
 
 set -Eeuo pipefail
+# Keep errexit inside command substitutions so a failed probe cannot be ignored.
+shopt -s inherit_errexit
 
+SELF="$(readlink -f -- "${BASH_SOURCE[0]}")"
 BIN_DIR="$HOME/.local/bin"
 DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
 STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
 MANAGED_ROOT="$DATA_HOME/monolith/software"
 STATE_ROOT="$STATE_HOME/monolith/software"
-GHOSTTY_THEMES_HELPER="$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/../libexec/monolith/ghostty-themes"
+GHOSTTY_THEMES_HELPER="$(dirname -- "$SELF")/../libexec/monolith/ghostty-themes"
+WOWUP_CF_HELPER="$(dirname -- "$SELF")/../libexec/monolith/wowup-cf"
+GEAR_LEVER_ID=it.mijorus.gearlever
+GEAR_LEVER_REF=https://dl.flathub.org/repo/appstream/it.mijorus.gearlever.flatpakref
+GEAR_LEVER_MIN_VERSION=4.6.2
+QUIT_TOKEN=__monolith_quit__
 ACTIVE_TEMP=""
+GEAR_LEVER_SCOPE=""
+RUN_INTERRUPTED=0
+SELECTOR=numbered
+USE_COLOR=0
+PICKED=""
 
-readonly BIN_DIR DATA_HOME STATE_HOME MANAGED_ROOT STATE_ROOT GHOSTTY_THEMES_HELPER
+readonly SELF BIN_DIR DATA_HOME STATE_HOME MANAGED_ROOT STATE_ROOT GHOSTTY_THEMES_HELPER WOWUP_CF_HELPER
+readonly GEAR_LEVER_ID GEAR_LEVER_REF GEAR_LEVER_MIN_VERSION QUIT_TOKEN
 
-ALL_TOOLS=(tea superfile nak ngit claude codex opencode omp herdr ghostty-themes)
+ALL_TOOLS=(tea superfile nak ngit claude codex opencode omp herdr wowup-cf ghostty-themes)
 CLI_TOOLS=(tea superfile nak ngit)
 AI_TOOLS=(claude codex opencode omp herdr)
+GAMING_TOOLS=(wowup-cf)
 APPEARANCE_TOOLS=(ghostty-themes)
+
+# Per-render state; menus and list compute each row once.
+declare -A ROW_STATUS=() ROW_VERSION=()
+WOWUP_STATUS=""
+WOWUP_VERSION=""
+WOWUP_APPIMAGE=""
+WOWUP_DESKTOP_ID=""
+WOWUP_SOURCE=""
+WOWUP_CHANNEL=""
+WOWUP_ERROR=""
+WOWUP_CONFLICTS=()
 
 die() {
     echo "Error: $*" >&2
@@ -56,7 +82,7 @@ safe_remove_tree() {
     local path="$1"
 
     case "$path" in
-        "$MANAGED_ROOT"/*|"$HOME/.local/share/claude"|"$HOME/.codex/packages/standalone"|"$HOME/.opencode/bin")
+        "$MANAGED_ROOT"/*|"$DATA_HOME/claude"|"$HOME/.codex/packages/standalone"|"$HOME/.opencode/bin")
             rm -rf -- "$path"
             ;;
         *)
@@ -76,6 +102,7 @@ tool_name() {
         opencode)  echo "OpenCode" ;;
         omp)       echo "Oh My Pi" ;;
         herdr)     echo "Herdr" ;;
+        wowup-cf)  echo "WowUp-CF" ;;
         ghostty-themes) echo "Ghostty Themes" ;;
         *)         return 1 ;;
     esac
@@ -92,6 +119,7 @@ tool_description() {
         opencode)  echo "provider-independent coding agent" ;;
         omp)       echo "coding agent with built-in development tools" ;;
         herdr)     echo "terminal multiplexer for coding agents" ;;
+        wowup-cf)  echo "World of Warcraft addon manager with CurseForge and WoW Forever support" ;;
         ghostty-themes) echo "official Ghostty theme collection" ;;
         *)         return 1 ;;
     esac
@@ -101,6 +129,7 @@ tool_category() {
     case "$1" in
         tea|superfile|nak|ngit) echo "Developer CLIs" ;;
         claude|codex|opencode|omp|herdr) echo "AI coding" ;;
+        wowup-cf) echo "Gaming" ;;
         ghostty-themes) echo "Appearance" ;;
         *) return 1 ;;
     esac
@@ -117,15 +146,19 @@ tool_commands() {
         opencode)  echo "opencode" ;;
         omp)       echo "omp" ;;
         herdr)     echo "herdr" ;;
-        ghostty-themes) return 0 ;;
+        wowup-cf|ghostty-themes) return 0 ;;
         *)         return 1 ;;
     esac
 }
 
+# Directories that hold each tool's program files. Native installers keep
+# their upstream layouts so their own update logic continues to work; Claude
+# Code follows XDG_DATA_HOME.
 tool_root() {
     case "$1" in
-        # Preserve Codex's official standalone layout and updater support.
+        claude) echo "$DATA_HOME/claude" ;;
         codex) echo "$HOME/.codex/packages/standalone" ;;
+        opencode) echo "$HOME/.opencode/bin" ;;
         *) echo "$MANAGED_ROOT/$1" ;;
     esac
 }
@@ -159,46 +192,47 @@ link_points_under() {
     [[ "$target" == "$prefix/"* ]]
 }
 
-is_managed() {
-    local tool="$1" root
-    has_marker "$tool" || return 1
-    root="$(tool_root "$tool")"
+same_file_target() {
+    local left="$1" right="$2"
+    [ "$(readlink -f -- "$left" 2>/dev/null || true)" = "$(readlink -f -- "$right" 2>/dev/null || true)" ]
+}
 
+# A launcher is managed only when it is an executable symlink into the
+# tool's root; a broken or replaced launcher needs repair.
+launcher_is_managed() {
+    local tool="$1" command="$2" root path
+    root="$(tool_root "$tool")"
+    path="$BIN_DIR/$command"
+    [ -x "$path" ] || return 1
+    if [ "$tool" = opencode ]; then
+        [ -L "$path" ] && same_file_target "$path" "$root/opencode"
+    else
+        link_points_under "$path" "$root"
+    fi
+}
+
+is_managed() {
+    local tool="$1" root command
+    has_marker "$tool" || return 1
     case "$tool" in
-        tea)
-            [ -x "$root/bin/tea" ] && link_points_under "$BIN_DIR/tea" "$root"
-            ;;
-        superfile)
-            [ -x "$root/bin/spf" ] && link_points_under "$BIN_DIR/spf" "$root"
-            ;;
-        nak)
-            [ -x "$root/bin/nak" ] && link_points_under "$BIN_DIR/nak" "$root"
-            ;;
-        ngit)
-            [ -x "$root/bin/ngit" ] &&
-                [ -x "$root/bin/git-remote-nostr" ] &&
-                link_points_under "$BIN_DIR/ngit" "$root" &&
-                link_points_under "$BIN_DIR/git-remote-nostr" "$root"
-            ;;
-        claude)
-            [ -d "$HOME/.local/share/claude" ] &&
-                link_points_under "$BIN_DIR/claude" "$HOME/.local/share/claude"
-            ;;
-        codex)
-            [ -x "$BIN_DIR/codex" ] && [ -d "$root" ] && link_points_under "$BIN_DIR/codex" "$root"
-            ;;
-        opencode)
-            [ -x "$HOME/.opencode/bin/opencode" ] &&
-                [ -L "$BIN_DIR/opencode" ] &&
-                [ "$(readlink -f -- "$BIN_DIR/opencode")" = "$(readlink -f -- "$HOME/.opencode/bin/opencode")" ]
-            ;;
-        omp|herdr)
-            [ -x "$root/bin/$tool" ] && link_points_under "$BIN_DIR/$tool" "$root"
-            ;;
         ghostty-themes)
             [ "$(ghostty_themes status)" = installed ]
+            return
+            ;;
+        wowup-cf)
+            [ "$(wowup_cf status)" = installed ]
+            return
             ;;
     esac
+    root="$(tool_root "$tool")"
+    [ -d "$root" ] || return 1
+    for command in $(tool_commands "$tool"); do
+        case "$tool" in
+            claude|codex|opencode) ;;
+            *) [ -x "$root/bin/$command" ] || return 1 ;;
+        esac
+        launcher_is_managed "$tool" "$command" || return 1
+    done
 }
 
 external_path() {
@@ -214,7 +248,9 @@ external_path() {
 
 tool_status() {
     local tool="$1"
-    if is_managed "$tool"; then
+    if [ "$tool" = wowup-cf ]; then
+        wowup_cf status
+    elif is_managed "$tool"; then
         echo "installed"
     elif has_marker "$tool"; then
         echo "needs repair"
@@ -223,15 +259,6 @@ tool_status() {
     else
         echo "not installed"
     fi
-}
-
-status_symbol() {
-    case "$(tool_status "$1")" in
-        installed)     echo "[x]" ;;
-        "needs repair") echo "[!]" ;;
-        external)      echo "[e]" ;;
-        *)             echo "[ ]" ;;
-    esac
 }
 
 write_marker() {
@@ -261,6 +288,9 @@ marker_version() {
 
 local_destination_conflict() {
     local tool="$1" path
+    case "$tool" in
+        ghostty-themes|wowup-cf) return 1 ;;
+    esac
     has_marker "$tool" && return 1
 
     for path in $(tool_commands "$tool"); do
@@ -271,22 +301,40 @@ local_destination_conflict() {
         fi
     done
 
-    case "$tool" in
-        tea|superfile|nak|ngit|omp|herdr|codex)
-            path="$(tool_root "$tool")"
-            ;;
-        claude)
-            path="$HOME/.local/share/claude"
-            ;;
-        opencode)
-            path="$HOME/.opencode/bin"
-            ;;
-    esac
+    path="$(tool_root "$tool")"
     if [ -e "$path" ] || [ -L "$path" ]; then
         printf '%s\n' "$path"
         return 0
     fi
     return 1
+}
+
+# Print a launcher that the user replaced after Monolith installed the tool.
+replaced_launcher() {
+    local tool="$1" command path
+    case "$tool" in
+        ghostty-themes|wowup-cf) return 1 ;;
+    esac
+    has_marker "$tool" || return 1
+    for command in $(tool_commands "$tool"); do
+        path="$BIN_DIR/$command"
+        if { [ -e "$path" ] || [ -L "$path" ]; } && ! launcher_points_to_root "$tool" "$command"; then
+            printf '%s\n' "$path"
+            return 0
+        fi
+    done
+    return 1
+}
+
+launcher_points_to_root() {
+    local tool="$1" command="$2" root path
+    root="$(tool_root "$tool")"
+    path="$BIN_DIR/$command"
+    if [ "$tool" = opencode ]; then
+        [ -L "$path" ] && same_file_target "$path" "$root/opencode"
+    else
+        link_points_under "$path" "$root"
+    fi
 }
 
 preflight_install() {
@@ -298,30 +346,8 @@ preflight_install() {
     fi
 
     # Do not overwrite a managed command that the user later replaced.
-    if has_marker "$tool"; then
-        case "$tool" in
-            tea|superfile|nak|ngit|omp|herdr|codex)
-                for path in $(tool_commands "$tool"); do
-                    if { [ -e "$BIN_DIR/$path" ] || [ -L "$BIN_DIR/$path" ]; } &&
-                        ! link_points_under "$BIN_DIR/$path" "$(tool_root "$tool")"; then
-                        die "$BIN_DIR/$path no longer points to the Monolith-managed copy; move it before updating"
-                    fi
-                done
-                ;;
-            opencode)
-                if { [ -e "$BIN_DIR/opencode" ] || [ -L "$BIN_DIR/opencode" ]; } &&
-                    { [ ! -L "$BIN_DIR/opencode" ] ||
-                      [ "$(readlink -f -- "$BIN_DIR/opencode" 2>/dev/null || true)" != "$(readlink -f -- "$HOME/.opencode/bin/opencode" 2>/dev/null || true)" ]; }; then
-                    die "$BIN_DIR/opencode no longer points to the Monolith-managed copy; move it before updating"
-                fi
-                ;;
-            claude)
-                if { [ -e "$BIN_DIR/claude" ] || [ -L "$BIN_DIR/claude" ]; } &&
-                    ! link_points_under "$BIN_DIR/claude" "$HOME/.local/share/claude"; then
-                    die "$BIN_DIR/claude no longer points to the managed native install; move it before updating"
-                fi
-                ;;
-        esac
+    if conflict="$(replaced_launcher "$tool")"; then
+        die "$conflict no longer points to the Monolith-managed copy; move it before updating"
     fi
 
     if ! has_marker "$tool"; then
@@ -345,12 +371,113 @@ link_command() {
     fi
 }
 
+# Fetch metadata with a short total deadline, or download a file with stall
+# detection only so large binaries are not cut off on slow connections.
+curl_fetch() {
+    local kind="$1" url="$2" destination="${3:-}"
+    local options=(--fail --location --connect-timeout 15)
+    case "$kind" in
+        metadata)
+            options+=(--silent --show-error --max-time 60)
+            ;;
+        download)
+            [ -n "$destination" ] || die "internal error: downloads need an output path"
+            options+=(--speed-limit 1024 --speed-time 60)
+            if [ -t 2 ]; then
+                options+=(--progress-bar)
+            else
+                options+=(--silent --show-error)
+            fi
+            ;;
+        *)
+            die "internal error: unknown fetch kind: $kind"
+            ;;
+    esac
+    if [ -n "$destination" ]; then
+        options+=(--output "$destination")
+    fi
+    curl "${options[@]}" "$url"
+}
+
+# Print a release document's top-level tag after validating it for use in
+# paths and URLs.
+release_tag() {
+    python3 -c '
+import json, re, sys
+try:
+    data = json.load(sys.stdin)
+except ValueError:
+    sys.exit(1)
+tag = data.get("tag_name") if isinstance(data, dict) else None
+if not isinstance(tag, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", tag):
+    sys.exit(1)
+print(tag)'
+}
+
 latest_github_tag() {
     local repo="$1" json tag
-    json="$(curl -fsSL "https://api.github.com/repos/$repo/releases/latest")"
-    tag="$(printf '%s\n' "$json" | sed -nE 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' | head -n 1)"
-    [ -n "$tag" ] || die "could not resolve the latest release for $repo"
+    json="$(curl_fetch metadata "https://api.github.com/repos/$repo/releases/latest")"
+    tag="$(printf '%s' "$json" | release_tag)" || die "could not resolve the latest release for $repo"
     printf '%s\n' "$tag"
+}
+
+# Print "tag<TAB>url<TAB>sha256" for one exact asset of a repository's latest
+# release. GitHub's uploaded-asset SHA256 digest is required.
+github_release_asset() {
+    local repo="$1" template="$2" json
+    json="$(curl_fetch metadata "https://api.github.com/repos/$repo/releases/latest")"
+    printf '%s' "$json" | python3 -c '
+import json, re, sys
+
+repo, template = sys.argv[1], sys.argv[2]
+
+def fail(message):
+    print(f"Error: {message}", file=sys.stderr)
+    sys.exit(1)
+
+try:
+    data = json.load(sys.stdin)
+except ValueError:
+    fail(f"the latest {repo} release metadata is not valid JSON")
+if not isinstance(data, dict):
+    fail(f"the latest {repo} release metadata is malformed")
+tag = data.get("tag_name")
+if not isinstance(tag, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", tag):
+    fail(f"the latest {repo} release has no valid tag")
+name = template.replace("{tag}", tag)
+assets = data.get("assets")
+if not isinstance(assets, list):
+    fail(f"{repo} {tag} lists no assets")
+matches = [asset for asset in assets if isinstance(asset, dict) and asset.get("name") == name]
+if len(matches) != 1:
+    fail(f"{repo} {tag} does not provide exactly one {name} asset")
+asset = matches[0]
+url = f"https://github.com/{repo}/releases/download/{tag}/{name}"
+if asset.get("browser_download_url") != url or asset.get("state") != "uploaded":
+    fail(f"{repo} {tag} does not provide an uploaded {name} at {url}")
+digest = asset.get("digest")
+if not isinstance(digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+    fail(f"{repo} {tag} publishes no SHA256 digest for {name}; refusing an unverified download")
+print(tag, url, digest.removeprefix("sha256:"), sep="\t")
+' "$repo" "$template"
+}
+
+verify_sha256() {
+    local file="$1" expected="$2" actual
+    actual="$(sha256sum -- "$file")"
+    actual="${actual%% *}"
+    [ "$actual" = "$expected" ] || die "$(basename -- "$file") failed its SHA256 check; nothing was installed"
+}
+
+# Verify FILENAME against exactly one entry in a published checksum list.
+verify_listed_checksum() {
+    local dir="$1" sums="$2" filename="$3" entries count
+    entries="$(awk -v file="$filename" '$2 == file || $2 == "*" file' "$dir/$sums")"
+    count="$(printf '%s' "$entries" | grep -c . || true)"
+    [ "$count" -eq 1 ] || die "$sums does not list exactly one checksum for $filename; nothing was installed"
+    if ! (cd "$dir" && printf '%s\n' "$entries" | sha256sum --check --status -); then
+        die "$filename failed its published SHA256 check; nothing was installed"
+    fi
 }
 
 require_amd64() {
@@ -386,7 +513,7 @@ commit_static_install() {
                 fi
                 if [ "$links_changed" -eq 1 ]; then
                     for command in $(tool_commands "$tool"); do
-                        if [ -L "$backup/links/$command" ]; then
+                        if [ -e "$backup/links/$command" ] || [ -L "$backup/links/$command" ]; then
                             mv -Tf -- "$backup/links/$command" "$BIN_DIR/$command" || restore_failed=1
                         else
                             rm -f -- "$BIN_DIR/$command" || restore_failed=1
@@ -411,9 +538,10 @@ commit_static_install() {
         trap 'exit 130' INT
         trap 'exit 143' TERM
         mkdir -p "$backup/links"
+        # Keep symlinks and adopted regular files exactly as they were.
         for command in $(tool_commands "$tool"); do
-            if [ -L "$BIN_DIR/$command" ]; then
-                cp -P -- "$BIN_DIR/$command" "$backup/links/$command"
+            if [ -e "$BIN_DIR/$command" ] || [ -L "$BIN_DIR/$command" ]; then
+                cp -a -- "$BIN_DIR/$command" "$backup/links/$command"
             fi
         done
         if [ -f "$marker" ]; then
@@ -436,26 +564,26 @@ commit_static_install() {
 }
 
 install_tea() {
-    local tool=tea json version filename url tmp
+    local tool=tea json tag version filename url tmp
     require_amd64 "Tea"
     preflight_install "$tool"
     note "Installing Tea"
 
-    json="$(curl -fsSL https://gitea.com/api/v1/repos/gitea/tea/releases/latest)"
-    version="$(printf '%s\n' "$json" | sed -nE 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v([^"]+)".*/\1/p' | head -n 1)"
-    [ -n "$version" ] || die "could not resolve the latest Tea release"
+    json="$(curl_fetch metadata https://gitea.com/api/v1/repos/gitea/tea/releases/latest)"
+    tag="$(printf '%s' "$json" | release_tag)" || die "could not resolve the latest Tea release"
+    version="${tag#v}"
     filename="tea-${version}-linux-amd64"
     url="https://dl.gitea.com/tea/${version}/${filename}"
 
     new_temp_dir
     tmp="$ACTIVE_TEMP"
     mkdir -p "$tmp/bin"
-    curl -fsSL -o "$tmp/$filename" "$url"
-    curl -fsSL -o "$tmp/$filename.sha256" "$url.sha256"
-    ( cd "$tmp" && sha256sum -c "$filename.sha256" )
+    curl_fetch download "$url" "$tmp/$filename"
+    curl_fetch metadata "$url.sha256" "$tmp/$filename.sha256"
+    verify_listed_checksum "$tmp" "$filename.sha256" "$filename"
     install -m0755 "$tmp/$filename" "$tmp/bin/tea"
     rm -f -- "$tmp/$filename" "$tmp/$filename.sha256"
-    "$tmp/bin/tea" --version >/dev/null
+    "$tmp/bin/tea" --version </dev/null >/dev/null
     commit_static_install "$tool" "$tmp" "$version" "$url"
 }
 
@@ -471,106 +599,209 @@ install_superfile() {
 
     new_temp_dir
     tmp="$ACTIVE_TEMP"
-    curl -fsSL -o "$tmp/$filename" "$base/$filename"
-    curl -fsSL -o "$tmp/checksums.txt" "$base/superfile-${tag}-checksums.txt"
-    ( cd "$tmp" && grep -F " $filename" checksums.txt | sha256sum -c - )
+    curl_fetch download "$base/$filename" "$tmp/$filename"
+    curl_fetch metadata "$base/superfile-${tag}-checksums.txt" "$tmp/checksums.txt"
+    verify_listed_checksum "$tmp" checksums.txt "$filename"
     tar -xzf "$tmp/$filename" -C "$tmp"
     mkdir -p "$tmp/bin"
     install -m0755 "$tmp/dist/superfile-linux-${tag}-amd64/spf" "$tmp/bin/spf"
     rm -rf -- "$tmp/dist" "$tmp/$filename" "$tmp/checksums.txt"
-    "$tmp/bin/spf" --version >/dev/null
+    "$tmp/bin/spf" --version </dev/null >/dev/null
     commit_static_install "$tool" "$tmp" "$tag" "$base"
 }
 
 install_nak() {
-    local tool=nak tag url tmp
+    local tool=nak asset tag url sha256 tmp
     require_amd64 "nak"
     preflight_install "$tool"
     note "Installing nak"
 
-    tag="$(latest_github_tag fiatjaf/nak)"
-    url="https://github.com/fiatjaf/nak/releases/download/${tag}/nak-${tag}-linux-amd64"
+    asset="$(github_release_asset fiatjaf/nak 'nak-{tag}-linux-amd64')"
+    IFS=$'\t' read -r tag url sha256 <<<"$asset"
     new_temp_dir
     tmp="$ACTIVE_TEMP"
     mkdir -p "$tmp/bin"
-    curl -fsSL -o "$tmp/bin/nak" "$url"
+    curl_fetch download "$url" "$tmp/bin/nak"
+    verify_sha256 "$tmp/bin/nak" "$sha256"
     chmod 0755 "$tmp/bin/nak"
-    "$tmp/bin/nak" --version >/dev/null
-    warn "nak does not publish a checksum; the upstream HTTPS release and version smoke test are used"
+    "$tmp/bin/nak" --version </dev/null >/dev/null
     commit_static_install "$tool" "$tmp" "$tag" "$url"
 }
 
 install_ngit() {
-    local tool=ngit tag filename url tmp
+    local tool=ngit asset tag url sha256 filename tmp
     require_amd64 "ngit"
     preflight_install "$tool"
     note "Installing ngit"
 
-    tag="$(latest_github_tag DanConwayDev/ngit-cli)"
-    filename="ngit-${tag}-x86_64-unknown-linux-musl.tar.gz"
-    url="https://github.com/DanConwayDev/ngit-cli/releases/download/${tag}/${filename}"
+    asset="$(github_release_asset DanConwayDev/ngit-cli 'ngit-{tag}-x86_64-unknown-linux-musl.tar.gz')"
+    IFS=$'\t' read -r tag url sha256 <<<"$asset"
+    filename="${url##*/}"
     new_temp_dir
     tmp="$ACTIVE_TEMP"
-    curl -fsSL -o "$tmp/$filename" "$url"
-    tar -xzf "$tmp/$filename" -C "$tmp"
-    mkdir -p "$tmp/bin"
-    install -m0755 "$tmp/ngit" "$tmp/bin/ngit"
-    install -m0755 "$tmp/git-remote-nostr" "$tmp/bin/git-remote-nostr"
-    rm -f -- "$tmp/ngit" "$tmp/git-remote-nostr" "$tmp/$filename"
-    "$tmp/bin/ngit" --version >/dev/null
-    "$tmp/bin/git-remote-nostr" --version >/dev/null
-    warn "ngit does not publish a checksum; the upstream HTTPS release and version smoke tests are used"
+    curl_fetch download "$url" "$tmp/$filename"
+    verify_sha256 "$tmp/$filename" "$sha256"
+    mkdir -p "$tmp/extract" "$tmp/bin"
+    tar -xzf "$tmp/$filename" -C "$tmp/extract"
+    install -m0755 "$tmp/extract/ngit" "$tmp/bin/ngit"
+    install -m0755 "$tmp/extract/git-remote-nostr" "$tmp/bin/git-remote-nostr"
+    rm -rf -- "$tmp/extract" "$tmp/$filename"
+    "$tmp/bin/ngit" --version </dev/null >/dev/null
+    "$tmp/bin/git-remote-nostr" --version </dev/null >/dev/null
     commit_static_install "$tool" "$tmp" "$tag" "$url"
 }
 
 download_installer() {
     local url="$1"
     new_temp_dir
-    curl -fsSL -o "$ACTIVE_TEMP/install.sh" "$url"
+    curl_fetch metadata "$url" "$ACTIVE_TEMP/install.sh"
     chmod 0700 "$ACTIVE_TEMP/install.sh"
 }
 
+native_installer_url() {
+    case "$1" in
+        claude) echo "https://claude.ai/install.sh" ;;
+        codex) echo "https://chatgpt.com/codex/install.sh" ;;
+        opencode) echo "https://opencode.ai/install" ;;
+    esac
+}
+
+native_executable() {
+    case "$1" in
+        claude|codex) echo "$BIN_DIR/$1" ;;
+        opencode) echo "$(tool_root opencode)/opencode" ;;
+    esac
+}
+
+# Check the native layout and print the first line of the installed version.
+verify_native_install() {
+    local tool="$1" executable output
+    executable="$(native_executable "$tool")"
+    [ -x "$executable" ] || die "$(tool_name "$tool") installer did not create $executable"
+    launcher_is_managed "$tool" "$tool" ||
+        die "$(tool_name "$tool") installer left an unexpected launcher at $BIN_DIR/$tool"
+    output="$("$executable" --version </dev/null 2>/dev/null)" ||
+        die "$(tool_name "$tool") did not start: $executable --version failed"
+    output="${output%%$'\n'*}"
+    [ -n "$output" ] || die "$(tool_name "$tool") did not report a version"
+    printf '%s\n' "$output"
+}
+
+# Run a native installer or adoption step with its program files, launcher,
+# and marker restorable. User authentication, configuration, and sessions
+# live outside these paths and are never copied or rolled back.
+with_native_rollback() {
+    (
+        local tool="$1" body="$2" source="${3:-}" root launcher marker backup version
+        local started=0 committed=0
+        root="$(tool_root "$tool")"
+        launcher="$BIN_DIR/$tool"
+        marker="$(state_file "$tool")"
+        [ -n "$source" ] || source="$(native_installer_url "$tool")"
+        mkdir -p "$MANAGED_ROOT" "$BIN_DIR"
+        backup="$(mktemp -d "$MANAGED_ROOT/.rollback.XXXXXX")"
+
+        rollback_native_install() {
+            local result=$? restore_failed=0
+            trap - EXIT
+            # Staging belongs to this subshell; the caller never sees it.
+            cleanup_active_temp || restore_failed=1
+            rm -f -- "$marker.tmp.$$" "$launcher.monolith.$$" || restore_failed=1
+            if [ "$started" -eq 1 ] && [ "$committed" -eq 0 ]; then
+                if [ -e "$root" ] || [ -L "$root" ]; then
+                    rm -rf -- "$root" || restore_failed=1
+                fi
+                if [ -e "$backup/root" ] || [ -L "$backup/root" ]; then
+                    mv -T -- "$backup/root" "$root" || restore_failed=1
+                fi
+                if [ -e "$backup/launcher" ] || [ -L "$backup/launcher" ]; then
+                    mv -Tf -- "$backup/launcher" "$launcher" || restore_failed=1
+                else
+                    rm -f -- "$launcher" || restore_failed=1
+                fi
+                if [ -f "$backup/marker" ]; then
+                    mv -Tf -- "$backup/marker" "$marker" || restore_failed=1
+                else
+                    rm -f -- "$marker" || restore_failed=1
+                fi
+            fi
+            if [ "$restore_failed" -eq 1 ]; then
+                warn "could not fully restore $(tool_name "$tool"); recovery files were kept at $backup"
+                exit 1
+            fi
+            rm -rf -- "$backup"
+            exit "$result"
+        }
+
+        trap rollback_native_install EXIT
+        trap 'exit 130' INT
+        trap 'exit 143' TERM
+        if [ -e "$root" ] || [ -L "$root" ]; then
+            cp -a --reflink=auto -- "$root" "$backup/root"
+        fi
+        if [ -e "$launcher" ] || [ -L "$launcher" ]; then
+            cp -a -- "$launcher" "$backup/launcher"
+        fi
+        if [ -f "$marker" ]; then
+            cp -a -- "$marker" "$backup/marker"
+        fi
+        started=1
+        "$body"
+        version="$(verify_native_install "$tool")"
+        write_marker "$tool" "$version" "$source"
+        committed=1
+    )
+}
+
 install_claude() {
-    local tool=claude version
-    preflight_install "$tool"
+    preflight_install claude
     note "Installing Claude Code with Anthropic's native installer"
+    with_native_rollback claude install_native_claude
+}
+
+install_native_claude() {
     download_installer https://claude.ai/install.sh
-    bash "$ACTIVE_TEMP/install.sh" stable
-    [ -x "$BIN_DIR/claude" ] || die "Claude Code installer did not create $BIN_DIR/claude"
-    version="$("$BIN_DIR/claude" --version 2>/dev/null | head -n 1)"
-    write_marker "$tool" "${version:-unknown}" "https://claude.ai/install.sh"
-    cleanup_active_temp
+    bash "$ACTIVE_TEMP/install.sh" stable 9>&-
 }
 
 install_codex() {
-    local tool=codex root version
-    preflight_install "$tool"
-    root="$(tool_root "$tool")"
-    mkdir -p "$BIN_DIR" "$HOME/.codex"
+    preflight_install codex
     note "Installing Codex CLI with OpenAI's standalone installer"
+    with_native_rollback codex install_native_codex
+}
+
+install_native_codex() {
+    mkdir -p "$BIN_DIR" "$HOME/.codex"
     download_installer https://chatgpt.com/codex/install.sh
-    PATH="$BIN_DIR:/usr/bin:/bin" \
+    # Pin the managed layout even when the caller uses another CODEX_HOME.
+    env -u CODEX_RELEASE \
+        PATH="$BIN_DIR:/usr/bin:/bin" \
+        CODEX_HOME="$HOME/.codex" \
         CODEX_INSTALL_DIR="$BIN_DIR" \
         CODEX_NON_INTERACTIVE=true \
-        bash "$ACTIVE_TEMP/install.sh"
-    [ -x "$BIN_DIR/codex" ] || die "Codex installer did not create $BIN_DIR/codex"
-    link_points_under "$BIN_DIR/codex" "$root" || die "Codex installer created an unexpected launcher at $BIN_DIR/codex"
-    version="$("$BIN_DIR/codex" --version 2>/dev/null | head -n 1)"
-    write_marker "$tool" "${version:-unknown}" "https://chatgpt.com/codex/install.sh"
-    cleanup_active_temp
+        bash "$ACTIVE_TEMP/install.sh" 9>&-
 }
 
 install_opencode() {
-    local tool=opencode version
-    preflight_install "$tool"
+    preflight_install opencode
     note "Installing OpenCode with its upstream installer"
+    with_native_rollback opencode install_native_opencode
+}
+
+install_native_opencode() {
     download_installer https://opencode.ai/install
-    PATH="/usr/bin:/bin" bash "$ACTIVE_TEMP/install.sh" --no-modify-path
-    [ -x "$HOME/.opencode/bin/opencode" ] || die "OpenCode installer did not create $HOME/.opencode/bin/opencode"
-    link_command opencode "$HOME/.opencode/bin/opencode"
-    version="$("$HOME/.opencode/bin/opencode" --version 2>/dev/null | head -n 1)"
-    write_marker "$tool" "${version:-unknown}" "https://opencode.ai/install"
-    cleanup_active_temp
+    # The installer's current-version check must see only the managed copy.
+    env -u VERSION \
+        PATH="$(tool_root opencode):/usr/bin:/bin" \
+        bash "$ACTIVE_TEMP/install.sh" --no-modify-path 9>&-
+    link_native_opencode
+}
+
+link_native_opencode() {
+    local executable
+    executable="$(native_executable opencode)"
+    [ -x "$executable" ] || die "OpenCode installer did not create $executable"
+    link_command opencode "$executable"
 }
 
 install_omp() {
@@ -583,18 +814,18 @@ install_omp() {
     base="https://github.com/can1357/oh-my-pi/releases/download/$tag"
     new_temp_dir
     tmp="$ACTIVE_TEMP"
-    curl -fsSL -o "$tmp/$filename" "$base/$filename"
-    curl -fsSL -o "$tmp/SHA256SUMS.txt" "$base/SHA256SUMS.txt"
-    ( cd "$tmp" && awk -v file="$filename" '$2 == file || $2 == "*" file' SHA256SUMS.txt | sha256sum -c - )
+    curl_fetch download "$base/$filename" "$tmp/$filename"
+    curl_fetch metadata "$base/SHA256SUMS.txt" "$tmp/SHA256SUMS.txt"
+    verify_listed_checksum "$tmp" SHA256SUMS.txt "$filename"
     mkdir -p "$tmp/bin"
     install -m0755 "$tmp/$filename" "$tmp/bin/omp"
     rm -f -- "$tmp/$filename" "$tmp/SHA256SUMS.txt"
-    "$tmp/bin/omp" --version >/dev/null
+    "$tmp/bin/omp" --version </dev/null >/dev/null
     commit_static_install "$tool" "$tmp" "$tag" "$base"
 }
 
 install_herdr() {
-    local tool=herdr version tmp
+    local tool=herdr output version tmp
     preflight_install "$tool"
     note "Installing Herdr with its upstream installer"
     download_installer https://herdr.dev/install.sh
@@ -602,9 +833,10 @@ install_herdr() {
     mkdir -p "$tmp/bin"
     PATH="$tmp/bin:/usr/bin:/bin" \
         HERDR_INSTALL_DIR="$tmp/bin" \
-        sh "$tmp/install.sh"
+        sh "$tmp/install.sh" 9>&-
     [ -x "$tmp/bin/herdr" ] || die "Herdr installer did not create $tmp/bin/herdr"
-    version="$("$tmp/bin/herdr" --version 2>/dev/null | head -n 1)"
+    output="$("$tmp/bin/herdr" --version </dev/null 2>/dev/null)" || die "Herdr did not start: herdr --version failed"
+    version="${output%%$'\n'*}"
     rm -f -- "$tmp/install.sh"
     commit_static_install "$tool" "$tmp" "${version:-unknown}" "https://herdr.dev/install.sh"
 }
@@ -612,7 +844,7 @@ install_herdr() {
 can_adopt() {
     local tool="$1" command
     case "$tool" in
-        tea|superfile|nak|ngit|herdr)
+        tea|superfile|nak|ngit|omp|herdr)
             [ ! -e "$(tool_root "$tool")" ] && [ ! -L "$(tool_root "$tool")" ] || return 1
             for command in $(tool_commands "$tool"); do
                 [ -f "$BIN_DIR/$command" ] &&
@@ -620,19 +852,13 @@ can_adopt() {
                     [ -x "$BIN_DIR/$command" ] || return 1
             done
             ;;
-        claude)
-            [ -d "$HOME/.local/share/claude" ] &&
-                link_points_under "$BIN_DIR/claude" "$HOME/.local/share/claude"
-            ;;
-        codex)
-            [ -d "$HOME/.codex/packages/standalone" ] &&
-                link_points_under "$BIN_DIR/codex" "$HOME/.codex/packages/standalone"
+        claude|codex)
+            [ -d "$(tool_root "$tool")" ] && launcher_is_managed "$tool" "$tool"
             ;;
         opencode)
-            [ -x "$HOME/.opencode/bin/opencode" ] &&
+            [ -x "$(native_executable opencode)" ] &&
                 { [ ! -e "$BIN_DIR/opencode" ] && [ ! -L "$BIN_DIR/opencode" ] ||
-                  { [ -L "$BIN_DIR/opencode" ] &&
-                    [ "$(readlink -f -- "$BIN_DIR/opencode" 2>/dev/null || true)" = "$(readlink -f -- "$HOME/.opencode/bin/opencode")" ]; }; }
+                  launcher_is_managed opencode opencode; }
             ;;
         *)
             return 1
@@ -641,44 +867,60 @@ can_adopt() {
 }
 
 adopt_tool() {
-    local tool="$1" executable version root command primary
+    local tool="$1" command primary output version stage executable
+    note "Adopting the existing supported $(tool_name "$tool") installation"
     case "$tool" in
-        tea|superfile|nak|ngit|herdr)
-            root="$(tool_root "$tool")"
-            mkdir -p "$root/bin"
+        tea|superfile|nak|ngit|omp|herdr)
+            # Validate every program before copying or changing anything.
             for command in $(tool_commands "$tool"); do
-                mv -- "$BIN_DIR/$command" "$root/bin/$command"
-                link_command "$command" "$root/bin/$command"
+                "$BIN_DIR/$command" --version </dev/null >/dev/null 2>&1 ||
+                    die "$BIN_DIR/$command did not run with --version; move it aside before installing a managed copy"
             done
             primary="$(tool_commands "$tool")"
             primary="${primary%% *}"
-            executable="$root/bin/$primary"
+            output="$("$BIN_DIR/$primary" --version </dev/null 2>/dev/null)"
+            version="${output%%$'\n'*}"
+            new_temp_dir
+            stage="$ACTIVE_TEMP"
+            mkdir -p "$stage/bin"
+            for command in $(tool_commands "$tool"); do
+                cp -p -- "$BIN_DIR/$command" "$stage/bin/$command"
+            done
+            commit_static_install "$tool" "$stage" "${version:-unknown}" "adopted-supported-layout"
             ;;
-        claude) executable="$BIN_DIR/claude" ;;
-        codex) executable="$BIN_DIR/codex" ;;
-        opencode)
-            executable="$HOME/.opencode/bin/opencode"
-            link_command opencode "$executable"
+        claude|codex|opencode)
+            executable="$(native_executable "$tool")"
+            "$executable" --version </dev/null >/dev/null 2>&1 ||
+                die "$executable did not run with --version; repair or remove it before adopting"
+            if [ "$tool" = opencode ]; then
+                with_native_rollback "$tool" link_native_opencode "adopted-supported-layout"
+            else
+                with_native_rollback "$tool" true "adopted-supported-layout"
+            fi
             ;;
-        *) return 1 ;;
+        *)
+            die "$(tool_name "$tool") cannot be adopted"
+            ;;
     esac
-
-    note "Adopting the existing supported $(tool_name "$tool") installation"
-    version="$("$executable" --version 2>/dev/null | head -n 1)"
-    write_marker "$tool" "${version:-unknown}" "adopted-supported-layout"
 }
 
 install_tool() {
     local tool="$1"
     is_known_tool "$tool" || die "unknown tool: $tool"
-    if ! has_marker "$tool" && can_adopt "$tool"; then
-        adopt_tool "$tool"
-    fi
-    if [ "$tool" = ghostty-themes ]; then
-        ghostty_themes install
-    else
-        "install_$tool"
-    fi
+    case "$tool" in
+        ghostty-themes)
+            ghostty_themes install
+            ;;
+        wowup-cf)
+            install_wowup_cf
+            ;;
+        *)
+            if ! has_marker "$tool" && can_adopt "$tool"; then
+                adopt_tool "$tool"
+            fi
+            "install_$tool"
+            ;;
+    esac
     printf '\nInstalled %s.\n' "$(tool_name "$tool")"
 }
 
@@ -686,6 +928,90 @@ ghostty_themes() {
     command -v python3 >/dev/null 2>&1 || die "Ghostty Themes requires Python 3"
     [ -f "$GHOSTTY_THEMES_HELPER" ] || die "Ghostty theme helper is missing: $GHOSTTY_THEMES_HELPER"
     python3 "$GHOSTTY_THEMES_HELPER" "$@"
+}
+
+wowup_cf() {
+    command -v python3 >/dev/null 2>&1 || die "WowUp-CF requires Python 3"
+    [ -f "$WOWUP_CF_HELPER" ] || die "WowUp-CF helper is missing: $WOWUP_CF_HELPER"
+    python3 "$WOWUP_CF_HELPER" "$@" 9>&-
+}
+
+wowup_policy() {
+    cat <<'EOF'
+WowUp-CF release policy:
+  - Added to Gear Lever; one supported existing integration is reused.
+  - Follows only the 2.24.0 beta series (beta.6 or newer) until a compatible
+    2.24.0 or newer stable exists, then moves permanently to stable releases.
+  - WowUp-CF's Application Release Channel is set to Stable; addon release
+    settings are unchanged.
+  - Monolith, not Gear Lever, selects updates (monolith update wowup-cf).
+EOF
+}
+
+# Print the first Flatpak scope that has Gear Lever installed.
+gear_lever_scope() {
+    local scope
+    for scope in user system; do
+        if flatpak info "--$scope" "$GEAR_LEVER_ID" >/dev/null 2>&1; then
+            printf '%s\n' "$scope"
+            return 0
+        fi
+    done
+    return 1
+}
+
+gear_lever_version() {
+    local listing
+    listing="$(flatpak list --app "--$1" --columns=application:f,version:f 2>/dev/null)" || return 0
+    awk -F '\t' -v id="$GEAR_LEVER_ID" '$1 == id { print $2; exit }' <<<"$listing"
+}
+
+version_at_least() {
+    local version="$1" minimum="$2"
+    [[ "$version" =~ ^[0-9]+(\.[0-9]+)*$ ]] || return 1
+    [ "$(printf '%s\n%s\n' "$minimum" "$version" | sort -V | head -n 1)" = "$minimum" ]
+}
+
+# Find Gear Lever, offering a per-user Flathub install when it is missing.
+# Runs in the action's own shell so prompts keep the caller's terminal.
+ensure_gear_lever() {
+    local scope version answer=0
+    command -v flatpak >/dev/null 2>&1 ||
+        die "WowUp-CF needs Gear Lever, but the flatpak command is missing; repair Flatpak, then retry"
+    if ! scope="$(gear_lever_scope)"; then
+        if [ ! -t 0 ] || [ ! -t 1 ]; then
+            die "WowUp-CF needs Gear Lever. Install it with: flatpak install --user --noninteractive --assumeyes $GEAR_LEVER_REF"
+        fi
+        confirm_action "Gear Lever is missing. Install its Flathub Flatpak for your account?" \
+            "WowUp-CF is added to Gear Lever. No administrator password is needed." || answer=$?
+        case "$answer" in
+            0) ;;
+            130) exit 130 ;;
+            *)
+                printf 'WowUp-CF was not changed because Gear Lever is required.\n' >&2
+                exit 125
+                ;;
+        esac
+        note "Installing Gear Lever from Flathub for your account"
+        flatpak install --user --noninteractive --assumeyes "$GEAR_LEVER_REF" 9>&- ||
+            die "Gear Lever could not be installed; WowUp-CF was not changed"
+        scope="$(gear_lever_scope)" || die "Gear Lever is still missing after installation; WowUp-CF was not changed"
+    fi
+    version="$(gear_lever_version "$scope")"
+    if ! version_at_least "$version" "$GEAR_LEVER_MIN_VERSION"; then
+        die "WowUp-CF needs Gear Lever $GEAR_LEVER_MIN_VERSION or newer, but the $scope installation reports '${version:-unknown}'. Update it with: flatpak update --$scope $GEAR_LEVER_ID"
+    fi
+    GEAR_LEVER_SCOPE="$scope"
+}
+
+install_wowup_cf() {
+    require_amd64 "WowUp-CF"
+    # The dashboard's details screen has already shown the policy.
+    if ! has_marker wowup-cf && [ "${MONOLITH_POLICY_SHOWN:-}" != 1 ]; then
+        wowup_policy
+    fi
+    ensure_gear_lever
+    wowup_cf --scope "$GEAR_LEVER_SCOPE" install
 }
 
 remove_link_if_managed() {
@@ -707,183 +1033,156 @@ remove_tool() {
 
     note "Removing $(tool_name "$tool")"
     case "$tool" in
-        tea|superfile|nak|ngit|omp|herdr|codex)
+        ghostty-themes)
+            ghostty_themes remove
+            ;;
+        wowup-cf)
+            ensure_gear_lever
+            wowup_cf --scope "$GEAR_LEVER_SCOPE" remove
+            ;;
+        *)
+            # Settings, logins, and sessions live outside the program roots.
             for command in $(tool_commands "$tool"); do
                 remove_link_if_managed "$command" "$root"
             done
             if [ -e "$root" ] || [ -L "$root" ]; then
                 safe_remove_tree "$root"
             fi
-            if [ "$tool" = "codex" ]; then
-                rmdir -- "$HOME/.codex/packages" 2>/dev/null || true
-            fi
-            ;;
-        claude)
-            # Preserve Claude login, configuration, and session data.
-            remove_link_if_managed claude "$HOME/.local/share/claude"
-            if [ -e "$HOME/.local/share/claude" ] || [ -L "$HOME/.local/share/claude" ]; then
-                safe_remove_tree "$HOME/.local/share/claude"
-            fi
-            ;;
-        opencode)
-            remove_link_if_managed opencode "$HOME/.opencode/bin"
-            if [ -e "$HOME/.opencode/bin" ] || [ -L "$HOME/.opencode/bin" ]; then
-                safe_remove_tree "$HOME/.opencode/bin"
-            fi
-            rmdir -- "$HOME/.opencode" 2>/dev/null || true
-            ;;
-        ghostty-themes)
-            ghostty_themes remove
+            case "$tool" in
+                codex) rmdir -- "$HOME/.codex/packages" 2>/dev/null || true ;;
+                opencode) rmdir -- "$HOME/.opencode" 2>/dev/null || true ;;
+            esac
             ;;
     esac
 
     rm -f -- "$marker"
     rmdir -- "$STATE_ROOT" "$STATE_HOME/monolith" 2>/dev/null || true
     rmdir -- "$MANAGED_ROOT" "$DATA_HOME/monolith" 2>/dev/null || true
-    printf '\nRemoved %s. Settings, authentication, sessions, and project files were kept.\n' "$(tool_name "$tool")"
-}
-
-list_tools() {
-    local tool status version
-    printf '%-16s  %-14s  %-14s  %s\n' "CATEGORY" "TOOL" "STATUS" "VERSION"
-    printf '%-16s  %-14s  %-14s  %s\n' "----------------" "--------------" "--------------" "-------"
-    for tool in "${ALL_TOOLS[@]}"; do
-        status="$(tool_status "$tool")"
-        version="$(marker_version "$tool")"
-        [ -n "$version" ] || version="-"
-        printf '%-16s  %-14s  %-14s  %s\n' \
-            "$(tool_category "$tool")" "$(tool_name "$tool")" "$status" "$version"
-    done
-}
-
-confirm_action() {
-    local prompt="$1" answer
-    if command -v fzf >/dev/null 2>&1 && [ -t 0 ] && [ -t 1 ]; then
-        answer="$(printf 'No\nYes\n' | fzf \
-            --layout=reverse \
-            --height='~20%' \
-            --bind='enter:accept' \
-            --header='Enter: confirm  •  Esc: cancel' \
-            --prompt="$prompt ")" || return 1
-        [ "$answer" = "Yes" ]
+    if [ "$tool" = wowup-cf ]; then
+        printf '\nRemoved %s. Settings, game installations, and addons were kept.\n' "$(tool_name "$tool")"
     else
-        read -r -p "$prompt [y/N] " answer
-        case "$answer" in
-            y|Y|yes|YES) return 0 ;;
-            *) return 1 ;;
-        esac
+        printf '\nRemoved %s. Settings, authentication, sessions, and project files were kept.\n' "$(tool_name "$tool")"
     fi
 }
 
-choose_line() {
-    local prompt="$1"
-    shift
-    if command -v fzf >/dev/null 2>&1; then
-        printf '%s\n' "$@" | fzf \
-            --layout=reverse \
-            --height='~45%' \
-            --border \
-            --bind='enter:accept' \
-            --header='Enter: select  •  Esc: back  •  Type to filter' \
-            --delimiter=$'\t' \
-            --with-nth=1 \
-            --prompt="$prompt"
+# Serialize every mutation. The descriptor stays open until the action exits;
+# third-party installers get it closed so a daemon cannot inherit the lock.
+acquire_operation_lock() {
+    mkdir -p "$STATE_ROOT"
+    exec 9>>"$STATE_ROOT/.lock"
+    flock -n 9 || die "Another Monolith software operation is running."
+}
+
+# Internal entry point for one install or removal in its own process, where
+# errexit protects the whole call tree.
+internal_action() {
+    [ "$#" -eq 2 ] || die "internal action needs an action and one tool ID"
+    case "$1" in
+        install|remove) ;;
+        *) die "unknown internal action: $1" ;;
+    esac
+    is_known_tool "$2" || die "unknown tool: $2"
+    acquire_operation_lock
+    "${1}_tool" "$2"
+}
+
+action_verb() {
+    local action="$1" tool="$2"
+    if [ "$action" = remove ]; then
+        echo "Remove"
+    elif [ "$tool" = wowup-cf ]; then
+        case "$(tool_status "$tool" 2>/dev/null || true)" in
+            installed) echo "Update" ;;
+            "needs repair") echo "Repair" ;;
+            external) echo "Adopt and update" ;;
+            *) echo "Install" ;;
+        esac
+    elif has_marker "$tool"; then
+        if is_managed "$tool"; then echo "Update"; else echo "Repair"; fi
+    elif can_adopt "$tool"; then
+        echo "Adopt and update"
     else
-        local PS3="$prompt" choice
-        select choice in "$@"; do
-            [ -n "$choice" ] && printf '%s\n' "$choice"
-            return
-        done
+        echo "Install"
     fi
 }
 
-pause_after_action() {
-    [ -t 0 ] || return 0
-    printf '\nPress Enter to return to the menu... '
-    read -r _
+past_tense() {
+    case "$1" in
+        Install) echo "Installed" ;;
+        Update) echo "Updated" ;;
+        Repair) echo "Repaired" ;;
+        "Adopt and update") echo "Adopted and updated" ;;
+        Remove) echo "Removed" ;;
+        *) echo "Done" ;;
+    esac
 }
 
-manage_category() {
-    local title="$1"
+# Run install or remove for each tool in a separate process. Ordinary
+# failures do not stop later tools; Ctrl-C or TERM ends the batch.
+run_actions() {
+    local action="$1"
     shift
-    local tools=("$@") options=() tool line choice action path
+    local tools=("$@") total="$#" index=0 status verb tool failed=0 cancelled=0
+    local names=() results=()
 
-    while true; do
-        options=()
-        for tool in "${tools[@]}"; do
-            line="$(status_symbol "$tool") $(tool_name "$tool") - $(tool_description "$tool")"
-            if [ "$(tool_status "$tool")" = "external" ]; then
-                path="$(external_path "$tool")"
-                line="$line (external: $path)"
-            fi
-            options+=("$line"$'\t'"tool:$tool")
-        done
-        options+=("Update every installed item in this category"$'\t'"update")
-        options+=("Back to categories"$'\t'"back")
-
-        choice="$(choose_line "$title > " "${options[@]}")" || return 0
-        action="${choice##*$'\t'}"
-        case "$action" in
-            back) return 0 ;;
-            update)
-                for tool in "${tools[@]}"; do
-                    has_marker "$tool" && install_tool "$tool"
-                done
-                pause_after_action
-                ;;
-            tool:*)
-                tool="${action#tool:}"
-                if is_managed "$tool"; then
-                    if confirm_action "Remove $(tool_name "$tool")? Its settings and login will be kept."; then
-                        remove_tool "$tool"
-                        pause_after_action
-                    fi
-                else
-                    if [ "$(tool_status "$tool")" = "external" ]; then
-                        path="$(external_path "$tool")"
-                        if can_adopt "$tool"; then
-                            confirm_action "A supported install exists at $path. Adopt and update it with Monolith?" || continue
-                        else
-                            confirm_action "An external copy exists at $path. Install a Monolith-managed copy too?" || continue
-                        fi
-                    fi
-                    install_tool "$tool"
-                    pause_after_action
-                fi
-                ;;
-        esac
+    case "$action" in
+        install|remove) ;;
+        *) die "internal error: unknown action: $action" ;;
+    esac
+    # Validate the whole request before any child starts.
+    for tool in "${tools[@]}"; do
+        is_known_tool "$tool" || die "unknown tool: $tool"
+        if [ "$action" = remove ] && ! has_marker "$tool"; then
+            die "$(tool_name "$tool") is not managed by Monolith"
+        fi
     done
-}
 
-interactive_menu() {
-    local choice action
-    [ -t 0 ] && [ -t 1 ] || die "interactive mode needs a terminal; use list, install, remove, or update"
-
-    while true; do
-        choice="$(choose_line "Monolith Software > " \
-            "Developer CLIs - Tea, Superfile, nak, ngit"$'\t'"cli" \
-            "AI coding - Claude Code, Codex, OpenCode, Oh My Pi, Herdr"$'\t'"ai" \
-            "Appearance - Ghostty Themes"$'\t'"appearance" \
-            "Show status"$'\t'"list" \
-            "Update all installed software"$'\t'"update" \
-            "Exit"$'\t'"exit")" || return 0
-        action="${choice##*$'\t'}"
-        case "$action" in
-            cli) manage_category "Developer CLIs" "${CLI_TOOLS[@]}" ;;
-            ai) manage_category "AI coding" "${AI_TOOLS[@]}" ;;
-            appearance) manage_category "Appearance" "${APPEARANCE_TOOLS[@]}" ;;
-            list) list_tools; pause_after_action ;;
-            update)
-                update_tools
-                pause_after_action
-                ;;
-            exit) return 0 ;;
+    RUN_INTERRUPTED=0
+    trap 'RUN_INTERRUPTED=130' INT
+    trap 'RUN_INTERRUPTED=143' TERM
+    for tool in "${tools[@]}"; do
+        index=$((index + 1))
+        verb="$(action_verb "$action" "$tool")"
+        printf '\n(%d/%d) %s — %s\n' "$index" "$total" "$(tool_name "$tool")" "$verb"
+        status=0
+        bash "$SELF" __action "$action" "$tool" || status=$?
+        names+=("$(tool_name "$tool")")
+        case "$status" in
+            0) results+=("$(past_tense "$verb")") ;;
+            125) results+=("Skipped by user"); failed=1 ;;
+            130|143) results+=("Cancelled"); cancelled="$status" ;;
+            *) results+=("Failed (exit $status)"); failed=1 ;;
         esac
+        if [ "$cancelled" -eq 0 ] && [ "$RUN_INTERRUPTED" -ne 0 ]; then
+            cancelled="$RUN_INTERRUPTED"
+        fi
+        if [ "$cancelled" -ne 0 ]; then
+            break
+        fi
     done
+    trap 'cleanup_active_temp; exit 130' INT
+    trap 'cleanup_active_temp; exit 143' TERM
+
+    for tool in "${tools[@]:${#names[@]}}"; do
+        names+=("$(tool_name "$tool")")
+        results+=("Not run")
+    done
+    printf '\nResults:\n'
+    for index in "${!names[@]}"; do
+        printf '  %-16s %s\n' "${names[$index]}" "${results[$index]}"
+    done
+    if [ "$cancelled" -ne 0 ]; then
+        printf '\nCancelled. Later items were not started.\n'
+        return "$cancelled"
+    fi
+    if [ "$failed" -ne 0 ]; then
+        printf '\nSome items did not complete; see the messages above.\n'
+        return 1
+    fi
 }
 
 update_tools() {
-    local requested=("$@") tool updated=0
+    local requested=("$@") selected=() tool
     if [ "${#requested[@]}" -eq 0 ]; then
         requested=("${ALL_TOOLS[@]}")
     fi
@@ -895,52 +1194,596 @@ update_tools() {
     done
     for tool in "${requested[@]}"; do
         if has_marker "$tool"; then
-            install_tool "$tool"
-            updated=1
+            selected+=("$tool")
         fi
     done
-    [ "$updated" -eq 1 ] || echo "No Monolith-managed software is installed."
+    if [ "${#selected[@]}" -eq 0 ]; then
+        echo "No Monolith-managed software is installed."
+        return 0
+    fi
+    run_actions install "${selected[@]}"
+}
+
+# Print a short version from a managed command. Never runs unmanaged programs.
+installed_version() {
+    local tool="$1" primary output line pattern='([0-9]+\.[0-9]+(\.[0-9]+)?([-+][0-9A-Za-z.]+)?)'
+    primary="$(tool_commands "$tool")"
+    primary="${primary%% *}"
+    [ -n "$primary" ] || return 1
+    output="$(timeout 5 "$BIN_DIR/$primary" --version </dev/null 2>/dev/null)" || return 1
+    line="${output%%$'\n'*}"
+    if [[ "$line" =~ $pattern ]]; then
+        printf '%s\n' "${BASH_REMATCH[1]}"
+    elif [ -n "$line" ]; then
+        printf '%.30s\n' "$line"
+    else
+        return 1
+    fi
+}
+
+# Load WowUp-CF's filesystem-only summary once per render.
+load_wowup_info() {
+    local json fields lines=()
+    WOWUP_STATUS="" WOWUP_VERSION="" WOWUP_APPIMAGE="" WOWUP_DESKTOP_ID=""
+    WOWUP_SOURCE="" WOWUP_CHANNEL="" WOWUP_ERROR="" WOWUP_CONFLICTS=()
+    if json="$(wowup_cf info 2>/dev/null)" && fields="$(printf '%s' "$json" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+if data.get("status") not in ("installed", "needs repair", "external", "not installed"):
+    sys.exit(1)
+def text(key):
+    value = data.get(key)
+    return "" if value is None else str(value).replace("\x1f", " ").replace("\n", " ")
+print("\x1f".join(text(key) for key in ("status", "version", "appimage", "desktop_id", "source", "channel")))
+for path in data.get("conflicts") or []:
+    print(str(path).replace("\n", " "))
+')"; then
+        mapfile -t lines <<<"$fields"
+        IFS=$'\x1f' read -r WOWUP_STATUS WOWUP_VERSION WOWUP_APPIMAGE WOWUP_DESKTOP_ID WOWUP_SOURCE WOWUP_CHANNEL <<<"${lines[0]}"
+        WOWUP_CONFLICTS=("${lines[@]:1}")
+    else
+        WOWUP_ERROR="Monolith could not inspect the WowUp-CF integration."
+        if has_marker wowup-cf; then
+            WOWUP_STATUS="needs repair"
+        else
+            WOWUP_STATUS="not installed"
+        fi
+    fi
+}
+
+refresh_status() {
+    local tool
+    for tool in "$@"; do
+        if [ "$tool" = wowup-cf ]; then
+            load_wowup_info
+            ROW_STATUS[$tool]="$WOWUP_STATUS"
+        else
+            ROW_STATUS[$tool]="$(tool_status "$tool")"
+        fi
+    done
+}
+
+# Version text for a row: the managed program's own version, the receipt for
+# themes and WowUp-CF, or the marker labelled as last recorded.
+display_version() {
+    local tool="$1" status="${ROW_STATUS[$1]:-}" actual recorded
+    case "$tool" in
+        wowup-cf)
+            if [ -n "$WOWUP_VERSION" ]; then printf 'verified %s\n' "$WOWUP_VERSION"; else echo "-"; fi
+            return 0
+            ;;
+        ghostty-themes)
+            recorded="$(marker_version "$tool")"
+            printf '%s\n' "${recorded:--}"
+            return 0
+            ;;
+    esac
+    if [ "$status" = installed ] && actual="$(installed_version "$tool")"; then
+        printf '%s\n' "$actual"
+        return 0
+    fi
+    recorded="$(marker_version "$tool")"
+    if [ -n "$recorded" ]; then printf 'recorded %s\n' "$recorded"; else echo "-"; fi
+}
+
+refresh_versions() {
+    local tool
+    for tool in "$@"; do
+        ROW_VERSION[$tool]="$(display_version "$tool")"
+    done
+}
+
+list_tools() {
+    local tool
+    refresh_status "${ALL_TOOLS[@]}"
+    refresh_versions "${ALL_TOOLS[@]}"
+    printf '%-16s  %-14s  %-14s  %s\n' "CATEGORY" "TOOL" "STATUS" "VERSION"
+    printf '%-16s  %-14s  %-14s  %s\n' "----------------" "--------------" "--------------" "-------"
+    for tool in "${ALL_TOOLS[@]}"; do
+        printf '%-16s  %-14s  %-14s  %s\n' \
+            "$(tool_category "$tool")" "$(tool_name "$tool")" "${ROW_STATUS[$tool]}" "${ROW_VERSION[$tool]}"
+    done
+}
+
+fzf_available() {
+    local path
+    # command -v also reports a non-executable file when nothing else matches.
+    path="$(command -v fzf 2>/dev/null)" || return 1
+    [ -x "$path" ]
+}
+
+init_terminal_ui() {
+    if [ "${MONOLITH_SELECTOR:-}" != numbered ] && [ "${TERM:-dumb}" != dumb ] && fzf_available; then
+        SELECTOR=fzf
+    fi
+    if [ -z "${NO_COLOR:-}" ] && [ "${TERM:-dumb}" != dumb ] && [ -t 1 ]; then
+        USE_COLOR=1
+    fi
+}
+
+fzf_color_options() {
+    if [ "$USE_COLOR" -eq 1 ]; then
+        printf '%s\n' --ansi
+    else
+        printf '%s\n' --color=bw
+    fi
+}
+
+# Show numbered choices on stderr and print the selected option. Only the
+# header's heading line applies here; its key help is for fzf.
+# Returns 1 for 0, q, or end of input.
+choose_numbered() {
+    local prompt="$1" header="$2" answer index
+    shift 2
+    local options=("$@")
+    while true; do
+        printf '\n%s\n' "${header%%$'\n'*}" >&2
+        for index in "${!options[@]}"; do
+            printf '  %2d) %s\n' "$((index + 1))" "${options[$index]%%$'\t'*}" >&2
+        done
+        printf 'Enter a number; 0 or q goes back.\n' >&2
+        if ! read -r -p "$prompt > " answer; then
+            printf '\n' >&2
+            return 1
+        fi
+        case "$answer" in
+            0|q|Q) return 1 ;;
+        esac
+        if [[ "$answer" =~ ^[0-9]{1,4}$ ]] && [ "$((10#$answer))" -ge 1 ] &&
+            [ "$((10#$answer))" -le "${#options[@]}" ]; then
+            printf '%s\n' "${options[$((10#$answer - 1))]}"
+            return 0
+        fi
+        printf 'Enter a number from the list, or 0 to go back.\n' >&2
+    done
+}
+
+# Print the selected "label<TAB>action" option. Returns 1 for Back, 2 when
+# nothing matched the filter, 3 when fzf failed, and 130 for Ctrl-C.
+choose_line() {
+    local prompt="$1" header="$2" output status=0 options=()
+    shift 2
+    if [ "$SELECTOR" != fzf ]; then
+        choose_numbered "$prompt" "$header" "$@"
+        return
+    fi
+    mapfile -t options < <(fzf_color_options)
+    # Feed fzf without a pipeline so its own exit status is the one reported.
+    output="$(fzf \
+        "${options[@]}" \
+        --layout=reverse \
+        --border=rounded \
+        --height='~70%' \
+        --no-multi \
+        --header-first \
+        --header="$header" \
+        --delimiter=$'\t' \
+        --with-nth=1 \
+        --prompt="$prompt > " \
+        --bind='enter:accept' \
+        --bind="ctrl-c:print($QUIT_TOKEN)+accept" < <(printf '%s\n' "$@"))" || status=$?
+    if [ "${output%%$'\n'*}" = "$QUIT_TOKEN" ]; then
+        return 130
+    fi
+    case "$status" in
+        0)
+            [ -n "$output" ] || return 2
+            printf '%s\n' "$output"
+            ;;
+        1) return 2 ;;
+        130) return 1 ;;
+        *)
+            printf 'Error: fzf failed with exit status %s; using numbered menus for this session.\n' "$status" >&2
+            return 3
+            ;;
+    esac
+}
+
+# Select an option and store its action token in PICKED. Returns 1 for Back.
+pick() {
+    local choice status
+    while true; do
+        status=0
+        choice="$(choose_line "$@")" || status=$?
+        case "$status" in
+            0)
+                PICKED="${choice##*$'\t'}"
+                return 0
+                ;;
+            2) ;;
+            3)
+                SELECTOR=numbered
+                export MONOLITH_SELECTOR=numbered
+                ;;
+            130) exit 130 ;;
+            *) return 1 ;;
+        esac
+    done
+}
+
+# Ask a default-No question. Returns 0 for yes, 1 for no, Esc, or end of
+# input, and 130 for Ctrl-C.
+confirm_action() {
+    local question="$1" detail="${2:-}" answer status=0 header options=()
+    if [ "$SELECTOR" = fzf ] && [ -t 0 ] && [ -t 1 ]; then
+        header="$question"
+        if [ -n "$detail" ]; then
+            header="$header"$'\n'"$detail"
+        fi
+        mapfile -t options < <(fzf_color_options)
+        answer="$(fzf \
+            "${options[@]}" \
+            --layout=reverse \
+            --border=rounded \
+            --height='~40%' \
+            --no-multi \
+            --header-first \
+            --header="$header"$'\n'"Enter: confirm  ·  Esc: cancel" \
+            --prompt='> ' \
+            --bind='enter:accept' \
+            --bind="ctrl-c:print($QUIT_TOKEN)+accept" < <(printf 'No\nYes\n'))" || status=$?
+        if [ "${answer%%$'\n'*}" = "$QUIT_TOKEN" ]; then
+            return 130
+        fi
+        case "$status" in
+            0) [ "$answer" = Yes ]; return ;;
+            1|130) return 1 ;;
+        esac
+        printf 'Error: fzf failed with exit status %s; asking in the terminal instead.\n' "$status" >&2
+        SELECTOR=numbered
+        export MONOLITH_SELECTOR=numbered
+    fi
+    if [ -n "$detail" ]; then
+        printf '%s\n' "$detail"
+    fi
+    if ! read -r -p "$question [y/N] " answer; then
+        printf '\n'
+        return 1
+    fi
+    case "$answer" in
+        y|Y|yes|Yes|YES) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+pause_after_action() {
+    [ -t 0 ] || return 0
+    printf '\nPress Enter to return to the menu... '
+    read -r _ || true
+}
+
+clear_screen() {
+    if [ "$SELECTOR" = fzf ]; then
+        printf '\033[H\033[2J'
+    fi
+}
+
+status_badge() {
+    local status="$1" color=""
+    if [ "$USE_COLOR" -eq 1 ]; then
+        case "$status" in
+            installed) color=$'\033[32m' ;;
+            "needs repair") color=$'\033[33m' ;;
+            external) color=$'\033[36m' ;;
+            *) color=$'\033[2m' ;;
+        esac
+        printf '%s%-13s\033[0m' "$color" "$status"
+    else
+        printf '%-13s' "$status"
+    fi
+}
+
+row_label() {
+    local tool="$1" prefix="${2:-}"
+    printf '%-14s  %s  %-22.22s  %s%s' "$(tool_name "$tool")" "$(status_badge "${ROW_STATUS[$tool]}")" \
+        "${ROW_VERSION[$tool]}" "$prefix" "$(tool_description "$tool")"
+}
+
+category_label() {
+    local title="$1" tool installed=0 repair=0 names="" summary
+    shift
+    for tool in "$@"; do
+        case "${ROW_STATUS[$tool]}" in
+            installed) installed=$((installed + 1)) ;;
+            "needs repair") repair=$((repair + 1)) ;;
+        esac
+        names="${names:+$names, }$(tool_name "$tool")"
+    done
+    summary="$installed installed"
+    if [ "$repair" -gt 0 ]; then
+        summary="$summary, $repair needs repair"
+    fi
+    printf '%-16s  %-28s  %s' "$title" "$summary" "$names"
+}
+
+menu_help() {
+    printf '%s\n%s' "$1" "Enter: ${2:-open}  ·  Esc: ${3:-back}  ·  Type to filter  ·  Ctrl-C: quit"
+}
+
+# Run actions from the menu, show their results once, and keep the menu.
+menu_actions() {
+    run_actions "$@" || true
+    pause_after_action
+}
+
+menu_update() {
+    local tool selected=()
+    for tool in "$@"; do
+        if has_marker "$tool"; then
+            selected+=("$tool")
+        fi
+    done
+    if [ "${#selected[@]}" -eq 0 ]; then
+        printf '\nNo Monolith-managed software is installed here.\n'
+        pause_after_action
+        return 0
+    fi
+    menu_actions install "${selected[@]}"
+}
+
+show_wowup_details() {
+    local path
+    if [ -n "$WOWUP_ERROR" ]; then
+        printf '\n%s\n' "$WOWUP_ERROR"
+    fi
+    if [ -n "$WOWUP_VERSION" ]; then
+        printf 'Last verified version: %s\n' "$WOWUP_VERSION"
+    fi
+    if [ -n "$WOWUP_SOURCE" ]; then
+        printf 'Source:   %s\n' "$WOWUP_SOURCE"
+    fi
+    case "$WOWUP_CHANNEL" in
+        beta-bridge) printf 'Releases: 2.24.0 beta series until a compatible stable exists\n' ;;
+        stable) printf 'Releases: stable\n' ;;
+    esac
+    if [ -n "$WOWUP_APPIMAGE" ]; then
+        printf 'AppImage: %s\n' "$WOWUP_APPIMAGE"
+    fi
+    if [ -n "$WOWUP_DESKTOP_ID" ]; then
+        printf 'Launcher: %s (Gear Lever)\n' "$WOWUP_DESKTOP_ID"
+    fi
+    if [ "${#WOWUP_CONFLICTS[@]}" -gt 0 ]; then
+        printf '\nResolve these WowUp-CF integrations in Gear Lever, then return here:\n'
+        for path in "${WOWUP_CONFLICTS[@]}"; do
+            printf '  %s\n' "$path"
+        done
+    fi
+    # Disclose the release policy where it is accepted: install and adoption.
+    case "$WOWUP_STATUS" in
+        "not installed"|external)
+            printf '\n'
+            wowup_policy
+            ;;
+    esac
+}
+
+show_tool_details() {
+    local tool="$1" status="${ROW_STATUS[$1]}" version="${ROW_VERSION[$1]}" command path
+    printf '%s (%s)\n' "$(tool_name "$tool")" "$tool"
+    printf 'Category: %s\n' "$(tool_category "$tool")"
+    printf 'About:    %s\n' "$(tool_description "$tool")"
+    printf 'Status:   %s\n' "$status"
+    case "$tool" in
+        wowup-cf)
+            show_wowup_details
+            return 0
+            ;;
+        ghostty-themes)
+            if [ "$version" != "-" ]; then
+                printf 'Bundle:   %s\n' "$version"
+            fi
+            printf 'Location: %s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/ghostty/themes"
+            return 0
+            ;;
+    esac
+    case "$version" in
+        -) ;;
+        recorded\ *) printf 'Last recorded version: %s\n' "${version#recorded }" ;;
+        *) printf 'Version:  %s\n' "$version" ;;
+    esac
+    if has_marker "$tool"; then
+        printf 'Location: %s\n' "$(tool_root "$tool")"
+        for command in $(tool_commands "$tool"); do
+            printf 'Command:  %s\n' "$BIN_DIR/$command"
+        done
+    else
+        path="$(external_path "$tool")"
+        if [ -n "$path" ]; then
+            printf 'Found at: %s (not managed by Monolith)\n' "$path"
+        fi
+    fi
+}
+
+manage_tool() {
+    local tool="$1" status conflict options=() answer
+    while true; do
+        refresh_status "$tool"
+        refresh_versions "$tool"
+        status="${ROW_STATUS[$tool]}"
+        clear_screen
+        show_tool_details "$tool"
+        options=()
+        case "$status" in
+            installed)
+                options+=("Update"$'\t'"install" "Remove"$'\t'"remove")
+                ;;
+            "needs repair")
+                if conflict="$(replaced_launcher "$tool")"; then
+                    printf '\n%s no longer points to the Monolith-managed copy.\n' "$conflict"
+                    printf 'Move it aside to repair, or remove the managed files and keep that command.\n'
+                else
+                    options+=("Repair"$'\t'"install")
+                fi
+                options+=("Remove"$'\t'"remove")
+                ;;
+            *)
+                if [ "$tool" = wowup-cf ]; then
+                    if [ "$status" = external ] && [ "${#WOWUP_CONFLICTS[@]}" -gt 0 ]; then
+                        :
+                    elif [ "$status" = external ]; then
+                        options+=("Adopt and update"$'\t'"install")
+                    else
+                        options+=("Install"$'\t'"install")
+                    fi
+                elif can_adopt "$tool"; then
+                    printf '\nA supported installation was found; Monolith can adopt and update it.\n'
+                    options+=("Adopt and update"$'\t'"install")
+                elif conflict="$(local_destination_conflict "$tool")"; then
+                    printf '\nBlocking path: %s\n' "$conflict"
+                    printf 'It is not managed by Monolith. Move or uninstall it to install a managed copy.\n'
+                elif [ "$status" = external ]; then
+                    printf '\nA managed copy in %s would take precedence.\n' "$BIN_DIR"
+                    options+=("Install a Monolith-managed copy"$'\t'"install")
+                else
+                    options+=("Install"$'\t'"install")
+                fi
+                ;;
+        esac
+        options+=("Back"$'\t'"back")
+        printf '\n'
+        pick "$(tool_name "$tool")" "$(menu_help "Actions for $(tool_name "$tool")" choose)" "${options[@]}" || return 0
+        case "$PICKED" in
+            install)
+                MONOLITH_POLICY_SHOWN=1 menu_actions install "$tool"
+                ;;
+            remove)
+                answer=0
+                confirm_action "Remove $(tool_name "$tool")?" \
+                    "Settings, authentication, sessions, addon data, and projects are kept." || answer=$?
+                case "$answer" in
+                    0) menu_actions remove "$tool" ;;
+                    130) exit 130 ;;
+                esac
+                ;;
+            back)
+                return 0
+                ;;
+        esac
+    done
+}
+
+manage_category() {
+    local title="$1" tool prefix=""
+    shift
+    local tools=("$@") options=()
+
+    while true; do
+        refresh_status "${tools[@]}"
+        refresh_versions "${tools[@]}"
+        options=()
+        for tool in "${tools[@]}"; do
+            if [ "$title" = "All applications" ]; then
+                prefix="$(tool_category "$tool"): "
+            fi
+            options+=("$(row_label "$tool" "$prefix")"$'\t'"tool:$tool")
+        done
+        options+=("Update installed items"$'\t'"update")
+        options+=("Back"$'\t'"back")
+
+        clear_screen
+        pick "$title" "$(menu_help "Monolith Software › $title" details)" "${options[@]}" || return 0
+        case "$PICKED" in
+            back) return 0 ;;
+            update) menu_update "${tools[@]}" ;;
+            tool:*) manage_tool "${PICKED#tool:}" ;;
+        esac
+    done
+}
+
+interactive_menu() {
+    local options=() tool marked
+    [ -t 0 ] && [ -t 1 ] || die "interactive mode needs a terminal; use list, install, remove, or update"
+
+    while true; do
+        refresh_status "${ALL_TOOLS[@]}"
+        marked=0
+        for tool in "${ALL_TOOLS[@]}"; do
+            if has_marker "$tool"; then
+                marked=$((marked + 1))
+            fi
+        done
+        options=(
+            "$(category_label "Developer CLIs" "${CLI_TOOLS[@]}")"$'\t'"cli"
+            "$(category_label "AI coding" "${AI_TOOLS[@]}")"$'\t'"ai"
+            "$(category_label "Gaming" "${GAMING_TOOLS[@]}")"$'\t'"gaming"
+            "$(category_label "Appearance" "${APPEARANCE_TOOLS[@]}")"$'\t'"appearance"
+            "All applications"$'\t'"all"
+            "Update installed ($marked managed)"$'\t'"update"
+            "Exit"$'\t'"exit"
+        )
+        clear_screen
+        pick "Monolith Software" "$(menu_help "Monolith Software" open exit)" "${options[@]}" || return 0
+        case "$PICKED" in
+            cli) manage_category "Developer CLIs" "${CLI_TOOLS[@]}" ;;
+            ai) manage_category "AI coding" "${AI_TOOLS[@]}" ;;
+            gaming) manage_category "Gaming" "${GAMING_TOOLS[@]}" ;;
+            appearance) manage_category "Appearance" "${APPEARANCE_TOOLS[@]}" ;;
+            all) manage_category "All applications" "${ALL_TOOLS[@]}" ;;
+            update) menu_update "${ALL_TOOLS[@]}" ;;
+            exit) return 0 ;;
+        esac
+    done
 }
 
 usage() {
     cat <<'EOF'
 Usage: monolith [command] [tool ...]
 
-Without a command, opens the interactive category menu.
+Without a command, opens the interactive software dashboard.
 
 Commands:
   list                  Show every tool and its current state
-  install TOOL [...]    Install or update one or more tools
+  install TOOL [...]    Install, adopt, or update one or more tools
   remove TOOL [...]     Remove managed files; keep user settings and edited themes
   update [TOOL ...]     Update selected tools, or every managed tool
   help                  Show this help
 
 Tool IDs:
-  tea superfile nak ngit claude codex opencode omp herdr ghostty-themes
+  Developer CLIs   tea superfile nak ngit
+  AI coding        claude codex opencode omp herdr
+  Gaming           wowup-cf
+  Appearance       ghostty-themes
 EOF
 }
 
 main() {
-    local command="${1:-menu}" tool
+    local command="${1:-menu}"
     [ "$#" -eq 0 ] || shift
 
+    init_terminal_ui
     case "$command" in
         menu) interactive_menu ;;
         list) [ "$#" -eq 0 ] || die "list takes no tool arguments"; list_tools ;;
         install)
             [ "$#" -gt 0 ] || die "install needs at least one tool ID"
-            for tool in "$@"; do is_known_tool "$tool" || die "unknown tool: $tool"; done
-            for tool in "$@"; do install_tool "$tool"; done
+            run_actions install "$@"
             ;;
         remove|uninstall)
             [ "$#" -gt 0 ] || die "remove needs at least one tool ID"
-            for tool in "$@"; do
-                is_known_tool "$tool" || die "unknown tool: $tool"
-                has_marker "$tool" || die "$(tool_name "$tool") is not managed by Monolith"
-            done
-            for tool in "$@"; do remove_tool "$tool"; done
+            run_actions remove "$@"
             ;;
         update) update_tools "$@" ;;
+        __action) internal_action "$@" ;;
         help|-h|--help) usage ;;
         *) die "unknown command: $command (run monolith help)" ;;
     esac

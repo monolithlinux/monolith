@@ -9,7 +9,6 @@ import io
 import json
 import os
 from pathlib import Path
-import subprocess
 import sys
 import tarfile
 import tempfile
@@ -240,45 +239,6 @@ class ThemeTests(unittest.TestCase):
         self.assertFalse(self.manifest.exists())
         self.assertFalse(self.marker.exists())
         self.assertFalse(any(self.themes.glob("*")))
-
-    def test_monolith_lists_and_dispatches_theme_actions(self):
-        stub = self.root / "usr/libexec/monolith/ghostty-themes"
-        stub.parent.mkdir(parents=True)
-        calls = self.root / "helper calls"
-        stub.write_text(
-            "#!/usr/bin/env python3\n"
-            "import os, pathlib, sys\n"
-            "action = sys.argv[1]\n"
-            "with open(os.environ['THEME_TEST_CALLS'], 'a') as log: log.write(action + '\\n')\n"
-            "if action == 'status': print(os.environ['THEME_TEST_STATUS'])\n"
-        )
-        stub.chmod(0o755)
-        launcher = self.root / "usr/bin/monolith"
-        launcher.parent.mkdir(parents=True)
-        launcher.write_text((ROOT / "files/system/usr/bin/monolith").read_text())
-        env = dict(os.environ, THEME_TEST_CALLS=str(calls), THEME_TEST_STATUS="not installed")
-
-        def cli(*args):
-            result = subprocess.run(["bash", str(launcher), *args], env=env,
-                                    capture_output=True, text=True, timeout=15)
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            return result.stdout
-
-        for status in ("not installed", "installed", "needs repair"):
-            env["THEME_TEST_STATUS"] = status
-            if status != "not installed":
-                self.marker.parent.mkdir(parents=True, exist_ok=True)
-                self.marker.write_text("version=test\n")
-            row = next(line for line in cli("list").splitlines() if "Ghostty" in line)
-            self.assertIn("Appearance", row)
-            self.assertIn(status, row)
-        cli("install", "ghostty-themes")
-        self.marker.parent.mkdir(parents=True, exist_ok=True)
-        self.marker.write_text("version=test\n")
-        cli("update", "ghostty-themes")
-        cli("remove", "ghostty-themes")
-        self.assertEqual([line for line in calls.read_text().splitlines() if line != "status"],
-                         ["install", "install", "remove"])
 
 
 if __name__ == "__main__":

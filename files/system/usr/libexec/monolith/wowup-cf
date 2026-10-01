@@ -1,0 +1,1748 @@
+#!/usr/bin/env python3
+"""Install, update and remove WowUp-CF through Gear Lever under Monolith's release policy.
+
+Monolith follows only the WowUp-CF 2.24.0 beta series (beta.6 or newer) until a
+downloadable stable release 2.24.0 or newer exists, then follows stable releases only.
+"""
+
+import argparse
+import ast
+import configparser
+import contextlib
+import dataclasses
+import errno
+import hashlib
+import http.client
+import json
+import os
+from pathlib import Path
+import re
+import secrets
+import shutil
+import signal
+import stat
+import subprocess
+import sys
+import tempfile
+import urllib.request
+
+
+REPOSITORY = "WowUp/WowUp.CF"
+RELEASES_URL = "https://api.github.com/repos/WowUp/WowUp.CF/releases?per_page=100&page={page}"
+DOWNLOAD_URL = "https://github.com/WowUp/WowUp.CF/releases/download/{tag}/{asset}"
+PAGE_SIZE = 100
+MAX_PAGES = 20
+MAX_PAGE_BYTES = 32 * 1024 * 1024
+STABLE_FLOOR = (2, 24, 0)
+BRIDGE_CORE = (2, 24, 0)
+BRIDGE_MIN_BETA = 6
+TAG = re.compile(r"v(\d+)\.(\d+)\.(\d+)(?:-beta\.(\d+))?", re.ASCII)
+VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)(?:-beta\.(\d+))?", re.ASCII)
+DIGEST = re.compile(r"sha256:([0-9a-f]{64})")
+SHA256 = re.compile(r"[0-9a-f]{64}")
+USER_AGENT = "monolith-wowup-cf/1 (+https://github.com/monolithlinux/monolith)"
+METADATA_TIMEOUT = 30
+DOWNLOAD_TIMEOUT = 60
+GEAR_LEVER_TIMEOUT = 120
+CHUNK = 1024 * 1024
+
+APP_ID = "it.mijorus.gearlever"
+APP_NAME = "WowUp-CF"
+CF_NAME = re.compile(r"WowUp-CF(?: \(.+\))?")
+PROCESS_NAME = re.compile(r"wowup-?cf", re.IGNORECASE)
+EMBEDDED_SOURCES = (re.compile(r"gh-releases-zsync\|.*(.zsync)"), re.compile(r"\szsync\|http(.*)\s"))
+CHANNEL_KEY = "wowup_release_channel_2_6"
+CHANNEL_STABLE = "1"
+NEUTRAL_ICON = "application-x-executable"
+RUNNING_MESSAGE = "Close WowUp-CF and retry this action."
+RECEIPT_FIELDS = ("version", "source", "channel", "sha256", "appimage", "desktop_id", "icon")
+MAX_SMALL_FILE = 1024 * 1024
+# Preferences and icons; transaction checks must accept whatever the callers read.
+MAX_LARGE_FILE = 64 * 1024 * 1024
+
+# Tests point this at a fixture process table.
+PROC_ROOT = Path("/proc")
+
+
+class HelperError(Exception):
+    """An actionable failure; the message is shown to the user."""
+
+
+class RunningError(HelperError):
+    def __init__(self):
+        super().__init__(RUNNING_MESSAGE)
+
+
+class Interrupted(BaseException):
+    """SIGINT or SIGTERM; deliberately not an Exception so cleanup code cannot swallow it."""
+
+    def __init__(self, signum):
+        super().__init__(signum)
+        self.signum = signum
+        self.detail = None
+
+
+class SignalGuard:
+    """Turn SIGINT/SIGTERM into Interrupted, deferring it during short critical sections and rollback."""
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.received = None
+        self.depth = 0
+        self.pending = False
+
+    def handler(self, signum, frame):
+        if self.received is None:
+            self.received = signum
+        if self.depth:
+            self.pending = True
+            return
+        raise Interrupted(self.received)
+
+    @contextlib.contextmanager
+    def critical(self):
+        self.depth += 1
+        try:
+            yield
+        finally:
+            self.depth -= 1
+        if self.depth == 0 and self.pending:
+            self.pending = False
+            raise Interrupted(self.received)
+
+    @contextlib.contextmanager
+    def shielded(self):
+        self.depth += 1
+        try:
+            yield
+        finally:
+            self.depth -= 1
+            if self.depth == 0:
+                self.pending = False
+
+
+GUARD = SignalGuard()
+
+
+class Paths:
+    def __init__(self):
+        home = os.environ.get("HOME", "")
+        if not os.path.isabs(home):
+            raise HelperError("HOME must be set to an absolute path")
+        self.home = Path(home)
+        data = Path(os.environ.get("XDG_DATA_HOME") or self.home / ".local/share")
+        state = Path(os.environ.get("XDG_STATE_HOME") or self.home / ".local/state")
+        config = Path(os.environ.get("XDG_CONFIG_HOME") or self.home / ".config")
+        self.managed_root = data / "monolith/software"
+        self.receipt = state / "monolith/software/wowup-cf.managed"
+        self.snapshots = self.managed_root / "wowup-cf"
+        self.snapshot_desktop = self.snapshots / "integration.desktop"
+        self.snapshot_icon = self.snapshots / "integration.icon"
+        self.preferences = config / "WowUpCf/preferences.json"
+        # Gear Lever always uses GLib's home directory, never XDG_DATA_HOME, for these.
+        self.apps = self.home / ".local/share/applications"
+        self.gear_lever_config = self.home / ".var/app" / APP_ID / "config/gearlever.conf"
+        # Gear Lever's Flatpak has no dconf access, so GLib keeps its GSettings in this keyfile.
+        self.gear_lever_settings = self.home / ".var/app" / APP_ID / "config/glib-2.0/settings/keyfile"
+
+
+def gear_lever_folder(paths):
+    """The folder Gear Lever copies AppImages into: its appimages-default-folder setting."""
+    folder = "~/AppImages"
+    data = read_regular(paths.gear_lever_settings)
+    if data is not None:
+        parser = configparser.ConfigParser(interpolation=None, strict=False)
+        with contextlib.suppress(ValueError, SyntaxError, UnicodeDecodeError, configparser.Error):
+            parser.read_string(data.decode("utf-8"))
+            # The value is a GVariant string literal such as '~/AppImages'.
+            value = ast.literal_eval(parser.get("it/mijorus/gearlever", "appimages-default-folder"))
+            if isinstance(value, str) and value:
+                folder = value
+    if folder.startswith("~"):  # Gear Lever: re.sub(r'^~', GLib.get_home_dir(), folder)
+        folder = str(paths.home) + folder[1:]
+    return Path(folder) if os.path.isabs(folder) else paths.home / "AppImages"
+
+
+# --- small filesystem helpers -------------------------------------------------------------
+
+def canonical(path):
+    try:
+        return os.path.realpath(path)
+    except (ValueError, OSError):
+        return f"\0{path}"
+
+
+def lstat_or_none(path):
+    try:
+        return os.lstat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+
+
+def file_kind(path):
+    status = lstat_or_none(path)
+    if status is None:
+        return "missing"
+    return "regular" if stat.S_ISREG(status.st_mode) else "other"
+
+
+def file_identity(path):
+    status = lstat_or_none(path)
+    return None if status is None else (status.st_dev, status.st_ino)
+
+
+def read_regular(path, limit=MAX_SMALL_FILE):
+    """Read a small regular file without following a final symlink; None when absent or unusable."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except OSError:
+        return None
+    with os.fdopen(descriptor, "rb") as file:
+        if not stat.S_ISREG(os.fstat(file.fileno()).st_mode):
+            return None
+        data = file.read(limit + 1)
+    return None if len(data) > limit else data
+
+
+def file_sha256(path):
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    with os.fdopen(descriptor, "rb") as file:
+        if not stat.S_ISREG(os.fstat(file.fileno()).st_mode):
+            raise HelperError(f"{path} is not a regular file")
+        return hashlib.file_digest(file, "sha256").hexdigest()
+
+
+def remove_empty_dir(path):
+    with contextlib.suppress(FileNotFoundError, OSError):
+        os.rmdir(path)
+
+
+def unlink_if_identity(path, identity):
+    if file_identity(path) == identity:
+        os.unlink(path)
+
+
+def plain(value):
+    return isinstance(value, str) and not any(ord(character) < 32 or ord(character) == 127
+                                                for character in value)
+
+
+def summary(code, out, err):
+    lines = [line.strip() for line in (err.strip() or out).splitlines() if line.strip()]
+    return f"exit status {code}: {lines[-1] if lines else 'no output'}"
+
+
+# --- releases ------------------------------------------------------------------------------
+
+def version_key(version):
+    match = VERSION.fullmatch(version)
+    if not match:
+        raise ValueError(version)
+    major, minor, patch, beta = match.groups()
+    return (int(major), int(minor), int(patch), 0 if beta is not None else 1, int(beta or 0))
+
+
+@dataclasses.dataclass(frozen=True)
+class Release:
+    version: str
+    key: tuple
+    url: str
+    size: int
+    sha256: str
+
+    @property
+    def stable(self):
+        return self.key[3] == 1
+
+    @property
+    def asset(self):
+        return f"WowUp-CF-{self.version}.AppImage"
+
+    @property
+    def channel(self):
+        return "stable" if self.stable else "beta-bridge"
+
+    def describe(self):
+        return f"{self.version} ({'stable channel' if self.stable else '2.24.0 beta bridge'})"
+
+
+def github_get(url):
+    request = urllib.request.Request(url, headers={
+        "Accept": "application/vnd.github+json",
+        "User-Agent": USER_AGENT,
+        "X-GitHub-Api-Version": "2022-11-28",
+    })
+    with urllib.request.urlopen(request, timeout=METADATA_TIMEOUT) as response:
+        status = getattr(response, "status", 200)
+        if status != 200:
+            raise HelperError(f"HTTP status {status}")
+        return response.read(MAX_PAGE_BYTES + 1)
+
+
+def fetch_releases():
+    """Read every release page; any failure stops the operation before anything changes."""
+    releases = []
+    for page in range(1, MAX_PAGES + 1):
+        url = RELEASES_URL.format(page=page)
+        try:
+            body = github_get(url)
+            if len(body) > MAX_PAGE_BYTES:
+                raise HelperError("the response is too large")
+            data = json.loads(body.decode("utf-8"))
+            if not isinstance(data, list):
+                raise HelperError("the response is not a release list")
+        except (HelperError, OSError, http.client.HTTPException, ValueError) as error:
+            raise HelperError(f"Could not read WowUp-CF release information from {url}: {error}. "
+                              "Nothing was changed; retry later.") from error
+        releases.extend(data)
+        if len(data) < PAGE_SIZE:
+            return releases
+    raise HelperError(f"GitHub listed more than {MAX_PAGES * PAGE_SIZE} WowUp-CF releases; "
+                      "nothing was changed.")
+
+
+def parse_release(item):
+    """Return the release's official CF AppImage, or None when it is not a usable candidate."""
+    tag = item.get("tag_name")
+    match = TAG.fullmatch(tag) if isinstance(tag, str) else None
+    if match is None or item.get("draft") is not False:
+        return None
+    stable = match[4] is None
+    if item.get("prerelease") is not (not stable):
+        return None
+    version = tag[1:]
+    asset_name = f"WowUp-CF-{version}.AppImage"
+    assets = item.get("assets")
+    if not isinstance(assets, list):
+        return None
+    matching = [asset for asset in assets if isinstance(asset, dict) and asset.get("name") == asset_name]
+    if len(matching) != 1:
+        return None
+    asset = matching[0]
+    digest = asset.get("digest")
+    size = asset.get("size")
+    url = DOWNLOAD_URL.format(tag=tag, asset=asset_name)
+    digest_match = DIGEST.fullmatch(digest) if isinstance(digest, str) else None
+    if (asset.get("state") != "uploaded" or digest_match is None or type(size) is not int
+            or size <= 0 or asset.get("browser_download_url") != url):
+        return None
+    return Release(version, version_key(version), url, size, digest_match[1])
+
+
+def parse_releases(raw):
+    found = {}
+    ambiguous = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            raise HelperError("GitHub returned malformed WowUp-CF release information; nothing was changed.")
+        release = parse_release(item)
+        if release is None:
+            continue
+        if release.key in found:
+            ambiguous.add(release.key)
+        found[release.key] = release
+    return [release for key, release in found.items() if key not in ambiguous]
+
+
+def select_target(releases, latched_stable):
+    stable = [release for release in releases if release.stable and release.key[:3] >= STABLE_FLOOR]
+    if stable:
+        return max(stable, key=lambda release: release.key)
+    if latched_stable:
+        raise HelperError("Monolith already moved WowUp-CF to stable releases, but GitHub lists no "
+                          "downloadable WowUp-CF stable release 2.24.0 or newer. The installed version "
+                          "was kept; retry later.")
+    bridge = [release for release in releases if not release.stable
+              and release.key[:3] == BRIDGE_CORE and release.key[4] >= BRIDGE_MIN_BETA]
+    if bridge:
+        return max(bridge, key=lambda release: release.key)
+    raise HelperError("GitHub lists no WowUp-CF release that Monolith permits (2.24.0-beta.6 or a later "
+                      "2.24.0 beta, or stable 2.24.0 or newer). Nothing was changed.")
+
+
+@dataclasses.dataclass(frozen=True)
+class Current:
+    version: str
+    key: tuple
+    sha256: str | None = None
+    identity: tuple | None = None
+
+
+def identify(path, receipt, releases):
+    """Identify the installed bytes; Gear Lever's desktop version goes stale after self-updates."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError as error:
+        raise HelperError(f"Cannot read the installed WowUp-CF AppImage {path}: {error}") from error
+    with os.fdopen(descriptor, "rb") as file:
+        status = os.fstat(file.fileno())
+        if not stat.S_ISREG(status.st_mode):
+            raise HelperError(f"{path} is not a regular file; Monolith will not replace it.")
+        digest = hashlib.file_digest(file, "sha256").hexdigest()
+    identity = (status.st_dev, status.st_ino, status.st_size, status.st_mtime_ns)
+    matches = [release for release in releases if release.sha256 == digest]
+    if matches:
+        release = max(matches, key=lambda item: item.key)
+        return Current(release.version, release.key, digest, identity)
+    if receipt is not None and receipt.sha256 == digest:
+        return Current(receipt.version, version_key(receipt.version), digest, identity)
+    raise HelperError(f"The WowUp-CF AppImage at {path} does not match any published WowUp-CF release"
+                      f"{' or the copy Monolith last verified' if receipt else ''}, so Monolith will not "
+                      "replace it. Restore or remove that integration in Gear Lever, then retry.")
+
+
+def check_header(path):
+    with open(path, "rb") as file:
+        header = file.read(64)
+    if (len(header) < 64 or header[:4] != b"\x7fELF" or header[4] != 2 or header[5] != 1
+            or header[8:11] != b"AI\x02" or int.from_bytes(header[18:20], "little") != 62):
+        raise HelperError(f"{path.name} is not an x86_64 type-2 AppImage. Nothing was changed.")
+
+
+def download(release, stage):
+    destination = stage / release.asset
+    print(f"Downloading {release.asset} ({release.size / 1048576:.1f} MiB)...", flush=True)
+    request = urllib.request.Request(release.url, headers={
+        "User-Agent": USER_AGENT, "Accept": "application/octet-stream"})
+    digest = hashlib.sha256()
+    received = 0
+    terminal = sys.stdout.isatty()
+    shown = -1
+    try:
+        with urllib.request.urlopen(request, timeout=DOWNLOAD_TIMEOUT) as response:
+            status = getattr(response, "status", 200)
+            if status != 200:
+                raise HelperError(f"HTTP status {status}")
+            headers = getattr(response, "headers", None)
+            length = headers.get("Content-Length") if headers is not None else None
+            if length is not None and length.strip() != str(release.size):
+                raise HelperError(f"the server offered {length.strip()} bytes, but the release lists "
+                                  f"{release.size}")
+            descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600)
+            with os.fdopen(descriptor, "wb") as file:
+                while chunk := response.read(CHUNK):
+                    received += len(chunk)
+                    if received > release.size:
+                        raise HelperError("the download is larger than the release lists")
+                    digest.update(chunk)
+                    file.write(chunk)
+                    if terminal and received * 100 // release.size != shown:
+                        shown = received * 100 // release.size
+                        print(f"\r  {shown}%", end="", flush=True)
+                file.flush()
+                os.fsync(file.fileno())
+    except (HelperError, OSError, http.client.HTTPException, ValueError) as error:
+        raise HelperError(f"Could not download {release.url}: {error}. Nothing was changed.") from error
+    finally:
+        if shown >= 0:
+            print(flush=True)
+    if received != release.size:
+        raise HelperError(f"The download of {release.asset} was truncated ({received} of {release.size} "
+                          "bytes). Nothing was changed.")
+    if digest.hexdigest() != release.sha256:
+        raise HelperError(f"{release.asset} failed SHA256 verification (expected {release.sha256}, got "
+                          f"{digest.hexdigest()}). Nothing was changed.")
+    check_header(destination)
+    os.chmod(destination, 0o755)
+    print(f"Verified SHA256 {release.sha256}.", flush=True)
+    return destination
+
+
+def require_readelf():
+    readelf = shutil.which("readelf")
+    if readelf is None:
+        raise HelperError("readelf (binutils) is required to check WowUp-CF for an embedded updater; "
+                          "install binutils and retry.")
+    return readelf
+
+
+def check_embedded(path, release):
+    """Gear Lever follows embedded update information, which cannot be unset per app."""
+    try:
+        result = subprocess.run([require_readelf(), "--string-dump=.upd_info", "--wide", str(path)],
+                                stdin=subprocess.DEVNULL, capture_output=True, timeout=GEAR_LEVER_TIMEOUT)
+    except subprocess.TimeoutExpired as error:
+        raise HelperError(f"readelf did not finish inspecting {path}") from error
+    if result.returncode != 0:
+        detail = summary(result.returncode, "", result.stderr.decode("utf-8", "replace"))
+        raise HelperError(f"readelf could not inspect {path} ({detail}). Nothing was changed.")
+    dump = result.stdout.decode("utf-8", "replace").replace("\n", " ") + " "
+    if any(pattern.search(dump) for pattern in EMBEDDED_SOURCES):
+        raise HelperError(f"WowUp-CF {release.version} embeds an AppImage update source that Gear Lever "
+                          "would follow outside Monolith's release policy and that cannot be removed. "
+                          "Nothing was changed.")
+
+
+# --- desktop entries --------------------------------------------------------------------------
+
+def unescape(value):
+    replacements = {"s": " ", "n": "\n", "t": "\t", "r": "\r", "\\": "\\"}
+    return re.sub(r"\\(.)", lambda match: replacements.get(match[1], match[0]), value)
+
+
+def parse_desktop(data):
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    values = {}
+    group = None
+    seen = False
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped.startswith("["):
+            group = stripped[1:-1] if stripped.endswith("]") else None
+            seen = seen or group == "Desktop Entry"
+            continue
+        if group == "Desktop Entry" and "=" in stripped:
+            key, value = stripped.split("=", 1)
+            values.setdefault(key.strip(), unescape(value.strip()))
+    return values if seen else None
+
+
+def set_desktop_value(data, key, value):
+    """Change one [Desktop Entry] key, preserving every other byte of the launcher."""
+    lines = data.split(b"\n")
+    key_bytes = key.encode()
+    replacement = key_bytes + b"=" + value.encode()
+    group = None
+    last = None
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith(b"["):
+            group = stripped[1:-1] if stripped.endswith(b"]") else None
+            continue
+        if group != b"Desktop Entry" or not stripped:
+            continue
+        last = index
+        if b"=" in stripped and stripped.split(b"=", 1)[0].strip() == key_bytes:
+            lines[index] = replacement + (b"\r" if line.endswith(b"\r") else b"")
+            return b"\n".join(lines)
+    if last is None:
+        raise HelperError("the launcher has no [Desktop Entry] group")
+    lines.insert(last + 1, replacement)
+    return b"\n".join(lines)
+
+
+@dataclasses.dataclass
+class Desktop:
+    path: Path
+    data: bytes
+    values: dict
+
+    def get(self, key):
+        return self.values.get(key, "")
+
+    @property
+    def is_cf(self):
+        return self.get("X-AppImage-Name") == APP_NAME or CF_NAME.fullmatch(self.get("Name")) is not None
+
+    def points_to(self, appimage):
+        tryexec = self.get("TryExec")
+        return (os.path.isabs(tryexec) and canonical(tryexec) == canonical(appimage)
+                and self.get("X-AppImage-Name") == APP_NAME)
+
+
+def read_desktop(path, follow=True):
+    if follow:
+        try:
+            if not os.path.isfile(path):
+                return None
+        except OSError:
+            return None
+        data = None
+        with contextlib.suppress(OSError):
+            data = Path(path).read_bytes() if os.path.getsize(path) <= MAX_SMALL_FILE else None
+    else:
+        data = read_regular(path)
+    values = parse_desktop(data) if data is not None else None
+    return None if values is None else Desktop(Path(path), data, values)
+
+
+def scan_cf_desktops(apps):
+    try:
+        names = sorted(os.listdir(apps))
+    except (FileNotFoundError, NotADirectoryError):
+        return []
+    except OSError as error:
+        raise HelperError(f"Cannot read {apps}: {error}") from error
+    found = []
+    for name in names:
+        if name.endswith(".desktop"):
+            desktop = read_desktop(apps / name)
+            if desktop is not None and desktop.is_cf:
+                found.append(desktop)
+    return found
+
+
+def icon_belongs(icon, appimage):
+    """Gear Lever copies an AppImage's icon to <AppImage directory>/.icons/."""
+    return (os.path.isabs(icon) and Path(icon).parent.name == ".icons"
+            and canonical(Path(icon).parent.parent) == canonical(Path(appimage).parent))
+
+
+def icons_dir_ok(icon):
+    status = lstat_or_none(Path(icon).parent)
+    return status is None or stat.S_ISDIR(status.st_mode)
+
+
+def owned_icon(desktop, appimage):
+    """Only Gear Lever's regular icon copy beside the AppImage is Monolith's to snapshot or remove."""
+    value = desktop.get("Icon")
+    if icon_belongs(value, appimage) and icons_dir_ok(value) and file_kind(value) == "regular":
+        return value
+    return None
+
+
+# --- receipt -------------------------------------------------------------------------------------
+
+@dataclasses.dataclass(frozen=True)
+class Receipt:
+    version: str
+    source: str
+    channel: str
+    sha256: str
+    appimage: str
+    desktop_id: str
+    icon: str
+
+    def encode(self):
+        return "".join(f"{field}={getattr(self, field)}\n" for field in RECEIPT_FIELDS).encode()
+
+
+def load_receipt(paths):
+    status = lstat_or_none(paths.receipt)
+    if status is None:
+        return None
+    invalid = HelperError(f"Monolith's WowUp-CF receipt {paths.receipt} is invalid, so it was not used. Move "
+                          "it aside, then install again to adopt the existing Gear Lever integration.")
+    data = read_regular(paths.receipt, 64 * 1024) if stat.S_ISREG(status.st_mode) else None
+    try:
+        lines = data.decode("utf-8").split("\n") if data is not None else None
+    except UnicodeDecodeError:
+        lines = None
+    if not lines or lines[-1] != "":
+        raise invalid
+    values = {}
+    for line in lines[:-1]:
+        key, separator, value = line.partition("=")
+        if not separator or key not in RECEIPT_FIELDS or key in values or not plain(value):
+            raise invalid
+        values[key] = value
+    if not lines[0].startswith("version=") or set(values) != set(RECEIPT_FIELDS):
+        raise invalid
+    receipt = Receipt(**values)
+    if not VERSION.fullmatch(receipt.version):
+        raise invalid
+    stable = version_key(receipt.version)[3] == 1
+    tag = f"v{receipt.version}"
+    if (receipt.source != DOWNLOAD_URL.format(tag=tag, asset=f"WowUp-CF-{receipt.version}.AppImage")
+            or receipt.channel != ("stable" if stable else "beta-bridge")
+            or not SHA256.fullmatch(receipt.sha256)
+            or not os.path.isabs(receipt.appimage)
+            or not receipt.desktop_id.endswith(".desktop") or len(receipt.desktop_id) <= len(".desktop")
+            or "/" in receipt.desktop_id or receipt.desktop_id.startswith(".")
+            or (receipt.icon and not icon_belongs(receipt.icon, receipt.appimage))):
+        raise invalid
+    return receipt
+
+
+# --- Gear Lever ---------------------------------------------------------------------------------
+
+@dataclasses.dataclass(frozen=True)
+class Entry:
+    name: str
+    path: str
+    desktop_id: str | None
+    manager: str | None
+    embedded: bool
+    running: bool | None
+
+
+def parse_listing(text):
+    """Gear Lever prints one JSON document; tolerate unrelated lines printed before it."""
+    data = None
+    for candidate in [text, *reversed([line for line in text.splitlines() if line.lstrip().startswith("{")])]:
+        try:
+            data = json.loads(candidate)
+            break
+        except ValueError:
+            continue
+    schema = data.get("schema_version") if isinstance(data, dict) else None
+    if type(schema) is not int or schema != 1 or not isinstance(data.get("installed"), list):
+        raise HelperError("Gear Lever did not return its version 1 JSON listing; Gear Lever 4.6.2 or newer "
+                          "is required.")
+    entries = []
+    for item in data["installed"]:
+        desktop_id = item.get("desktop_id") if isinstance(item, dict) else None
+        if (not isinstance(item, dict) or not plain(item.get("name")) or not plain(item.get("path"))
+                or not os.path.isabs(item["path"])
+                or not (desktop_id is None or (plain(desktop_id) and "/" not in desktop_id and desktop_id))
+                or not (item.get("manager") is None or plain(item.get("manager")))
+                or type(item.get("embedded_source")) is not bool
+                or not (item.get("running") is None or type(item.get("running")) is bool)):
+            raise HelperError("Gear Lever returned a malformed integration listing; nothing was changed.")
+        entries.append(Entry(item["name"], item["path"], desktop_id, item.get("manager"),
+                             item["embedded_source"], item.get("running")))
+    return entries
+
+
+class GearLever:
+    def __init__(self, scope):
+        self.scope = scope
+
+    def run(self, action, *arguments):
+        # The action must immediately follow the application ID.
+        command = ["flatpak", "run", f"--{self.scope}", APP_ID, action, *arguments]
+        try:
+            result = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True,
+                                    timeout=GEAR_LEVER_TIMEOUT)
+        except FileNotFoundError as error:
+            raise HelperError("flatpak is not installed, so Monolith cannot run Gear Lever.") from error
+        except subprocess.TimeoutExpired as error:
+            raise HelperError(f"Gear Lever did not finish {action} within {GEAR_LEVER_TIMEOUT} seconds.") from error
+        return (result.returncode, result.stdout.decode("utf-8", "replace"),
+                result.stderr.decode("utf-8", "replace"))
+
+    def listing(self):
+        code, out, err = self.run("--list-installed", "--json")
+        if code != 0:
+            raise HelperError(f"Gear Lever could not list integrated AppImages ({summary(code, out, err)}).")
+        return parse_listing(out)
+
+
+@dataclasses.dataclass
+class Integration:
+    key: str
+    desktop_path: Path | None
+    desktop: Desktop | None
+    entry: Entry | None
+
+    def paths(self):
+        found = [str(self.desktop_path)] if self.desktop_path else []
+        appimage = self.entry.path if self.entry else (self.desktop.get("TryExec") if self.desktop else "")
+        return found + ([appimage] if appimage else [])
+
+
+def collect(paths, entries, desktops):
+    """Every WowUp-CF integration from Gear Lever's listing and its desktop directory."""
+    found = {}
+    for desktop in desktops:
+        key = canonical(desktop.path)
+        found[key] = Integration(key, desktop.path, desktop, None)
+    for entry in entries:
+        desktop_path = paths.apps / entry.desktop_id if entry.desktop_id else None
+        desktop = read_desktop(desktop_path) if desktop_path else None
+        if CF_NAME.fullmatch(entry.name) is None and not (desktop and desktop.is_cf):
+            continue
+        key = canonical(desktop_path) if desktop_path else f"appimage:{canonical(entry.path)}"
+        if key in found:
+            found[key].entry = entry
+        else:
+            found[key] = Integration(key, desktop_path, desktop, entry)
+    return [found[key] for key in sorted(found)]
+
+
+def inspect_gear_lever(paths, gear_lever):
+    return collect(paths, gear_lever.listing(), scan_cf_desktops(paths.apps))
+
+
+def update_section_name(appimage):
+    return f"app.{hashlib.md5(appimage.encode('utf-8'), usedforsecurity=False).hexdigest()}.update_manager"
+
+
+def read_update_section(paths, appimage):
+    """Read only this app's update-manager section; Gear Lever owns and rewrites the file."""
+    parser = configparser.ConfigParser(interpolation=None, default_section="\0monolith-no-defaults")
+    try:
+        with open(paths.gear_lever_config, encoding="utf-8") as file:
+            parser.read_file(file)
+    except FileNotFoundError:
+        return None
+    except (OSError, UnicodeDecodeError, configparser.Error) as error:
+        raise HelperError(f"Cannot read Gear Lever's configuration {paths.gear_lever_config}: {error}. "
+                          "WowUp-CF's custom update source was left unchanged.") from error
+    section = update_section_name(appimage)
+    if not parser.has_section(section):
+        return None
+    values = dict(parser.items(section, raw=True))
+    if not values:
+        return None
+    if (not re.fullmatch(r"[A-Za-z]+Updater", values.get("manager", ""))
+            or not all(re.fullmatch(r"[a-z0-9_]+", key) and plain(value) for key, value in values.items())):
+        raise HelperError(f"Gear Lever's update source for {appimage} in {paths.gear_lever_config} is not "
+                          "in a recognised format, so Monolith left it unchanged. Remove it in Gear Lever, "
+                          "then retry.")
+    return values
+
+
+def restore_update_source(paths, gear_lever, appimage, saved):
+    current = read_update_section(paths, appimage)
+    if current == saved:
+        return
+    if current is not None:
+        raise HelperError(f"Gear Lever's update source for {appimage} changed meanwhile")
+    options = [f"{key}={value.lower() if value in ('True', 'False') else value}"
+               for key, value in saved.items() if key != "manager"]
+    code, out, err = gear_lever.run("--set-update-source", appimage, "--manager", saved["manager"], *options)
+    restored = read_update_section(paths, appimage)
+    if code != 0 or restored is None or {key: value.lower() for key, value in restored.items()} != {
+            key: value.lower() for key, value in saved.items()}:
+        raise HelperError(f"Gear Lever did not restore the update source ({summary(code, out, err)}); "
+                          f"re-enter manager {saved['manager']} with {', '.join(options)} in Gear Lever")
+
+
+def clear_update_source(paths, gear_lever, transaction, entry):
+    if entry.manager is None:
+        return
+    if entry.embedded:
+        raise HelperError(f"The integrated WowUp-CF AppImage {entry.path} embeds an update source that Gear "
+                          "Lever cannot unset. Nothing was changed.")
+    saved = read_update_section(paths, entry.path)
+    if saved is None or saved.get("manager") != entry.manager:
+        raise HelperError(f"Cannot read Gear Lever's custom update source for {entry.path}, so Monolith left "
+                          "it unchanged. Remove it in Gear Lever, then retry.")
+    record = transaction.workdir() / "update-source.ini"
+    record.write_text("".join(f"{key}={value}\n" for key, value in saved.items()))
+    transaction.saved.append(f"{record} (Gear Lever update source of {entry.path})")
+    transaction.on_rollback(f"restore Gear Lever's update source for {entry.path}",
+                            lambda: restore_update_source(paths, gear_lever, entry.path, saved))
+    code, out, err = gear_lever.run("--set-update-source", entry.path, "--manager", "GithubUpdater", "--unset")
+    if code != 0 or read_update_section(paths, entry.path) is not None:
+        raise HelperError(f"Gear Lever could not remove WowUp-CF's custom update source "
+                          f"({summary(code, out, err)}).")
+    print("Removed Gear Lever's custom update source for WowUp-CF; Monolith selects its updates.", flush=True)
+
+
+# --- running application ----------------------------------------------------------------------------
+
+def process_uid(base):
+    try:
+        status = (base / "status").read_text(errors="replace")
+    except OSError:
+        return None
+    for line in status.splitlines():
+        if line.startswith("Uid:"):
+            fields = line.split()
+            return int(fields[1]) if len(fields) > 1 and fields[1].isdigit() else None
+    return None
+
+
+def mentions_wowup(base):
+    texts = []
+    for name in ("comm", "cmdline"):
+        with contextlib.suppress(OSError):
+            texts.append((base / name).read_bytes().replace(b"\0", b" ").decode("utf-8", "replace"))
+    return any(PROCESS_NAME.search(text) for text in texts)
+
+
+def ensure_closed(entries, appimages):
+    """Never modify the binary or preferences while WowUp-CF runs; nothing is ever killed.
+
+    The AppImage runtime keeps running as the app's FUSE server with the AppImage as its
+    executable, so /proc/PID/exe identifies it. Gear Lever compares that path without resolving
+    /home -> /var/home, and Electron overwrites its processes' environ, so neither the running
+    field nor APPIMAGE alone is enough.
+    """
+    if any(entry.running is not False for entry in entries if entry is not None):
+        raise RunningError()
+    wanted = {canonical(path) for path in appimages if path}
+    uid = os.getuid()
+    try:
+        pids = [name for name in os.listdir(PROC_ROOT) if name.isdigit()]
+    except OSError as error:
+        raise HelperError(f"Cannot inspect running processes in {PROC_ROOT}: {error}") from error
+    for pid in pids:
+        base = PROC_ROOT / pid
+        if process_uid(base) != uid:
+            continue
+        try:
+            executable = os.readlink(base / "exe")
+        except OSError as error:
+            if error.errno in (errno.ENOENT, errno.ESRCH):
+                executable = None
+            elif mentions_wowup(base):
+                raise RunningError() from None
+            else:
+                executable = None
+        if executable and canonical(executable.removesuffix(" (deleted)")) in wanted:
+            raise RunningError()
+        try:
+            environ = (base / "environ").read_bytes()
+        except OSError as error:
+            if error.errno in (errno.ENOENT, errno.ESRCH):
+                continue
+            if mentions_wowup(base):
+                raise RunningError() from None
+            continue
+        for item in environ.split(b"\0"):
+            if item.startswith(b"APPIMAGE=") and len(item) > 9 and canonical(os.fsdecode(item[9:])) in wanted:
+                raise RunningError()
+
+
+# --- WowUp preferences -------------------------------------------------------------------------------
+
+@dataclasses.dataclass(frozen=True)
+class PreferenceState:
+    data: bytes
+    mode: int
+    value: dict
+
+
+class Preferences:
+    def __init__(self, path):
+        self.path = path
+        self.backup = path.with_name(path.name + ".monolith-backup")
+
+    def read(self):
+        try:
+            status = os.lstat(self.path)
+        except (FileNotFoundError, NotADirectoryError):
+            return None
+        if stat.S_ISLNK(status.st_mode):
+            raise HelperError(f"WowUp-CF's preferences {self.path} are a symbolic link, so Monolith will not "
+                              "replace them. Replace the link with a regular file, then retry.")
+        data = read_regular(self.path, MAX_LARGE_FILE) if stat.S_ISREG(status.st_mode) else None
+        if data is None:
+            raise HelperError(f"WowUp-CF's preferences {self.path} are not a regular file, so Monolith will "
+                              "not replace them. Move it aside, then retry.")
+        try:
+            value = json.loads(data.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            value = None
+        if not isinstance(value, dict):
+            raise HelperError(f"WowUp-CF's preferences {self.path} are not a valid JSON object, so Monolith "
+                              "will not replace them. Repair the file or move it aside, then retry.")
+        return PreferenceState(data, stat.S_IMODE(status.st_mode), value)
+
+    def ensure_stable(self, transaction, expected):
+        """Set only WowUp-CF's application release channel to Stable; addon channels stay untouched."""
+        current = self.read()
+        if current != expected:
+            raise HelperError(f"{self.path} changed while Monolith was working; nothing was changed. Retry.")
+        if current is None:
+            transaction.make_dirs(self.path.parent, 0o700)
+            transaction.create_file(self.path, json.dumps({CHANNEL_KEY: CHANNEL_STABLE}, indent="\t").encode(),
+                                    0o600)
+        elif current.value.get(CHANNEL_KEY) == CHANNEL_STABLE:
+            return
+        else:
+            if not os.path.lexists(self.backup):
+                transaction.create_file(self.backup, current.data, current.mode)
+            merged = dict(current.value)
+            merged[CHANNEL_KEY] = CHANNEL_STABLE
+            transaction.replace_file(self.path, json.dumps(merged, indent="\t", ensure_ascii=False).encode(),
+                                     current.mode, current.data, "preferences.json")
+        print("Set WowUp-CF's application release channel to Stable.", flush=True)
+
+
+# --- transactions --------------------------------------------------------------------------------------
+
+class Scratch:
+    """Private temporary names; everything is removed unless kept as named recovery files."""
+
+    def __init__(self, paths):
+        self.paths = paths
+        self.created_roots = []
+        self.directories = []
+        self.files = []
+
+    def ensure_root(self):
+        missing = []
+        current = self.paths.managed_root
+        while not os.path.lexists(current):
+            missing.append(current)
+            current = current.parent
+        for path in reversed(missing):
+            with GUARD.critical():
+                os.mkdir(path)
+                self.created_roots.append(path)
+
+    def mkdtemp(self, prefix):
+        self.ensure_root()
+        with GUARD.critical():
+            directory = Path(tempfile.mkdtemp(prefix=prefix, dir=self.paths.managed_root))
+            self.directories.append(directory)
+        return directory
+
+    def sibling(self, path, suffix):
+        with GUARD.critical():
+            name = path.parent / f".{path.name}.{secrets.token_hex(6)}{suffix}"
+            self.files.append(name)
+        return name
+
+    def keep(self, directory):
+        self.directories.remove(directory)
+
+    def cleanup(self, success):
+        for file in self.files:
+            with contextlib.suppress(OSError):
+                file.unlink(missing_ok=True)
+        for directory in self.directories:
+            shutil.rmtree(directory, ignore_errors=True)
+        if not success:
+            for path in reversed(self.created_roots):
+                remove_empty_dir(path)
+
+
+def write_sibling(scratch, path, data, mode):
+    temporary = scratch.sibling(path, ".monolith-tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600)
+    with os.fdopen(descriptor, "wb") as file:
+        file.write(data)
+        file.flush()
+        os.fsync(file.fileno())
+    os.chmod(temporary, mode)
+    return temporary
+
+
+def copy_sibling(scratch, source, path, mode, release=None):
+    """Put source's bytes beside path, by hard link or rename when possible, verifying copies."""
+    temporary = scratch.sibling(path, ".monolith-new")
+    try:
+        if release is None:
+            os.link(source, temporary)
+        else:
+            os.rename(source, temporary)
+    except OSError:
+        digest = hashlib.sha256()
+        size = 0
+        with open(source, "rb") as reader:
+            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600)
+            with os.fdopen(descriptor, "wb") as writer:
+                while chunk := reader.read(CHUNK):
+                    digest.update(chunk)
+                    size += len(chunk)
+                    writer.write(chunk)
+                writer.flush()
+                os.fsync(writer.fileno())
+        if release is not None and (size != release.size or digest.hexdigest() != release.sha256):
+            raise HelperError(f"Copying the verified AppImage to {path.parent} corrupted it. Nothing was kept.")
+    os.chmod(temporary, mode)
+    return temporary
+
+
+class Transaction:
+    """Ordered, state-based undo steps: each restores only what this run demonstrably changed."""
+
+    def __init__(self, scratch):
+        self.scratch = scratch
+        self.directory = None
+        self.undo = []
+        self.saved = []
+
+    def workdir(self):
+        if self.directory is None:
+            self.directory = self.scratch.mkdtemp(".rollback.")
+        return self.directory
+
+    def on_rollback(self, description, action):
+        self.undo.append((description, action))
+
+    def save(self, path, label, large=False):
+        target = self.workdir() / f"{len(self.saved) + 1}-{label}"
+        try:
+            if not large:
+                raise OSError
+            os.link(path, target)
+        except OSError:
+            shutil.copyfile(path, target, follow_symlinks=False)
+        self.saved.append(f"{target} (copy of {path})")
+        return target
+
+    def make_dirs(self, directory, mode=0o755):
+        missing = []
+        current = Path(directory)
+        while not os.path.lexists(current):
+            missing.append(current)
+            current = current.parent
+        for path in reversed(missing):
+            with GUARD.critical():
+                os.mkdir(path, mode)
+                self.on_rollback(f"remove {path}", lambda path=path: remove_empty_dir(path))
+
+    def create_file(self, path, data, mode):
+        temporary = write_sibling(self.scratch, path, data, mode)
+        self.link_new(temporary, path)
+
+    def link_new(self, temporary, path):
+        identity = file_identity(temporary)
+        self.on_rollback(f"remove {path}", lambda: unlink_if_identity(path, identity))
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            raise HelperError(f"{path} appeared while Monolith was working; it was not overwritten.") from None
+        os.unlink(temporary)
+
+    def replace_file(self, path, data, mode, expected, label):
+        self.replace_with(write_sibling(self.scratch, path, data, mode), path, label,
+                          lambda: read_regular(path, MAX_LARGE_FILE) == expected)
+
+    def replace_with(self, temporary, path, label, unchanged, large=False):
+        original_mode = stat.S_IMODE(os.lstat(path).st_mode)
+        backup = self.save(path, label, large)
+        identity = file_identity(temporary)
+
+        def restore():
+            if file_identity(path) == identity:
+                os.replace(copy_sibling(self.scratch, backup, path, original_mode), path)
+
+        self.on_rollback(f"restore {path}", restore)
+        if not unchanged():
+            raise HelperError(f"{path} changed while Monolith was working; it was not overwritten. Retry.")
+        os.replace(temporary, path)
+
+    def write_private(self, path, data, label):
+        current = read_regular(path, MAX_LARGE_FILE)
+        if current == data:
+            return
+        if current is None:
+            if os.path.lexists(path):
+                raise HelperError(f"{path} is not a regular file; move it aside, then retry.")
+            self.create_file(path, data, 0o644)
+        else:
+            self.replace_file(path, data, 0o644, current, label)
+
+    def remove_private(self, path, label):
+        if read_regular(path, MAX_LARGE_FILE) is None:
+            return
+        backup = self.save(path, label)
+
+        def restore():
+            if not os.path.lexists(path):
+                temporary = copy_sibling(self.scratch, backup, path, 0o644)
+                os.link(temporary, path)
+                os.unlink(temporary)
+
+        self.on_rollback(f"restore {path}", restore)
+        os.unlink(path)
+
+    def rollback(self):
+        failures = []
+        for description, action in reversed(self.undo):
+            try:
+                action()
+            except Exception as error:
+                failures.append(f"could not {description}: {error}")
+        self.undo.clear()
+        if not failures:
+            return None
+        message = "; ".join(failures)
+        if self.directory is not None:
+            self.scratch.keep(self.directory)
+            message += f". Recovery files were kept in {self.directory}"
+            if self.saved:
+                message += ": " + "; ".join(self.saved)
+        return message
+
+
+def run_transaction(transaction, body):
+    try:
+        result = body()
+    except BaseException as error:
+        with GUARD.shielded():
+            failure = transaction.rollback()
+        if failure is None:
+            raise
+        if isinstance(error, Interrupted):
+            error.detail = failure
+            raise
+        raise HelperError(f"{error} Rollback was incomplete: {failure}.") from error
+    transaction.undo.clear()
+    return result
+
+
+# --- planning ------------------------------------------------------------------------------------------
+
+@dataclasses.dataclass
+class Plan:
+    mode: str
+    keys: list
+    integration: Integration | None = None
+    receipt: Receipt | None = None
+    missing: frozenset = frozenset()
+    snapshot_desktop: bytes | None = None
+    snapshot_icon: bytes | None = None
+
+    @property
+    def appimage(self):
+        if self.receipt is not None:
+            return self.receipt.appimage
+        return self.integration.entry.path if self.integration else None
+
+    @property
+    def entry(self):
+        return self.integration.entry if self.integration else None
+
+
+def conflict_list(integrations):
+    return "; ".join(" -> ".join(integration.paths()) for integration in integrations)
+
+
+def adoption_problem(desktop_path, appimage):
+    """Filesystem-only reasons one external integration cannot be adopted, with the offending path."""
+    desktop = read_desktop(desktop_path, follow=False) if desktop_path else None
+    if desktop is None:
+        return desktop_path, "its launcher is not a regular, readable desktop file"
+    if desktop.get("X-AppImage-Name") != APP_NAME:
+        return desktop_path, "its launcher lacks X-AppImage-Name=WowUp-CF"
+    if not appimage or not desktop.points_to(appimage):
+        return desktop_path, "its launcher does not start the AppImage Gear Lever lists"
+    if file_kind(appimage) != "regular":
+        return appimage, "its AppImage is missing or not a regular file"
+    return None
+
+
+def make_plan(paths, receipt, integrations):
+    keys = [integration.key for integration in integrations]
+    if receipt is None:
+        if not integrations:
+            return Plan("fresh", keys)
+        if len(integrations) > 1:
+            raise HelperError(f"Found {len(integrations)} WowUp-CF integrations: {conflict_list(integrations)}. "
+                              "Keep only one in Gear Lever, then retry; Monolith will not guess which one "
+                              "to replace.")
+        integration = integrations[0]
+        entry = integration.entry
+        if entry is None:
+            problem = (integration.desktop_path, "Gear Lever does not list it, because its AppImage is missing "
+                                                 "or unsupported")
+        else:
+            problem = adoption_problem(integration.desktop_path, entry.path)
+        if problem:
+            raise HelperError(f"Monolith cannot adopt the WowUp-CF integration {conflict_list(integrations)}: "
+                              f"{problem[1]}. Resolve it in Gear Lever, then retry.")
+        integration.desktop = read_desktop(integration.desktop_path, follow=False)
+        return Plan("adopt", keys, integration)
+
+    desktop_path = paths.apps / receipt.desktop_id
+    key = canonical(desktop_path)
+    others = [integration for integration in integrations if integration.key != key]
+    if others:
+        raise HelperError(f"Another WowUp-CF integration exists besides Monolith's: {conflict_list(others)}. "
+                          "Remove or consolidate it in Gear Lever, then retry.")
+    missing = set()
+    conflicts = []
+    kind = file_kind(receipt.appimage)
+    if kind == "missing":
+        missing.add("appimage")
+    elif kind == "other":
+        conflicts.append(receipt.appimage)
+    desktop = None
+    kind = file_kind(desktop_path)
+    if kind == "missing":
+        missing.add("desktop")
+    else:
+        desktop = read_desktop(desktop_path, follow=False)
+        if desktop is None or not desktop.points_to(receipt.appimage):
+            conflicts.append(str(desktop_path))
+    if receipt.icon:
+        kind = file_kind(receipt.icon)
+        if not icons_dir_ok(receipt.icon):
+            conflicts.append(str(Path(receipt.icon).parent))
+        elif kind == "missing":
+            missing.add("icon")
+        elif kind == "other":
+            conflicts.append(receipt.icon)
+    if conflicts:
+        raise HelperError(f"The Monolith-managed WowUp-CF integration has replaced or conflicting files: "
+                          f"{', '.join(conflicts)}. Monolith will not overwrite them; resolve that "
+                          "integration in Gear Lever (or move those files aside), then retry.")
+    entry = integrations[0].entry if integrations else None
+    if entry is not None and canonical(entry.path) != canonical(receipt.appimage):
+        raise HelperError(f"Gear Lever's WowUp-CF launcher {desktop_path} now points to {entry.path}, not "
+                          f"Monolith's {receipt.appimage}. Resolve it in Gear Lever, then retry.")
+    if entry is None and not missing:
+        raise HelperError(f"Gear Lever does not list the Monolith-managed WowUp-CF integration {desktop_path}. "
+                          "Resolve it in Gear Lever, then retry.")
+    return Plan("managed", keys, Integration(key, desktop_path, desktop, entry), receipt, frozenset(missing))
+
+
+def load_snapshots(paths, plan):
+    """A repair needs Monolith's last-successful copies of every missing launcher or icon."""
+    if "desktop" in plan.missing:
+        data = read_regular(paths.snapshot_desktop)
+        values = parse_desktop(data) if data is not None else None
+        if values is None or not Desktop(paths.snapshot_desktop, data, values).points_to(plan.receipt.appimage):
+            raise HelperError(f"{plan.integration.desktop_path} is missing and Monolith's saved launcher "
+                              f"{paths.snapshot_desktop} is missing or invalid, so it cannot be repaired. "
+                              "Resolve the WowUp-CF integration in Gear Lever, then retry.")
+        plan.snapshot_desktop = data
+    if "icon" in plan.missing:
+        data = read_regular(paths.snapshot_icon, MAX_LARGE_FILE)
+        if not data:
+            raise HelperError(f"{plan.receipt.icon} is missing and Monolith's saved icon {paths.snapshot_icon} "
+                              "is missing, so it cannot be repaired. Resolve the WowUp-CF integration in Gear "
+                              "Lever, then retry.")
+        plan.snapshot_icon = data
+
+
+def recheck(paths, gear_lever, plan):
+    """Immediately before publication: same integrations and launcher, and WowUp-CF still closed."""
+    integrations = inspect_gear_lever(paths, gear_lever)
+    if [integration.key for integration in integrations] != plan.keys:
+        raise HelperError("Gear Lever's WowUp-CF integrations changed while Monolith was working; nothing "
+                          "was changed. Retry.")
+    if plan.integration is not None and plan.integration.desktop is not None:
+        current = read_desktop(plan.integration.desktop_path, follow=False)
+        if current is None or current.data != plan.integration.desktop.data:
+            raise HelperError(f"{plan.integration.desktop_path} changed while Monolith was working; nothing "
+                              "was changed. Retry.")
+    if plan.integration is not None and integrations:
+        plan.integration.entry = integrations[0].entry
+    ensure_closed([plan.entry], [plan.appimage])
+
+
+# --- install ---------------------------------------------------------------------------------------------
+
+def folder_state(folder):
+    def names(path):
+        try:
+            return set(os.listdir(path))
+        except OSError:
+            return None
+    return folder, names(folder), names(folder / ".icons")
+
+
+def launcher_targets(paths):
+    """Canonical TryExec and Icon paths of every launcher in Gear Lever's desktop directory."""
+    targets = set()
+    with contextlib.suppress(OSError):
+        for name in os.listdir(paths.apps):
+            desktop = read_desktop(paths.apps / name) if name.endswith(".desktop") else None
+            for key in ("TryExec", "Icon"):
+                if desktop is not None and os.path.isabs(desktop.get(key)):
+                    targets.add(canonical(desktop.get(key)))
+    return targets
+
+
+def remove_strays(paths, before, release):
+    """Delete only unregistered files a failed Gear Lever call left: new, and exactly the verified download."""
+    folder, names_before, icons_before = before
+    _, names, icons = folder_state(folder)
+    referenced = launcher_targets(paths)
+    for name in sorted((names or set()) - (names_before or set())):
+        path = folder / name
+        status = lstat_or_none(path)
+        if (status is None or not stat.S_ISREG(status.st_mode) or status.st_size != release.size
+                or canonical(path) in referenced or file_sha256(path) != release.sha256):
+            continue
+        os.unlink(path)
+        stem = os.path.splitext(name)[0]
+        for icon in sorted((icons or set()) - (icons_before or set())):
+            icon_path = folder / ".icons" / icon
+            if (os.path.splitext(icon)[0] == stem and file_kind(icon_path) == "regular"
+                    and canonical(icon_path) not in referenced):
+                os.unlink(icon_path)
+    if icons_before is None:
+        remove_empty_dir(folder / ".icons")
+    if names_before is None:
+        remove_empty_dir(folder)
+
+
+def undo_fresh_integration(paths, gear_lever, before, release):
+    leftovers = []
+    for integration in inspect_gear_lever(paths, gear_lever):
+        entry = integration.entry
+        if entry is not None:
+            code, out, err = gear_lever.run("--remove", entry.path, "--yes", "--delete")
+            if code == 0 and not any(os.path.lexists(path) for path in integration.paths()):
+                continue
+        leftovers.extend(path for path in integration.paths() if os.path.lexists(path))
+    remove_strays(paths, before, release)
+    if leftovers:
+        raise HelperError(f"the new WowUp-CF integration could not be removed: {', '.join(leftovers)}. Remove "
+                          "it in Gear Lever")
+
+
+def existing_copy(release, before):
+    folder, names_before, _ = before
+    for name in sorted(names_before or ()):
+        path = folder / name
+        status = lstat_or_none(path)
+        if (status is not None and stat.S_ISREG(status.st_mode) and status.st_size == release.size
+                and file_sha256(path) == release.sha256):
+            return path
+    return None
+
+
+def integrate_fresh(paths, gear_lever, transaction, staged, release):
+    before = folder_state(gear_lever_folder(paths))
+    transaction.on_rollback("remove the new Gear Lever integration",
+                            lambda: undo_fresh_integration(paths, gear_lever, before, release))
+    print("Integrating WowUp-CF with Gear Lever...", flush=True)
+    code, out, err = gear_lever.run("--integrate", str(staged), "--replace", "--yes")
+    if code != 0:
+        raise HelperError(f"Gear Lever could not integrate WowUp-CF ({summary(code, out, err)}).")
+    integrations = inspect_gear_lever(paths, gear_lever)
+    if len(integrations) != 1 or integrations[0].entry is None:
+        copy = existing_copy(release, before) if not integrations else None
+        hint = (f" Gear Lever already has an identical AppImage without a launcher at {copy}; integrate or "
+                "delete it in Gear Lever, then retry." if copy else "")
+        raise HelperError(f"Gear Lever did not create exactly one WowUp-CF integration "
+                          f"({conflict_list(integrations) or 'none found'}).{hint}")
+    integration = integrations[0]
+    entry = integration.entry
+    desktop = read_desktop(integration.desktop_path, follow=False) if integration.desktop_path else None
+    if desktop is None or not desktop.points_to(entry.path) or file_kind(entry.path) != "regular":
+        raise HelperError(f"Gear Lever's new WowUp-CF launcher does not point to its AppImage "
+                          f"({conflict_list(integrations)}).")
+    if file_sha256(entry.path) != release.sha256:
+        raise HelperError(f"The AppImage Gear Lever integrated at {entry.path} does not match the verified "
+                          "download.")
+    integration.desktop = desktop
+    return integration
+
+
+def replace_appimage(transaction, appimage, source, release, identity):
+    path = Path(appimage)
+    temporary = copy_sibling(transaction.scratch, source, path, 0o755, release)
+
+    def unchanged():
+        status = lstat_or_none(path)
+        return status is not None and (status.st_dev, status.st_ino, status.st_size,
+                                       status.st_mtime_ns) == identity
+
+    transaction.replace_with(temporary, path, "appimage", unchanged, large=True)
+
+
+def restore_missing(transaction, plan, source, release):
+    """Recreate only missing Monolith-owned objects from the verified AppImage and saved artifacts."""
+    receipt = plan.receipt
+    restored = []
+    if "appimage" in plan.missing:
+        appimage = Path(receipt.appimage)
+        transaction.make_dirs(appimage.parent)
+        transaction.link_new(copy_sibling(transaction.scratch, source, appimage, 0o755, release), appimage)
+        restored.append(str(appimage))
+    if "desktop" in plan.missing:
+        desktop_path = plan.integration.desktop_path
+        transaction.make_dirs(desktop_path.parent)
+        transaction.create_file(desktop_path, plan.snapshot_desktop, 0o644)
+        restored.append(str(desktop_path))
+    if "icon" in plan.missing:
+        icon = Path(receipt.icon)
+        transaction.make_dirs(icon.parent)
+        transaction.create_file(icon, plan.snapshot_icon, 0o644)
+        restored.append(str(icon))
+    print(f"Restored {', '.join(restored)}.", flush=True)
+
+
+def find_managed(paths, gear_lever, appimage, desktop_path):
+    integrations = inspect_gear_lever(paths, gear_lever)
+    key = canonical(desktop_path)
+    if (len(integrations) != 1 or integrations[0].key != key or integrations[0].entry is None
+            or canonical(integrations[0].entry.path) != canonical(appimage)):
+        raise HelperError(f"Gear Lever does not list exactly one WowUp-CF integration at {desktop_path} "
+                          f"({conflict_list(integrations) or 'none found'}). Resolve it in Gear Lever, then "
+                          "retry.")
+    integration = integrations[0]
+    integration.desktop = read_desktop(desktop_path, follow=False)
+    if integration.desktop is None or not integration.desktop.points_to(appimage):
+        raise HelperError(f"The WowUp-CF launcher {desktop_path} does not point to {appimage}.")
+    return integration
+
+
+def set_desktop_version(transaction, integration, release):
+    desktop = integration.desktop
+    if desktop.get("X-AppImage-Version") == release.version:
+        return
+    mode = stat.S_IMODE(os.lstat(integration.desktop_path).st_mode)
+    transaction.replace_file(integration.desktop_path,
+                             set_desktop_value(desktop.data, "X-AppImage-Version", release.version),
+                             mode, desktop.data, "launcher.desktop")
+
+
+def verify(paths, gear_lever, appimage, desktop_path, release):
+    integration = find_managed(paths, gear_lever, appimage, desktop_path)
+    entry = integration.entry
+    status = lstat_or_none(entry.path)
+    problems = []
+    if integration.desktop.get("X-AppImage-Version") != release.version:
+        problems.append("its launcher version was not updated")
+    if entry.manager is not None or entry.embedded:
+        problems.append(f"Gear Lever still has update source {entry.manager}")
+    if status is None or not stat.S_ISREG(status.st_mode) or status.st_size != release.size:
+        problems.append(f"{entry.path} is not the verified AppImage")
+    if problems:
+        raise HelperError(f"The WowUp-CF integration did not verify: {'; '.join(problems)}.")
+    return integration
+
+
+def finalize(paths, transaction, integration, release):
+    icon = owned_icon(integration.desktop, integration.entry.path)
+    transaction.make_dirs(paths.snapshots)
+    transaction.write_private(paths.snapshot_desktop, integration.desktop.data, "integration.desktop")
+    if icon is None:
+        transaction.remove_private(paths.snapshot_icon, "integration.icon")
+    else:
+        data = read_regular(icon, MAX_LARGE_FILE)
+        if data is None:
+            raise HelperError(f"Cannot read the WowUp-CF icon {icon}")
+        transaction.write_private(paths.snapshot_icon, data, "integration.icon")
+    receipt = Receipt(release.version, release.url, release.channel, release.sha256, integration.entry.path,
+                      integration.desktop_path.name, icon or "")
+    transaction.make_dirs(paths.receipt.parent)
+    # Publishing the receipt is the last step of every successful transaction.
+    transaction.write_private(paths.receipt, receipt.encode(), "wowup-cf.managed")
+
+
+def install(scope):
+    paths = Paths()
+    require_readelf()
+    receipt = load_receipt(paths)
+    preferences = Preferences(paths.preferences)
+    preferences_before = preferences.read()
+    gear_lever = GearLever(scope)
+    plan = make_plan(paths, receipt, inspect_gear_lever(paths, gear_lever))
+    load_snapshots(paths, plan)
+    ensure_closed([plan.entry], [plan.appimage])
+    releases = parse_releases(fetch_releases())
+    target = select_target(releases, receipt is not None and receipt.channel == "stable")
+    current = None
+    if plan.mode != "fresh" and "appimage" not in plan.missing:
+        current = identify(plan.appimage, receipt, releases)
+    elif receipt is not None:
+        current = Current(receipt.version, version_key(receipt.version))
+    if current is not None and current.key > target.key:
+        raise HelperError(f"The installed WowUp-CF {current.version} is newer than {target.version}, the newest "
+                          "version Monolith permits; Monolith never downgrades. Nothing was changed.")
+    reuse = current is not None and current.sha256 == target.sha256
+    print(f"Selected WowUp-CF {target.describe()} from {REPOSITORY}.", flush=True)
+    scratch = Scratch(paths)
+    success = False
+    try:
+        source = Path(plan.appimage) if reuse else download(target, scratch.mkdtemp(".stage."))
+        check_embedded(source, target)
+        recheck(paths, gear_lever, plan)
+        transaction = Transaction(scratch)
+
+        def publish():
+            preferences.ensure_stable(transaction, preferences_before)
+            if plan.mode == "fresh":
+                integration = integrate_fresh(paths, gear_lever, transaction, source, target)
+            else:
+                if plan.missing:
+                    restore_missing(transaction, plan, source, target)
+                if not reuse and "appimage" not in plan.missing:
+                    replace_appimage(transaction, plan.appimage, source, target, current.identity)
+                integration = find_managed(paths, gear_lever, plan.appimage, plan.integration.desktop_path)
+                if "desktop" not in plan.missing and integration.desktop.data != plan.integration.desktop.data:
+                    raise HelperError(f"{integration.desktop_path} changed while Monolith was working; it was "
+                                      "not overwritten. Retry.")
+            clear_update_source(paths, gear_lever, transaction, integration.entry)
+            set_desktop_version(transaction, integration, target)
+            integration = verify(paths, gear_lever, integration.entry.path, integration.desktop_path, target)
+            finalize(paths, transaction, integration, target)
+            return integration
+
+        integration = run_transaction(transaction, publish)
+        success = True
+    finally:
+        with GUARD.shielded():
+            scratch.cleanup(success)
+    location = integration.entry.path
+    if plan.mode == "fresh":
+        print(f"Installed WowUp-CF {target.version} with Gear Lever at {location}.")
+    elif current is not None and current.key != target.key:
+        print(f"Updated WowUp-CF from {current.version} to {target.version} at {location}.")
+    else:
+        print(f"WowUp-CF {target.version} is installed at {location}.")
+    if plan.mode == "adopt":
+        print("Monolith now manages this existing Gear Lever integration and its launcher.")
+
+
+# --- remove ----------------------------------------------------------------------------------------------
+
+def repair_before_removal(paths, gear_lever, plan):
+    """Gear Lever can only deregister an integration whose AppImage and launcher exist."""
+    receipt = plan.receipt
+    scratch = Scratch(paths)
+    success = False
+    try:
+        source = release = None
+        if "appimage" in plan.missing:
+            releases = parse_releases(fetch_releases())
+            release = select_target(releases, receipt.channel == "stable")
+            source = download(release, scratch.mkdtemp(".stage."))
+        ensure_closed([plan.entry], [plan.appimage])
+        transaction = Transaction(scratch)
+
+        def publish():
+            restore_missing(transaction, plan, source, release)
+            find_managed(paths, gear_lever, receipt.appimage, plan.integration.desktop_path)
+            if release is not None:
+                updated = dataclasses.replace(receipt, version=release.version, source=release.url,
+                                              channel=release.channel, sha256=release.sha256)
+                transaction.write_private(paths.receipt, updated.encode(), "wowup-cf.managed")
+
+        run_transaction(transaction, publish)
+        success = True
+    finally:
+        with GUARD.shielded():
+            scratch.cleanup(success)
+
+
+def forget(paths, receipt):
+    """Once Gear Lever no longer registers WowUp-CF: drop its owned icon copy, the receipt, then snapshots."""
+    if receipt.icon and file_kind(receipt.icon) == "regular" and icons_dir_ok(receipt.icon):
+        os.unlink(receipt.icon)
+    with GUARD.critical():
+        paths.receipt.unlink(missing_ok=True)
+    with GUARD.shielded():
+        for path in (paths.snapshot_desktop, paths.snapshot_icon):
+            path.unlink(missing_ok=True)
+        remove_empty_dir(paths.snapshots)
+
+
+def remove(scope):
+    paths = Paths()
+    receipt = load_receipt(paths)
+    if receipt is None:
+        raise HelperError(f"WowUp-CF is not managed by Monolith ({paths.receipt} does not exist), so nothing "
+                          "was removed. Remove other WowUp-CF integrations in Gear Lever.")
+    gear_lever = GearLever(scope)
+    plan = make_plan(paths, receipt, inspect_gear_lever(paths, gear_lever))
+    ensure_closed([plan.entry], [plan.appimage])
+    if {"appimage", "desktop"} <= plan.missing:
+        # Gear Lever lists integrations by launcher; with launcher and AppImage gone none is registered.
+        forget(paths, receipt)
+        print("WowUp-CF's AppImage and launcher were already gone; Monolith removed its own records. "
+              "Settings, addons and game data were kept.")
+        return
+    if plan.missing:
+        load_snapshots(paths, plan)
+        repair_before_removal(paths, gear_lever, plan)
+        receipt = load_receipt(paths)
+        plan = make_plan(paths, receipt, inspect_gear_lever(paths, gear_lever))
+        if plan.missing:
+            raise HelperError("The WowUp-CF integration is still incomplete; resolve it in Gear Lever.")
+        ensure_closed([plan.entry], [plan.appimage])
+    integration = plan.integration
+    entry = integration.entry
+    desktop = integration.desktop
+    icon = desktop.get("Icon")
+    owned = receipt.icon
+    scratch = Scratch(paths)
+    transaction = Transaction(scratch)
+
+    def publish():
+        # Gear Lever deletes any absolute Icon file; protect icons that are not its own copy.
+        if "/" in icon and not (owned and canonical(icon) == canonical(owned)):
+            transaction.replace_file(integration.desktop_path,
+                                     set_desktop_value(desktop.data, "Icon", NEUTRAL_ICON),
+                                     stat.S_IMODE(os.lstat(integration.desktop_path).st_mode),
+                                     desktop.data, "launcher.desktop")
+        code, out, err = gear_lever.run("--remove", entry.path, "--yes", "--delete")
+        remaining = [path for path in (entry.path, str(integration.desktop_path)) if os.path.lexists(path)]
+        if code != 0 or remaining:
+            raise HelperError(f"Gear Lever did not remove WowUp-CF ({summary(code, out, err)}); still present: "
+                              f"{', '.join(remaining) or 'none'}. Monolith kept its receipt so the removal "
+                              "can be retried.")
+        if any(canonical(item.path) == canonical(entry.path) for item in gear_lever.listing()):
+            raise HelperError(f"Gear Lever still lists {entry.path} after removing it.")
+
+    success = False
+    try:
+        run_transaction(transaction, publish)
+        forget(paths, receipt)
+        success = True
+    finally:
+        with GUARD.shielded():
+            scratch.cleanup(success)
+    print(f"Removed WowUp-CF from Gear Lever ({entry.path}). Its settings, addons and game data were kept.")
+
+
+# --- read-only inspection ----------------------------------------------------------------------------------
+
+def inspect(paths):
+    """Filesystem-only: no Gear Lever, no network, no hashing and no writes."""
+    result = {"status": "not installed", "version": None, "appimage": None, "desktop_id": None,
+              "source": None, "channel": None, "conflicts": []}
+    desktops = scan_cf_desktops(paths.apps)
+    try:
+        receipt = load_receipt(paths)
+    except HelperError:
+        return dict(result, status="needs repair", conflicts=[str(paths.receipt)])
+    if receipt is not None:
+        problems = []
+        if file_kind(receipt.appimage) != "regular":
+            problems.append(receipt.appimage)
+        desktop_path = paths.apps / receipt.desktop_id
+        desktop = read_desktop(desktop_path, follow=False)
+        if desktop is None or not desktop.points_to(receipt.appimage):
+            problems.append(str(desktop_path))
+        if receipt.icon and file_kind(receipt.icon) != "regular":
+            problems.append(receipt.icon)
+        problems.extend(str(item.path) for item in desktops if canonical(item.path) != canonical(desktop_path))
+        return dict(result, status="needs repair" if problems else "installed", version=receipt.version,
+                    appimage=receipt.appimage, desktop_id=receipt.desktop_id, source=receipt.source,
+                    channel=receipt.channel, conflicts=problems)
+    if not desktops:
+        return result
+    if len(desktops) > 1:
+        return dict(result, status="external", conflicts=[str(item.path) for item in desktops])
+    desktop = desktops[0]
+    tryexec = desktop.get("TryExec")
+    problem = adoption_problem(desktop.path, tryexec)
+    return dict(result, status="external", appimage=tryexec or None, desktop_id=desktop.path.name,
+                conflicts=[str(problem[0])] if problem else [])
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(
+        prog="wowup-cf",
+        description="Install, update and remove WowUp-CF through Gear Lever under Monolith's release policy: "
+                    "the 2.24.0 beta series (beta.6 or newer) until a stable release 2.24.0 or newer exists, "
+                    "then stable releases only.")
+    parser.add_argument("--scope", choices=("user", "system"),
+                        help="Flatpak installation providing Gear Lever (required for install and remove)")
+    commands = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
+    commands.add_parser("status", help="print installed, needs repair, external or not installed")
+    commands.add_parser("info", help="print the inspected integration as a JSON object")
+    commands.add_parser("install", help="install, adopt, update or repair the Gear Lever integration")
+    commands.add_parser("remove", help="remove the Monolith-managed Gear Lever integration")
+    return parser
+
+
+def main(argv=None):
+    parser = build_parser()
+    arguments = parser.parse_args(argv)
+    if arguments.command in ("install", "remove") and arguments.scope is None:
+        parser.error("--scope user|system is required for install and remove")
+    GUARD.reset()
+    previous = {signum: signal.signal(signum, GUARD.handler) for signum in (signal.SIGINT, signal.SIGTERM)}
+    code = 0
+    try:
+        if arguments.command == "status":
+            print(inspect(Paths())["status"])
+        elif arguments.command == "info":
+            print(json.dumps(inspect(Paths()), ensure_ascii=False))
+        elif arguments.command == "install":
+            install(arguments.scope)
+        else:
+            remove(arguments.scope)
+    except Interrupted as error:
+        code = 128 + error.signum
+        detail = f"rollback was incomplete: {error.detail}" if error.detail else "no changes were kept"
+        print(f"Error: Cancelled by {signal.Signals(error.signum).name}; {detail}.", file=sys.stderr)
+    except RunningError:
+        code = 1
+        print(RUNNING_MESSAGE, file=sys.stderr)
+    except Exception as error:
+        code = 1
+        print(f"Error: {error}", file=sys.stderr)
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+    if code == 0 and GUARD.received is not None:
+        code = 128 + GUARD.received
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main())
