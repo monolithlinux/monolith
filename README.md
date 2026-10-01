@@ -86,26 +86,37 @@ Rebased accounts use this to copy missing `/etc/skel` defaults and rebuild the f
 
 ## Optional software
 
-Run the interactive per-user software manager:
+Run the interactive per-user software dashboard:
 
 ```bash
 monolith
 ```
 
-The menu contains Developer CLIs, AI coding tools, and Appearance options.
-Selecting an unchecked item installs it; selecting a checked item removes its managed program files
-while preserving settings and data. The `ujust monolith`, `ujust software`, and
-`ujust monolith-software` aliases open the same menu.
+The dashboard groups software into Developer CLIs, AI coding, Gaming, and
+Appearance, and shows each item's status and version. Type to filter, press
+Enter to open an item, then choose an explicit action: Install, Update, Repair,
+Adopt and update (for a supported copy installed outside Monolith), or Remove.
+Removal asks first and keeps settings, logins, sessions, addon data, and
+projects. Esc goes back. **Update installed** updates every Monolith-managed
+item; inside a category it updates only that category. The `ujust monolith`,
+`ujust software`, and `ujust monolith-software` aliases open the same
+dashboard. Without fzf, or with `TERM=dumb`, it uses numbered menus; set
+`NO_COLOR` to turn off colour.
 
 The underlying command also supports scripting and troubleshooting:
 
 ```bash
 monolith list
 monolith install codex herdr
-monolith install omp
+monolith install wowup-cf
 monolith update
 monolith remove codex
 ```
+
+Each item is installed, updated, or removed in its own step. A failing item is
+reported and the rest of the batch continues; the command then exits with an
+error. Ctrl-C cancels the current item and the rest of the batch. Only one
+install, update, or removal runs at a time.
 
 Oh My Pi (`omp`) is available in the AI coding category. Monolith installs its
 standalone Linux binary from the [official releases](https://github.com/can1357/oh-my-pi/releases)
@@ -114,13 +125,40 @@ and verifies the release checksum; Bun and npm are not required. Use
 managed executable. Your `~/.omp/` settings, authentication, sessions, and project
 files are preserved.
 
-Updates to Tea, Superfile, nak, ngit, Oh My Pi, and Herdr keep the previous
-installation until the new executable, launchers, and version record have been
-published successfully.
+Tea, Superfile, and Oh My Pi downloads are checked against their published
+SHA256 checksums, and nak and ngit downloads against the SHA256 digests GitHub
+records for their release files. Updates to Tea, Superfile, nak, ngit, Oh My Pi,
+and Herdr keep the previous installation until the new executable, launchers,
+and version record have been published successfully. Claude Code, Codex CLI,
+and OpenCode use their official installers; if an installer or the new
+version's start-up check fails, Monolith restores the previous program files,
+launcher, and version record.
 Commands that you replace yourself are preserved on removal and must be moved
 out of the way before updating. Older Herdr installs that placed a binary
 directly in `~/.local/bin/herdr` may show `needs repair`: move that executable
 aside, then run `monolith install herdr` to use the managed layout.
+
+### WowUp-CF
+
+**Gaming → WowUp-CF** installs the CurseForge edition of the WowUp World of
+Warcraft addon manager, including World of Warcraft: Forever support. Monolith
+downloads the official AppImage from the
+[WowUp-CF releases](https://github.com/WowUp/WowUp.CF/releases), checks it
+against the SHA256 digest GitHub publishes, and adds it to Gear Lever, so it
+appears in the application menu like other Gear Lever apps. An existing Gear
+Lever WowUp-CF integration is adopted and updated in place rather than gaining a
+second launcher. If Gear Lever is missing, Monolith asks before installing its
+Flathub Flatpak for your account.
+
+Until a compatible 2.24.0 or newer stable release exists, Monolith follows only
+the 2.24.0 beta series, starting with beta.6. Once such a stable release is
+available, it switches to stable releases and does not enroll you in later beta
+series. Monolith sets WowUp-CF's own Application Release Channel to Stable and
+leaves addon release settings unchanged. Use **Update** in the dashboard or
+`monolith update wowup-cf` for application updates; Monolith clears any Gear
+Lever update source for WowUp-CF so that only one updater applies this policy.
+Close WowUp-CF before updating or removing it. Removal keeps your WowUp-CF
+settings, game installations, and addons.
 
 ### Waywallen wallpapers
 

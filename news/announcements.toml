@@ -20,6 +20,34 @@
 #   files/kde/usr/bin/monolith-news --preview news/announcements.toml
 
 [[announcements]]
+id = "2026-10-01-wowup-cf"
+date = 2026-10-01
+title = "WowUp-CF joins Monolith Software"
+body = """
+After booting an updated Monolith image, run **monolith**, open **Gaming**, and
+select **WowUp-CF** to install the CurseForge edition with **World of Warcraft:
+Forever** support. The refreshed software menu has explicit install, update, and
+remove actions.
+
+Monolith adds WowUp-CF to **Gear Lever** and reuses a supported existing
+integration instead of creating another launcher. If Gear Lever is missing,
+Monolith asks before installing its Flathub Flatpak for your account.
+
+For now, Monolith follows only the **2.24.0 beta** series. Once a compatible
+**2.24.0 or newer stable** is available, it switches to stable and does not enroll
+you in later beta series. WowUp's application release channel is set to Stable;
+addon release settings are unchanged.
+
+Close WowUp-CF before using **monolith update wowup-cf**. Removal keeps your
+settings, game installations, and addons. If Gaming is not in your menu yet,
+update Monolith and reboot first.
+"""
+links = [
+  { label = "WowUp-CF releases", url = "https://github.com/WowUp/WowUp.CF/releases" },
+  { label = "Monolith software guide", url = "https://github.com/monolithlinux/monolith#optional-software" },
+]
+
+[[announcements]]
 id = "2026-09-30-monolith-news"
 date = 2026-09-30
 title = "Welcome to Monolith News"
