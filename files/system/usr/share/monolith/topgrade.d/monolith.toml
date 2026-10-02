@@ -1,0 +1,5 @@
+# topgrade also updates software installed with `monolith`.
+# Linked into each account as ~/.config/topgrade.d/monolith.toml by
+# /usr/share/user-tmpfiles.d/monolith-topgrade.conf.
+[commands]
+"Monolith software" = "monolith update"
