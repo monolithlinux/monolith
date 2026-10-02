@@ -347,6 +347,9 @@ preflight_install() {
 
     # Do not overwrite a managed command that the user later replaced.
     if conflict="$(replaced_launcher "$tool")"; then
+        if can_adopt_replaced "$tool"; then
+            die "$conflict is a standalone copy outside Monolith's managed layout. To have Monolith manage and update it, run monolith, open $(tool_name "$tool"), and choose Adopt this copy and update; otherwise move it aside before updating"
+        fi
         die "$conflict no longer points to the Monolith-managed copy; move it before updating"
     fi
 
@@ -841,16 +844,21 @@ install_herdr() {
     commit_static_install "$tool" "$tmp" "${version:-unknown}" "https://herdr.dev/install.sh"
 }
 
+# Every launcher of a static tool is a regular executable file, not a symlink.
+launchers_are_programs() {
+    local command path
+    for command in $(tool_commands "$1"); do
+        path="$BIN_DIR/$command"
+        [ -f "$path" ] && [ ! -L "$path" ] && [ -x "$path" ] || return 1
+    done
+}
+
 can_adopt() {
-    local tool="$1" command
+    local tool="$1"
     case "$tool" in
         tea|superfile|nak|ngit|omp|herdr)
-            [ ! -e "$(tool_root "$tool")" ] && [ ! -L "$(tool_root "$tool")" ] || return 1
-            for command in $(tool_commands "$tool"); do
-                [ -f "$BIN_DIR/$command" ] &&
-                    [ ! -L "$BIN_DIR/$command" ] &&
-                    [ -x "$BIN_DIR/$command" ] || return 1
-            done
+            [ ! -e "$(tool_root "$tool")" ] && [ ! -L "$(tool_root "$tool")" ] &&
+                launchers_are_programs "$tool"
             ;;
         claude|codex)
             [ -d "$(tool_root "$tool")" ] && launcher_is_managed "$tool" "$tool"
@@ -864,6 +872,29 @@ can_adopt() {
             return 1
             ;;
     esac
+}
+
+# A managed tool whose launchers are now standalone programs, such as Herdr
+# installed directly in ~/.local/bin by older Monolith versions and then
+# updated by its own updater. These are adopted only on explicit request.
+can_adopt_replaced() {
+    local tool="$1"
+    case "$tool" in
+        tea|superfile|nak|ngit|omp|herdr) ;;
+        *) return 1 ;;
+    esac
+    replaced_launcher "$tool" >/dev/null && launchers_are_programs "$tool"
+}
+
+adopt_replaced_tool() {
+    local tool="$1" path
+    if ! path="$(replaced_launcher "$tool")"; then
+        die "$(tool_name "$tool") has no separate copy to adopt"
+    fi
+    can_adopt_replaced "$tool" ||
+        die "$path is not a program Monolith can adopt; move it aside, then repair $(tool_name "$tool")"
+    adopt_tool "$tool"
+    install_tool "$tool"
 }
 
 adopt_tool() {
@@ -1073,23 +1104,28 @@ acquire_operation_lock() {
     flock -n 9 || die "Another Monolith software operation is running."
 }
 
-# Internal entry point for one install or removal in its own process, where
-# errexit protects the whole call tree.
+# Internal entry point for one action in its own process, where errexit
+# protects the whole call tree.
 internal_action() {
+    local run
     [ "$#" -eq 2 ] || die "internal action needs an action and one tool ID"
     case "$1" in
-        install|remove) ;;
+        install) run=install_tool ;;
+        remove) run=remove_tool ;;
+        adopt) run=adopt_replaced_tool ;;
         *) die "unknown internal action: $1" ;;
     esac
     is_known_tool "$2" || die "unknown tool: $2"
     acquire_operation_lock
-    "${1}_tool" "$2"
+    "$run" "$2"
 }
 
 action_verb() {
     local action="$1" tool="$2"
     if [ "$action" = remove ]; then
         echo "Remove"
+    elif [ "$action" = adopt ]; then
+        echo "Adopt and update"
     elif [ "$tool" = wowup-cf ]; then
         case "$(tool_status "$tool" 2>/dev/null || true)" in
             installed) echo "Update" ;;
@@ -1117,8 +1153,8 @@ past_tense() {
     esac
 }
 
-# Run install or remove for each tool in a separate process. Ordinary
-# failures do not stop later tools; Ctrl-C or TERM ends the batch.
+# Run an action for each tool in a separate process. Ordinary failures do
+# not stop later tools; Ctrl-C or TERM ends the batch.
 run_actions() {
     local action="$1"
     shift
@@ -1126,7 +1162,7 @@ run_actions() {
     local names=() results=()
 
     case "$action" in
-        install|remove) ;;
+        install|remove|adopt) ;;
         *) die "internal error: unknown action: $action" ;;
     esac
     # Validate the whole request before any child starts.
@@ -1602,7 +1638,12 @@ show_tool_details() {
         *) printf 'Version:  %s\n' "$version" ;;
     esac
     if has_marker "$tool"; then
-        printf 'Location: %s\n' "$(tool_root "$tool")"
+        path="$(tool_root "$tool")"
+        if [ -e "$path" ]; then
+            printf 'Location: %s\n' "$path"
+        else
+            printf 'Location: %s (missing)\n' "$path"
+        fi
         for command in $(tool_commands "$tool"); do
             printf 'Command:  %s\n' "$BIN_DIR/$command"
         done
@@ -1629,8 +1670,14 @@ manage_tool() {
                 ;;
             "needs repair")
                 if conflict="$(replaced_launcher "$tool")"; then
-                    printf '\n%s no longer points to the Monolith-managed copy.\n' "$conflict"
-                    printf 'Move it aside to repair, or remove the managed files and keep that command.\n'
+                    if can_adopt_replaced "$tool"; then
+                        printf '\n%s is a standalone copy outside Monolith'\''s managed layout.\n' "$conflict"
+                        printf 'Adopt it so Monolith manages and updates it, or remove Monolith'\''s record and keep the file.\n'
+                        options+=("Adopt this copy and update"$'\t'"adopt")
+                    else
+                        printf '\n%s no longer points to the Monolith-managed copy.\n' "$conflict"
+                        printf 'Move it aside to repair, or remove the managed files and keep that command.\n'
+                    fi
                 else
                     options+=("Repair"$'\t'"install")
                 fi
@@ -1665,6 +1712,9 @@ manage_tool() {
         case "$PICKED" in
             install)
                 MONOLITH_POLICY_SHOWN=1 menu_actions install "$tool"
+                ;;
+            adopt)
+                menu_actions adopt "$tool"
                 ;;
             remove)
                 answer=0

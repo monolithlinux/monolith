@@ -848,6 +848,74 @@ test_herdr_replaced_launcher() {
     assert_absent "$managed_root/herdr"
 }
 
+# Older Monolith versions put Herdr directly in ~/.local/bin, where Herdr's
+# own updater replaces it in place. On request, adopt that copy, then update.
+test_legacy_herdr_adoption() {
+    cp -- "$fixtures/v1.0.0/herdr" "$bin_dir/herdr"
+    mkdir -p "$state_root"
+    printf 'version=herdr 0.9.0\nsource=https://herdr.dev/install.sh\n' >"$state_root/herdr.managed"
+    seed_user_data "$case_root/config/herdr/config.toml"
+    release_version=v2.0.0
+    run_monolith __action adopt herdr
+    assert_launcher_under herdr "$managed_root/herdr"
+    assert_version herdr 'herdr v2.0.0'
+    grep -qx 'version=herdr v2.0.0' "$state_root/herdr.managed" || fail 'Herdr marker did not update'
+    run_monolith list >"$case_root/list.log"
+    grep -Eq '^AI coding +Herdr +installed' "$case_root/list.log" || fail 'adopted Herdr is not installed'
+    assert_user_data_preserved
+    assert_no_temp_leaks
+}
+
+# A standalone copy that replaced a managed launcher can be adopted as well.
+test_replaced_launcher_adoption() {
+    run_monolith install nak
+    rm -- "$bin_dir/nak"
+    cp -- "$fixtures/v1.0.0/nak" "$bin_dir/nak"
+    release_version=v2.0.0
+    run_monolith __action adopt nak
+    assert_launcher_under nak "$managed_root/nak"
+    assert_version nak 'nak v2.0.0'
+    grep -qx 'version=v2.0.0' "$state_root/nak.managed" || fail 'nak marker did not update'
+    assert_no_temp_leaks
+}
+
+# Adoption is published before the update starts, so a failed download leaves
+# the adopted copy working in the managed layout and ready to update later.
+test_adopted_copy_survives_failed_update() {
+    cp -- "$fixtures/v1.0.0/herdr" "$bin_dir/herdr"
+    mkdir -p "$state_root"
+    printf 'version=herdr 0.9.0\nsource=https://herdr.dev/install.sh\n' >"$state_root/herdr.managed"
+    release_version=v2.0.0
+    fail_download_match=herdr.dev/install.sh
+    expect_failure __action adopt herdr
+    assert_launcher_under herdr "$managed_root/herdr"
+    assert_version herdr 'herdr v1.0.0'
+    grep -qx 'version=herdr v1.0.0' "$state_root/herdr.managed" || fail 'adopted version was not recorded'
+    assert_no_temp_leaks
+    fail_download_match=
+    run_monolith update herdr
+    assert_version herdr 'herdr v2.0.0'
+}
+
+test_adoption_refuses_unusable_copies() {
+    mkdir -p "$state_root"
+    printf 'version=herdr 0.9.0\nsource=https://herdr.dev/install.sh\n' >"$state_root/herdr.managed"
+    cp -- "$state_root/herdr.managed" "$case_root/marker-before"
+    # A copy that does not run is left alone.
+    cp -- "$fixtures/v9.9.9/herdr" "$bin_dir/herdr"
+    expect_failure __action adopt herdr
+    assert_file_equals "$fixtures/v9.9.9/herdr" "$bin_dir/herdr"
+    # So is a launcher that links to a program elsewhere.
+    rm -- "$bin_dir/herdr"
+    ln -s "$fixtures/v1.0.0/herdr" "$bin_dir/herdr"
+    expect_failure __action adopt herdr
+    [ "$(readlink -- "$bin_dir/herdr")" = "$fixtures/v1.0.0/herdr" ] || fail 'linked Herdr launcher was replaced'
+    assert_file_equals "$case_root/marker-before" "$state_root/herdr.managed"
+    assert_absent "$managed_root/herdr"
+    [ ! -s "$case_root/curl.log" ] || fail 'refused adoption downloaded files'
+    assert_no_temp_leaks
+}
+
 wait_for_file() {
     local path="$1" tries=0
     while [ ! -e "$path" ]; do
@@ -942,6 +1010,8 @@ for test in omp_lifecycle omp_unmanaged_launcher omp_replaced_launcher omp_check
     second_ngit_launcher_failure regular_file_adoption failed_adoption_restores_originals \
     claude_broken_launcher_needs_repair native_installers codex_lifecycle_and_inherited_environment \
     native_failures_roll_back native_adoption herdr_legacy_launcher herdr_replaced_launcher \
+    legacy_herdr_adoption replaced_launcher_adoption adopted_copy_survives_failed_update \
+    adoption_refuses_unusable_copies \
     overlapping_mutation_is_locked interrupt_rolls_back_and_cancels_batch terminate_cleans_staging; do
     # Do not put the subshell in an if condition: that disables Bash errexit
     # throughout the test function and can conceal a failing manager command.
