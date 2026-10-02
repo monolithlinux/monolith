@@ -142,10 +142,13 @@ and version record have been published successfully. Claude Code, Codex CLI,
 and OpenCode use their official installers; if an installer or the new
 version's start-up check fails, Monolith restores the previous program files,
 launcher, and version record.
-Commands that you replace yourself are preserved on removal and must be moved
-out of the way before updating. Older Herdr installs that placed a binary
-directly in `~/.local/bin/herdr` may show `needs repair`: move that executable
-aside, then run `monolith install herdr` to use the managed layout.
+Commands that you replace yourself are preserved on removal and are never
+updated over. When such a command is a standalone copy of the program, for
+example a Herdr binary that older Monolith versions installed directly in
+`~/.local/bin/herdr`, the item shows `needs repair`: open it in `monolith` and
+choose **Adopt this copy and update** to move that copy into the managed layout
+and update it, or move the file aside and run `monolith install <tool>`. After
+adoption, `herdr update` updates the managed copy in place.
 
 ### WowUp-CF
 
