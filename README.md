@@ -118,6 +118,15 @@ reported and the rest of the batch continues; the command then exits with an
 error. Ctrl-C cancels the current item and the rest of the batch. Only one
 install, update, or removal runs at a time.
 
+Running `topgrade` also runs `monolith update`, as its **Monolith software**
+step after the other updates. Items that cannot update, such as WowUp-CF while
+it is open, are reported as a failure in topgrade's summary; the rest still
+update. At each login, Monolith links `~/.config/topgrade.d/monolith.toml` to
+the image's copy unless a file already exists there. To opt out, replace that
+link with an empty file, or run
+`ln -s /dev/null ~/.config/user-tmpfiles.d/monolith-topgrade.conf` and then
+delete the link.
+
 Oh My Pi (`omp`) is available in the AI coding category. Monolith installs its
 standalone Linux binary from the [official releases](https://github.com/can1357/oh-my-pi/releases)
 and verifies the release checksum; Bun and npm are not required. Use

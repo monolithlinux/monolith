@@ -28,6 +28,7 @@ jobs:
           tests/monolith-paths.sh
           tests/monolith-software.sh
           python3 tests/wowup-cf.py
+          tests/monolith-topgrade.sh
       - name: Test edition selection
         run: bash tests/pick-editions.sh
       - name: Test Monolith News

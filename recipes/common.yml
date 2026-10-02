@@ -226,6 +226,12 @@ modules:
         for command in fzf python3 curl flock readelf; do
           command -v "$command" >/dev/null
         done
+        # The login rule must link a drop-in that the image ships.
+        home="$(mktemp -d)"
+        HOME="$home" XDG_RUNTIME_DIR="$home" \
+          systemd-tmpfiles --user --create /usr/share/user-tmpfiles.d/monolith-topgrade.conf
+        test -f "$(readlink "$home/.config/topgrade.d/monolith.toml")"
+        rm -rf "$home"
       - |
         # Install Pure system-wide without a runtime plugin manager.
         set -euxo pipefail
