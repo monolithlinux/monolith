@@ -9,20 +9,30 @@
 # new id appears. Editing an existing entry, including its date, does not show it
 # again; publish a new id instead.
 #
-#   id     unique; 1-64 lowercase letters, digits, or hyphens; never reuse one
-#   date   publication date shown to users (YYYY-MM-DD)
-#   title  one line, at most 120 characters
-#   body   Markdown; raw HTML is shown as plain text
-#   links  optional, at most 3 buttons: { label = "...", url = "https://..." }
-#          (labels: one line, at most 40 characters)
+#   id            unique; 1-64 lowercase letters, digits, or hyphens; never reuse one
+#   date          publication date shown to users (YYYY-MM-DD)
+#   title         one line, at most 120 characters
+#   category      optional label beside the date, such as "Gaming"; one line, at
+#                 most 24 characters
+#   install_path  optional "Get it" steps, such as ["monolith", "Gaming", "r2modman"];
+#                 at most 5 steps of one line and at most 40 characters each
+#   body          Markdown; raw HTML is shown as plain text
+#   note          optional tip shown below the body; one line, at most 240 characters
+#   links         optional, at most 3 buttons: { label = "...", url = "https://..." }
+#                 (labels: one line, at most 40 characters)
 #
-# Preview before opening a pull request (does not touch your dismissals):
+# Older Monolith images ignore category, install_path, and note, so keep anything
+# essential in body.
+#
+# Preview before opening a pull request (does not touch your read state):
 #   files/kde/usr/bin/monolith-news --preview news/announcements.toml
 
 [[announcements]]
 id = "2026-10-03-r2modman"
 date = 2026-10-03
 title = "r2modman joins Monolith Software"
+category = "Gaming"
+install_path = ["monolith", "Gaming", "r2modman"]
 body = """
 After booting an updated Monolith image, run **monolith**, open **Gaming**, and
 select **r2modman** to install the mod manager for Thunderstore games such as
@@ -49,6 +59,8 @@ links = [
 id = "2026-10-01-wowup-cf"
 date = 2026-10-01
 title = "WowUp-CF joins Monolith Software"
+category = "Gaming"
+install_path = ["monolith", "Gaming", "WowUp-CF"]
 body = """
 After booting an updated Monolith image, run **monolith**, open **Gaming**, and
 select **WowUp-CF** to install the CurseForge edition with **World of Warcraft:
@@ -77,14 +89,15 @@ links = [
 id = "2026-09-30-monolith-news"
 date = 2026-09-30
 title = "Welcome to Monolith News"
+category = "Monolith"
 body = """
 Monolith News shares project announcements, such as required actions and notable
 changes. It checks the Monolith GitHub repository when you log in and opens only
 when there is something new.
 
-After you dismiss this window, it stays closed until the next announcement. Open
-**Monolith News** from the application menu to read past announcements, or clear
-**Check for announcements at login** below to stop the login check.
+After you close this window, it stays closed until the next announcement. Open
+**Monolith News** from the application menu to read past announcements, or turn
+off the login check at the bottom of this window.
 """
 links = [
   { label = "Read the README", url = "https://github.com/monolithlinux/monolith#readme" },
