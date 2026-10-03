@@ -1,21 +1,22 @@
 #!/usr/bin/env python3
-"""Offline tests for Monolith's WowUp-CF helper against a file-backed Gear Lever 4.6.2 model.
+"""Offline tests for Monolith's Gear Lever app helper (WowUp-CF and r2modman) against a file-backed
+Gear Lever 4.6.2 model.
 
 Besides running the suite, this file provides test doubles for other harnesses:
 
-  python3 tests/wowup-cf.py fake-flatpak ARGS...
-      Act as `flatpak` against the JSON state file named by $WOWUP_TEST_FLATPAK_STATE:
+  python3 tests/gear-lever-apps.py fake-flatpak ARGS...
+      Act as `flatpak` against the JSON state file named by $MONOLITH_TEST_FLATPAK_STATE:
       `info --user|--system it.mijorus.gearlever`,
       `list --app --user|--system --columns=application:f,version:f`,
       `install --user --noninteractive --assumeyes <official flatpakref>` and
       `run --user|--system it.mijorus.gearlever ACTION ...` (Gear Lever 4.6.2's CLI, maintaining real
       AppImage, desktop, icon and gearlever.conf files under $HOME). Other calls exit 97 and are logged.
-  python3 tests/wowup-cf.py install-fake-flatpak BIN_DIR STATE_FILE [SCOPE=VERSION ...]
+  python3 tests/gear-lever-apps.py install-fake-flatpak BIN_DIR STATE_FILE [SCOPE=VERSION ...]
       Write a `flatpak` shim into BIN_DIR and a default state (Gear Lever system=4.6.2 unless given).
-  python3 tests/wowup-cf.py run-helper HELPER_ARGS...
-      Run the real helper with HTTP answered from the routes file $WOWUP_TEST_HTTP (see FakeWeb.save)
-      and processes read from $WOWUP_TEST_PROC_ROOT; unknown URLs fail and are written to
-      "$WOWUP_TEST_HTTP.unexpected".
+  python3 tests/gear-lever-apps.py run-helper [--scope user|system] APP ACTION
+      Run the real helper with HTTP answered from the routes file $MONOLITH_TEST_HTTP (see FakeWeb.save)
+      and processes read from $MONOLITH_TEST_PROC_ROOT; unknown URLs fail and are written to
+      "$MONOLITH_TEST_HTTP.unexpected".
 """
 
 import ast
@@ -36,14 +37,13 @@ sys.dont_write_bytecode = True
 
 THIS = Path(__file__).resolve()
 ROOT = THIS.parents[1]
-HELPER = ROOT / "files/system/usr/libexec/monolith/wowup-cf"
+HELPER = ROOT / "files/system/usr/libexec/monolith/gear-lever-app"
 APP_ID = "it.mijorus.gearlever"
 FLATPAKREF = "https://dl.flathub.org/repo/appstream/it.mijorus.gearlever.flatpakref"
-STATE_ENV = "WOWUP_TEST_FLATPAK_STATE"
-HTTP_ENV = "WOWUP_TEST_HTTP"
-PROC_ENV = "WOWUP_TEST_PROC_ROOT"
+STATE_ENV = "MONOLITH_TEST_FLATPAK_STATE"
+HTTP_ENV = "MONOLITH_TEST_HTTP"
+PROC_ENV = "MONOLITH_TEST_PROC_ROOT"
 UNMODELLED = 97
-RELEASES = "https://api.github.com/repos/WowUp/WowUp.CF/releases?per_page=100&page={page}"
 ICON = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR monolith fixture icon"
 
 
@@ -74,16 +74,21 @@ def elf(sections):
 
 
 _APPIMAGES = {}
+# Embedded launcher lines that differ from WowUp's, as the official r2modman AppImage ships them.
+COMMENTS = {"r2modman": "A simple and easy to use mod manager for many games using Thunderstore."}
+MIME_TYPES = {"r2modman": "x-scheme-handler/ror2mm;"}
 
 
 def make_appimage(version, *, name="WowUp-CF", update_info=b""):
     """A small AppImage: real ELF for readelf, plus the embedded desktop entry and .DirIcon Gear Lever reads."""
     key = (version, name, update_info)
     if key not in _APPIMAGES:
+        mime_type = f"MimeType={MIME_TYPES[name]}\n" if name in MIME_TYPES else ""
         desktop = (f"[Desktop Entry]\nName={name}\nExec=AppRun --no-sandbox %U\nTerminal=false\n"
                    f"Type=Application\nIcon={name.lower()}\nStartupWMClass={name}\n"
-                   f"X-AppImage-Version={version}\nComment=World of Warcraft addon updater\n"
-                   "Categories=Game;\n").encode()
+                   f"X-AppImage-Version={version}\n"
+                   f"Comment={COMMENTS.get(name, 'World of Warcraft addon updater')}\n"
+                   f"{mime_type}Categories=Game;\n").encode()
         _APPIMAGES[key] = elf([
             (".upd_info", update_info.ljust(1024, b"\0")),
             (".monolith.desktop", desktop),
@@ -150,6 +155,31 @@ TEMPLATES = {
     "FTPUpdater": {"url": str, "filename": str},
     "ForgejoUpdater": {"allow_prereleases": bool, "repo_url": str, "repo_filename": str},
 }
+
+# Gear Lever writes launchers with desktop_entry_lib's DesktopEntry.get_text(): Type, then these keys in
+# this order, then the X- keys in their original order. Other keys of the embedded launcher are dropped.
+DESKTOP_KEYS = ("Version", "Name", "GenericName", "NoDisplay", "Comment", "Icon", "Hidden", "OnlyShowIn",
+                "NotShowIn", "DBusActivatable", "TryExec", "Exec", "Path", "Terminal", "MimeType", "Categories",
+                "Implements", "Keywords", "StartupNotify", "StartupWMClass", "URL", "PrefersNonDefaultGPU",
+                "SingleMainWindow")
+BOOLEAN_KEYS = frozenset({"NoDisplay", "Hidden", "DBusActivatable", "Terminal", "StartupNotify",
+                          "PrefersNonDefaultGPU", "SingleMainWindow"})
+LIST_KEYS = frozenset({"OnlyShowIn", "NotShowIn", "MimeType", "Categories", "Implements", "Keywords"})
+
+
+def launcher_text(entry):
+    """DesktopEntry.get_text() for an entry without translations or desktop actions."""
+    lines = ["[Desktop Entry]", f"Type={entry.get('Type', 'Application')}"]
+    for key in DESKTOP_KEYS:
+        value = entry.get(key)
+        if key in BOOLEAN_KEYS:
+            value = value.lower() if value is not None and value.lower() in ("true", "false") else None
+        elif key in LIST_KEYS and value is not None:
+            value = ";".join(value.removesuffix(";").split(";")) + ";"
+        if value is not None and (value or key not in ("Name", "GenericName", "Comment")):
+            lines.append(f"{key}={value}")
+    lines += [f"{key}={value}" for key, value in entry.items() if key.startswith("X-")]
+    return "".join(line + "\n" for line in lines)
 
 
 def default_state(installed=None):
@@ -422,18 +452,12 @@ class GearLeverModel:
             _, _, exec_arguments = terminal_arguments(embedded.get("Exec", ""))
             title = f"{name} ({version or hashlib.md5(Path(source).read_bytes()).hexdigest()[:6]})" if keep else name
             exec_line = " ".join(["env DESKTOPINTEGRATION=1", shlex.quote(destination), *exec_arguments])
-            lines = [("Type", embedded.get("Type", "Application")), ("Name", title),
-                     ("Comment", embedded.get("Comment")), ("Icon", icon), ("TryExec", destination),
-                     ("Exec", exec_line), ("Terminal", embedded.get("Terminal", "false")),
-                     ("Categories", embedded.get("Categories")), ("StartupWMClass", embedded.get("StartupWMClass"))]
-            custom = {key: value for key, value in embedded.items() if key.startswith("X-")}
+            entry = dict(embedded, Name=title, Icon=icon, TryExec=destination, Exec=exec_line)
             if version:
-                custom["X-AppImage-Version"] = version
-            custom["X-AppImage-Name"] = name
-            text = "[Desktop Entry]\n" + "".join(f"{key}={value}\n" for key, value in [*lines, *custom.items()]
-                                                 if value is not None)
+                entry["X-AppImage-Version"] = version
+            entry["X-AppImage-Name"] = name
             with open(desktop, "w+") as file:
-                file.write(text)
+                file.write(launcher_text(entry))
             self.set_app_config(destination, name, {"default_exec_arguments": " ".join(exec_arguments)})
         except OSError as error:
             return 1, "", f"Traceback (most recent call last):\n{type(error).__name__}: {error}\n"
@@ -652,6 +676,7 @@ if __name__ == "__main__" and sys.argv[1:2] == ["fake-flatpak"]:
 # --- test harness (imported only when not acting as flatpak) -----------------------------------------------
 
 import contextlib  # noqa: E402
+import dataclasses  # noqa: E402
 import email.message  # noqa: E402
 import errno  # noqa: E402
 import importlib.machinery  # noqa: E402
@@ -673,7 +698,7 @@ _LOADS = 0
 def load_helper():
     global _LOADS
     _LOADS += 1
-    loader = importlib.machinery.SourceFileLoader(f"wowup_cf_test_{_LOADS}", str(HELPER))
+    loader = importlib.machinery.SourceFileLoader(f"gear_lever_app_test_{_LOADS}", str(HELPER))
     spec = importlib.util.spec_from_loader(loader.name, loader)
     module = importlib.util.module_from_spec(spec)
     sys.modules[loader.name] = module
@@ -685,27 +710,63 @@ def sha256(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def download_url(version):
-    return f"https://github.com/WowUp/WowUp.CF/releases/download/v{version}/WowUp-CF-{version}.AppImage"
+@dataclasses.dataclass(frozen=True)
+class Fixture:
+    """An application the helper manages, as GitHub and Gear Lever 4.6.2 present it."""
+
+    id: str  # the helper's APP argument
+    name: str  # its launcher Name and X-AppImage-Name
+    repository: str
+    stem: str  # Gear Lever's file name for its AppImage, launcher and icon
+    old: str  # a release tests install first ...
+    new: str  # ... and a later one they update to
+    settings: tuple = ()  # files below XDG_CONFIG_HOME that the helper writes for the app
+
+    def asset(self, version):
+        return f"{self.name}-{version}.AppImage"
+
+    def releases_url(self, page):
+        return f"https://api.github.com/repos/{self.repository}/releases?per_page=100&page={page}"
+
+    def download_url(self, version):
+        return f"https://github.com/{self.repository}/releases/download/v{version}/{self.asset(version)}"
 
 
-def release(version, *, data=None, prerelease=None, draft=False, digest="auto", state="uploaded",
+WOWUP_CF = Fixture("wowup-cf", "WowUp-CF", "WowUp/WowUp.CF", "wowupcf", "2.24.0-beta.6", "2.24.0-beta.10",
+                   ("WowUpCf/preferences.json", "WowUpCf/preferences.json.monolith-backup"))
+R2MODMAN = Fixture("r2modman", "r2modman", "ebkr/r2modmanPlus", "r2modman", "3.2.19", "3.2.20")
+
+
+def download_url(version, app=WOWUP_CF):
+    return app.download_url(version)
+
+
+def release(version, *, app=WOWUP_CF, data=None, prerelease=None, draft=False, digest="auto", state="uploaded",
             name=None, url=None, size=None, duplicate=False):
     """A GitHub release object as the REST API returns it, with Windows/macOS/updater assets beside it."""
-    data = make_appimage(version) if data is None else data
-    name = name or f"WowUp-CF-{version}.AppImage"
+    data = make_appimage(version, name=app.name) if data is None else data
+    name = name or app.asset(version)
+    base = f"https://github.com/{app.repository}/releases/download/v{version}/"
     asset = {"name": name, "state": state, "size": len(data) if size is None else size,
              "content_type": "application/octet-stream",
              "digest": f"sha256:{sha256(data)}" if digest == "auto" else digest,
-             "browser_download_url": url or f"https://github.com/WowUp/WowUp.CF/releases/download/v{version}/{name}"}
-    others = [{"name": f"WowUp-CF-Setup-{version}.exe", "state": "uploaded", "size": 7,
+             "browser_download_url": url or base + name}
+    others = [{"name": f"{app.name}-Setup-{version}.exe", "state": "uploaded", "size": 7,
                "digest": f"sha256:{sha256(b'windows')}",
-               "browser_download_url": f"https://github.com/WowUp/WowUp.CF/releases/download/v{version}/WowUp-CF-Setup-{version}.exe"},
+               "browser_download_url": f"{base}{app.name}-Setup-{version}.exe"},
               {"name": "latest-linux.yml", "state": "uploaded", "size": 5, "digest": f"sha256:{sha256(b'yaml')}",
-               "browser_download_url": f"https://github.com/WowUp/WowUp.CF/releases/download/v{version}/latest-linux.yml"}]
+               "browser_download_url": base + "latest-linux.yml"}]
     return {"tag_name": f"v{version}", "name": f"v{version}", "draft": draft,
             "prerelease": ("-beta." in version) if prerelease is None else prerelease,
             "assets": [others[0], asset, *([dict(asset)] if duplicate else []), others[1]]}
+
+
+def r2_release(version, **options):
+    return release(version, app=R2MODMAN, **options)
+
+
+def r2_appimage(version, **options):
+    return make_appimage(version, name="r2modman", **options)
 
 
 class FakeResponse(io.BytesIO):
@@ -739,16 +800,16 @@ class FakeWeb:
         self.routes[url] = {"body": body, "status": status, "headers": headers or {}, "error": error,
                             "hold": hold, "on_open": on_open}
 
-    def publish(self, releases):
+    def publish(self, releases, app=WOWUP_CF):
         pages = [releases[index:index + 100] for index in range(0, len(releases), 100)] or [[]]
         if len(pages[-1]) == 100:
             pages.append([])
         for number, page in enumerate(pages, 1):
-            self.add(RELEASES.format(page=number), json.dumps(page).encode(),
+            self.add(app.releases_url(number), json.dumps(page).encode(),
                      headers={"Content-Type": "application/json; charset=utf-8"})
 
-    def asset(self, version, data, *, length=True):
-        self.add(download_url(version), data, headers={"Content-Length": str(len(data))} if length else {})
+    def asset(self, version, data, *, app=WOWUP_CF, length=True):
+        self.add(app.download_url(version), data, headers={"Content-Length": str(len(data))} if length else {})
 
     def urlopen(self, request, timeout=None, **kwargs):
         url = getattr(request, "full_url", request)
@@ -845,13 +906,17 @@ EMBEDDED = {
 }
 
 
-class WowUpCfTests(unittest.TestCase):
+class GearLeverAppCase(unittest.TestCase):
+    """A HOME with unrelated launchers, a regular WowUp integration and both apps' user data, plus the Gear
+    Lever, HTTP and /proc doubles. APP is the application the harness helpers act on by default."""
+
+    APP = WOWUP_CF
     maxDiff = None
 
     def setUp(self):
         # Gear Lever 4.6.2 replaces spaces anywhere in its launcher path, so HOME itself has none here;
         # XDG directories, staging and the AppImage folder in the alias test do contain spaces.
-        temporary = tempfile.TemporaryDirectory(prefix="monolith-wowup-")
+        temporary = tempfile.TemporaryDirectory(prefix="monolith-gear-lever-")
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         self.harness = self.root / "harness"
@@ -870,15 +935,14 @@ class WowUpCfTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
         self.addCleanup(os.umask, os.umask(0o022))  # Gear Lever creates files with the caller's umask
         self.helper = load_helper()
-        self.receipt = self.state_home / "monolith/software/wowup-cf.managed"
         self.managed = self.data / "monolith/software"
-        self.snapshots = self.managed / "wowup-cf"
+        self.receipt = self.receipt_of(self.APP)
+        self.snapshots = self.managed / self.APP.id
         self.prefs = self.config / "WowUpCf/preferences.json"
         self.apps = self.home / ".local/share/applications"
         self.appimages = self.home / "AppImages"
-        self.cf = self.appimages / "wowupcf.appimage"
-        self.cf_desktop = self.apps / "wowupcf.desktop"
-        self.cf_icon = self.appimages / ".icons/wowupcf"
+        self.cf, self.cf_desktop, self.cf_icon = self.files_of(WOWUP_CF)
+        self.r2, self.r2_desktop, self.r2_icon = self.files_of(R2MODMAN)
         self.allow_recovery = False
         # Unrelated data and a regular (non-CurseForge) WowUp integration that must never change.
         self.apps.mkdir(parents=True)
@@ -889,6 +953,12 @@ class WowUpCfTests(unittest.TestCase):
             self.config / "WowUp/preferences.json": b'{\n\t"wowup_release_channel_2_6": "0"\n}',
             self.home / "Games/World of Warcraft/_retail_/Interface/AddOns/Details/Details.toc": b"## Title: Details\n",
             self.home / "Games/World of Warcraft/_retail_/WTF/Config.wtf": b'SET gxWindow "1"\n',
+            # r2modman's profiles, mods and settings: below XDG_CONFIG_HOME, or ~/.config without it.
+            self.config / "r2modmanPlus-local/config/window-state.yml": b"width: 1280\nheight: 800\n",
+            self.config / "r2modmanPlus-local/RiskOfRain2/profiles/Default/mods.yml": b"- name: BepInExPack\n",
+            self.config / "r2modman/Preferences": b'{"spellcheck":{"dictionaries":["en-US"]}}',
+            self.home / ".config/r2modmanPlus-local/config/window-state.yml": b"width: 1024\nheight: 768\n",
+            self.home / ".config/r2modman/Preferences": b'{"spellcheck":{"dictionaries":["de-DE"]}}',
         }
         for path, data in self.kept.items():
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -907,6 +977,25 @@ class WowUpCfTests(unittest.TestCase):
 
     # --- harness helpers ---------------------------------------------------------------------------------
 
+    def receipt_of(self, app):
+        return self.state_home / "monolith/software" / f"{app.id}.managed"
+
+    def files_of(self, app):
+        """The AppImage, launcher and icon Gear Lever creates for the app in its default folder."""
+        return (self.appimages / f"{app.stem}.appimage", self.apps / f"{app.stem}.desktop",
+                self.appimages / ".icons" / app.stem)
+
+    def records(self, app):
+        """Mode and bytes of everything kept for the app: its Gear Lever integration and configuration
+        sections, the settings the helper writes for it, and Monolith's receipt and snapshots."""
+        snapshots = self.managed / app.id
+        paths = [*self.files_of(app), *(self.config / name for name in app.settings), self.receipt_of(app),
+                 snapshots, snapshots / "integration.desktop", snapshots / "integration.icon"]
+        found = {str(path): (stat.S_IMODE(path.lstat().st_mode), None if path.is_dir() else path.read_bytes())
+                 for path in paths if path.exists()}
+        prefix = f"app.{GearLeverModel.digest(str(self.files_of(app)[0]))}"
+        return found, {name: values for name, values in self.gear_lever_config().items() if name.startswith(prefix)}
+
     def call(self, *arguments):
         stdout, stderr = io.StringIO(), io.StringIO()
         with mock.patch("urllib.request.urlopen", self.web.urlopen), \
@@ -915,11 +1004,11 @@ class WowUpCfTests(unittest.TestCase):
             code = self.helper.main(list(arguments))
         return Result(code, stdout.getvalue(), stderr.getvalue())
 
-    def install(self, scope="system"):
-        return self.call("--scope", scope, "install")
+    def install(self, scope="system", app=None):
+        return self.call("--scope", scope, (app or self.APP).id, "install")
 
-    def remove(self, scope="system"):
-        return self.call("--scope", scope, "remove")
+    def remove(self, scope="system", app=None):
+        return self.call("--scope", scope, (app or self.APP).id, "remove")
 
     def ok(self, result):
         self.assertEqual(result.code, 0, result)
@@ -930,21 +1019,24 @@ class WowUpCfTests(unittest.TestCase):
         self.assertTrue(result.stderr.strip(), result)
         return result
 
-    def status(self):
-        result = self.ok(self.call("status"))
+    def status(self, app=None):
+        result = self.ok(self.call((app or self.APP).id, "status"))
         return result.stdout.rstrip("\n")
 
-    def info(self):
-        return json.loads(self.ok(self.call("info")).stdout)
+    def info(self, app=None):
+        return json.loads(self.ok(self.call((app or self.APP).id, "info")).stdout)
 
-    def serve(self, *versions, assets=(), extra=()):
-        self.web.routes.clear()
-        self.web.publish([release(version) for version in versions] + list(extra))
+    def serve(self, *versions, assets=(), extra=(), app=None):
+        """Publish exactly these releases of the app, replacing its earlier routes, and these downloads."""
+        app = app or self.APP
+        for url in [url for url in self.web.routes if f"/{app.repository}/" in url]:
+            del self.web.routes[url]
+        self.web.publish([release(version, app=app) for version in versions] + list(extra), app=app)
         for version in assets:
-            self.web.asset(version, make_appimage(version))
+            self.web.asset(version, make_appimage(version, name=app.name), app=app)
 
     def integrate(self, data, *, keep_both=False):
-        staged = self.root / "Downloads" / f"WowUp-CF-{sha256(data)[:12]}.AppImage"
+        staged = self.root / "Downloads" / f"download-{sha256(data)[:12]}.AppImage"
         staged.parent.mkdir(exist_ok=True)
         staged.write_bytes(data)
         code, out, err = self.flatpak.gear_lever("--integrate", str(staged), "--yes",
@@ -1000,18 +1092,21 @@ class WowUpCfTests(unittest.TestCase):
                     found.append(os.path.join(directory, name))
         return found
 
-    def cf_launchers(self):
+    def launchers(self, app=None):
+        name = (app or self.APP).name
         return sorted(path for path in self.apps.glob("*.desktop")
-                      if (desktop_entry(path) or {}).get("X-AppImage-Name") == "WowUp-CF")
+                      if (desktop_entry(path) or {}).get("X-AppImage-Name") == name)
 
-    def cf_entries(self):
-        return [entry for entry in self.flatpak.listing() if entry["name"].startswith("WowUp-CF")]
+    def entries(self, app=None):
+        name = (app or self.APP).name
+        return [entry for entry in self.flatpak.listing() if re.fullmatch(rf"{re.escape(name)}( \(.+\))?",
+                                                                          entry["name"])]
 
     def integrations_attempted(self, since):
         return [call for call in self.flatpak.calls()[since:] if "--integrate" in call]
 
-    def read_receipt(self):
-        return dict(line.split("=", 1) for line in self.receipt.read_text().splitlines())
+    def read_receipt(self, app=None):
+        return dict(line.split("=", 1) for line in self.receipt_of(app or self.APP).read_text().splitlines())
 
     def write_prefs(self, value, mode=0o644):
         self.prefs.parent.mkdir(parents=True, exist_ok=True)
@@ -1023,9 +1118,11 @@ class WowUpCfTests(unittest.TestCase):
     def prefs_value(self):
         return json.loads(self.prefs.read_text())
 
-    def managed_install(self, version="2.24.0-beta.6"):
-        self.serve(version, assets=[version])
-        self.ok(self.install())
+    def managed_install(self, version=None, app=None):
+        app = app or self.APP
+        version = version or app.old
+        self.serve(version, assets=[version], app=app)
+        self.ok(self.install(app=app))
 
     def spawn(self, *arguments):
         routes = self.harness / "http.json"
@@ -1045,13 +1142,39 @@ class WowUpCfTests(unittest.TestCase):
                 self.fail(f"timed out waiting for {path}")
             time.sleep(0.02)
 
+    def observe_read_only(self, expected, app=None):
+        """status and info agree on `expected` without Gear Lever, network, hashing or any change."""
+        app = app or self.APP
+        before = self.snapshot()
+        calls = len(self.flatpak.calls())
+        requests = len(self.web.requests)
+        with mock.patch.object(self.helper.subprocess, "run", side_effect=AssertionError("process")), \
+                mock.patch.object(self.helper.subprocess, "Popen", side_effect=AssertionError("process")), \
+                mock.patch.object(self.helper, "hashlib", mock.NonCallableMock(spec=[])):
+            status = self.ok(self.call(app.id, "status"))
+            info = json.loads(self.ok(self.call(app.id, "info")).stdout)
+        self.assertEqual(status.stdout, expected + "\n")
+        self.assertEqual(info["status"], expected)
+        self.assertEqual(list(info), ["status", "version", "appimage", "desktop_id", "source", "channel",
+                                      "conflicts"])
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual((len(self.flatpak.calls()), len(self.web.requests)), (calls, requests))
+        return info
+
+
+class WowUpCfTests(GearLeverAppCase):
+    APP = WOWUP_CF
+
     # --- release policy -----------------------------------------------------------------------------------
 
     def test_release_selection_policy(self):
         helper = self.helper
+        app = helper.APPS["wowup-cf"]
+        latch = helper.Receipt("2.24.0", download_url("2.24.0"), "stable", "0" * 64, str(self.cf),
+                               "wowupcf.desktop", "")
 
         def pick(*items, latched=False):
-            return helper.select_target(helper.parse_releases(list(items)), latched).version
+            return app.select(helper.parse_releases(app, list(items)), latch if latched else None).version
 
         line = [release("2.23.1"), release("2.24.0-beta.5"), release("2.24.0-beta.6"),
                 release("2.24.0-beta.10"), release("2.25.0-beta.1")]
@@ -1094,7 +1217,7 @@ class WowUpCfTests(unittest.TestCase):
         self.assertEqual(self.cf.read_bytes(), make_appimage("2.24.0"))
         receipt = self.read_receipt()
         self.assertEqual((receipt["version"], receipt["channel"]), ("2.24.0", "stable"))
-        self.assertEqual(self.cf_launchers(), [self.cf_desktop])
+        self.assertEqual(self.launchers(), [self.cf_desktop])
         stable = self.snapshot()
         # With stable reached, betas are never considered again, even if the stable release vanishes.
         self.serve("2.24.0-beta.11", "2.24.1-beta.1", "2.23.1", assets=["2.24.0-beta.11"])
@@ -1124,7 +1247,7 @@ class WowUpCfTests(unittest.TestCase):
                 self.web.routes.clear()
                 self.web.publish(filler + [release("2.24.0-beta.6"), release("2.24.0-beta.11")])
                 self.web.asset("2.24.0-beta.11", make_appimage("2.24.0-beta.11"))
-                self.web.add(RELEASES.format(page=2), **route)
+                self.web.add(WOWUP_CF.releases_url(2), **route)
                 self.failed(self.install())
                 self.assertEqual(self.snapshot(), installed)
                 self.assertNotIn(download_url("2.24.0-beta.11"), self.web.requests)
@@ -1155,8 +1278,8 @@ class WowUpCfTests(unittest.TestCase):
         self.serve("2.23.1", "2.24.0-beta.6", assets=["2.24.0-beta.6"])
         self.assertEqual(self.status(), "not installed")
         self.ok(self.install())
-        self.assertEqual(self.cf_launchers(), [self.cf_desktop])
-        self.assertEqual(len(self.cf_entries()), 1)
+        self.assertEqual(self.launchers(), [self.cf_desktop])
+        self.assertEqual(len(self.entries()), 1)
         launcher = desktop_entry(self.cf_desktop)
         self.assertEqual(launcher["TryExec"], str(self.cf))
         self.assertEqual(launcher["X-AppImage-Version"], "2.24.0-beta.6")
@@ -1181,13 +1304,13 @@ class WowUpCfTests(unittest.TestCase):
         self.serve("2.23.1", "2.24.0-beta.6")
         self.ok(self.install())
         self.assertEqual(self.snapshot(), installed)
-        self.assertEqual(len(self.cf_entries()), 1)
+        self.assertEqual(len(self.entries()), 1)
         # Removal deletes only the integration; preferences, profile and game data stay.
         (self.prefs.parent / "addons.json").write_text("{}")
         self.ok(self.remove())
         for path in (self.cf, self.cf_desktop, self.cf_icon, self.receipt, self.snapshots):
             self.assertFalse(path.exists(), path)
-        self.assertEqual(self.cf_entries(), [])
+        self.assertEqual(self.entries(), [])
         self.assertEqual(self.prefs_value(), {"wowup_release_channel_2_6": "1"})
         self.assertEqual((self.prefs.parent / "addons.json").read_text(), "{}")
         self.assertEqual(self.status(), "not installed")
@@ -1231,8 +1354,8 @@ class WowUpCfTests(unittest.TestCase):
         self.assertEqual(self.cf.read_bytes(), make_appimage("2.24.0-beta.10"))
         self.assertEqual(self.cf_desktop.read_bytes(), custom.replace(b"X-AppImage-Version=2.24.0-beta.6\n",
                                                                       b"X-AppImage-Version=2.24.0-beta.10\n"))
-        self.assertEqual(self.cf_launchers(), [self.cf_desktop])
-        self.assertEqual([entry["path"] for entry in self.cf_entries()], [str(self.cf)])
+        self.assertEqual(self.launchers(), [self.cf_desktop])
+        self.assertEqual([entry["path"] for entry in self.entries()], [str(self.cf)])
         self.assertEqual(self.gear_lever_config(), config)
 
     def test_canonical_home_alias_and_spaces(self):
@@ -1261,7 +1384,7 @@ class WowUpCfTests(unittest.TestCase):
     def test_multiple_cf_integrations_are_a_conflict(self):
         self.integrate(make_appimage("2.24.0-beta.5"))
         self.integrate(make_appimage("2.24.0-beta.6"), keep_both=True)
-        launchers = self.cf_launchers()
+        launchers = self.launchers()
         self.assertEqual(len(launchers), 2)
         info = self.info()
         self.assertEqual((info["status"], info["appimage"], info["desktop_id"]), ("external", None, None))
@@ -1280,7 +1403,7 @@ class WowUpCfTests(unittest.TestCase):
         self.managed_install()
         other = self.integrate(make_appimage("2.24.0-beta.5"), keep_both=True)
         self.assertEqual(self.status(), "needs repair")
-        second = [path for path in self.cf_launchers() if path != self.cf_desktop]
+        second = [path for path in self.launchers() if path != self.cf_desktop]
         self.assertEqual(self.info()["conflicts"], [str(path) for path in second])
         before = self.snapshot()
         self.failed(self.install())
@@ -1422,7 +1545,7 @@ class WowUpCfTests(unittest.TestCase):
                 calls = len(self.flatpak.calls())
                 self.failed(self.install())
                 self.assertEqual(self.snapshot(), before)
-                self.assertEqual(self.cf_entries(), [])
+                self.assertEqual(self.entries(), [])
                 if label.endswith("download") or label == "checksum mismatch":
                     self.assertEqual(self.integrations_attempted(calls), [])  # never handed to Gear Lever
                 self.flatpak.update(faults={})
@@ -1463,7 +1586,7 @@ class WowUpCfTests(unittest.TestCase):
         self.assertEqual(self.snapshot(), before)
         self.ok(self.install())
         self.assertEqual(self.read_receipt()["appimage"], str(self.home / "Apps/wowupcf.appimage"))
-        self.assertEqual(len(self.cf_entries()), 1)
+        self.assertEqual(len(self.entries()), 1)
 
     def test_update_failures_restore_the_previous_install(self):
         self.managed_install()
@@ -1525,7 +1648,7 @@ class WowUpCfTests(unittest.TestCase):
         state_root.write_text("not a directory\n")
         self.flatpak.fault("remove", "fail")
         result = self.failed(self.install())
-        self.assertEqual([entry["path"] for entry in self.cf_entries()], [str(self.cf)])
+        self.assertEqual([entry["path"] for entry in self.entries()], [str(self.cf)])
         self.assertIn(str(self.cf), result.stderr)
         self.assertIn(str(self.cf_desktop), result.stderr)
         self.assertFalse(self.prefs.exists())
@@ -1625,12 +1748,12 @@ class WowUpCfTests(unittest.TestCase):
         with mock.patch.object(self.helper.Transaction, "write_private", full_disk):
             self.failed(self.install())
         self.assertEqual(self.snapshot(), before)
-        self.assertEqual([entry["manager"] for entry in self.cf_entries()], ["GithubUpdater"])
+        self.assertEqual([entry["manager"] for entry in self.entries()], ["GithubUpdater"])
         self.ok(self.install())
         expected = dict(configured)
         del expected[section]
         self.assertEqual(self.gear_lever_config(), expected)
-        self.assertEqual([(entry["manager"], entry["embedded_source"]) for entry in self.cf_entries()],
+        self.assertEqual([(entry["manager"], entry["embedded_source"]) for entry in self.entries()],
                          [(None, False)])
 
     def test_embedded_update_source_blocks_publication(self):
@@ -1657,7 +1780,7 @@ class WowUpCfTests(unittest.TestCase):
         self.web.publish([release("2.24.0-beta.6", data=data), release("2.24.0-beta.10")])
         self.web.asset("2.24.0-beta.10", make_appimage("2.24.0-beta.10"))
         self.ok(self.install())
-        self.assertEqual([(entry["manager"], entry["embedded_source"]) for entry in self.cf_entries()],
+        self.assertEqual([(entry["manager"], entry["embedded_source"]) for entry in self.entries()],
                          [(None, False)])
 
     def test_gear_lever_failures_change_nothing(self):
@@ -1693,16 +1816,16 @@ class WowUpCfTests(unittest.TestCase):
         self.serve("2.24.0-beta.6", assets=["2.24.0-beta.6"])
         self.flatpak.fault("integrate", "block", once=True)
         before = self.snapshot()
-        process = self.spawn("--scope", "system", "install")
+        process = self.spawn("--scope", "system", "wowup-cf", "install")
         self.wait_for(self.flatpak.directory / "integrate.blocked", process)
         os.killpg(process.pid, signal.SIGTERM)
         out, err = process.communicate(timeout=60)
         self.assertEqual(process.returncode, 143, out + err)
         self.assertEqual(self.snapshot(), before)
-        self.assertEqual(self.cf_entries(), [])
+        self.assertEqual(self.entries(), [])
         hold = self.harness / "download.held"
         self.web.routes[download_url("2.24.0-beta.6")]["hold"] = str(hold)
-        process = self.spawn("--scope", "system", "install")
+        process = self.spawn("--scope", "system", "wowup-cf", "install")
         self.wait_for(hold, process)
         os.killpg(process.pid, signal.SIGINT)
         out, err = process.communicate(timeout=60)
@@ -1713,23 +1836,7 @@ class WowUpCfTests(unittest.TestCase):
     # --- read-only inspection -----------------------------------------------------------------------------
 
     def test_status_and_info_only_read_the_filesystem(self):
-        def observe(expected):
-            before = self.snapshot()
-            calls = len(self.flatpak.calls())
-            requests = len(self.web.requests)
-            with mock.patch.object(self.helper.subprocess, "run", side_effect=AssertionError("process")), \
-                    mock.patch.object(self.helper.subprocess, "Popen", side_effect=AssertionError("process")), \
-                    mock.patch.object(self.helper, "hashlib", mock.NonCallableMock(spec=[])):
-                status = self.ok(self.call("status"))
-                info = json.loads(self.ok(self.call("info")).stdout)
-            self.assertEqual(status.stdout, expected + "\n")
-            self.assertEqual(info["status"], expected)
-            self.assertEqual(list(info), ["status", "version", "appimage", "desktop_id", "source", "channel",
-                                          "conflicts"])
-            self.assertEqual(self.snapshot(), before)
-            self.assertEqual((len(self.flatpak.calls()), len(self.web.requests)), (calls, requests))
-            return info
-
+        observe = self.observe_read_only
         self.assertEqual(observe("not installed")["conflicts"], [])
         self.assertFalse(self.managed.exists())
         self.assertFalse(self.receipt.parent.exists())
@@ -1755,21 +1862,456 @@ class WowUpCfTests(unittest.TestCase):
             info = observe("needs repair")
             self.assertEqual((info["version"], info["conflicts"]), (None, [str(self.receipt)]))
         self.receipt.write_text(receipt)
-        # --help exits before any filesystem work; install/remove require a scope.
+
+    def test_command_line(self):
+        # --help names both applications and exits before any filesystem work.
         missing = self.root / "missing home"
         result = subprocess.run([sys.executable, str(HELPER), "--help"], capture_output=True, text=True,
                                 env={"PATH": os.environ["PATH"], "HOME": str(missing)})
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue(result.stdout)
+        for app in (WOWUP_CF, R2MODMAN):
+            self.assertIn(app.id, result.stdout)
         self.assertFalse(missing.exists())
-        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
-            self.helper.main(["install"])
-        self.assertEqual(raised.exception.code, 2)
+        # install and remove require a scope, and the application must be one the helper knows.
+        before = self.snapshot()
+        for arguments in (["wowup-cf", "install"], ["r2modman", "remove"], ["--scope", "user", "wowup", "status"],
+                          ["--scope", "user", "install"], ["status"]):
+            with self.subTest(arguments=arguments):
+                with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
+                    self.helper.main(arguments)
+                self.assertEqual(raised.exception.code, 2)
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(self.flatpak.calls(), [])
+
+
+class GearLeverModelTests(GearLeverAppCase):
+    def test_launchers_match_real_gear_lever(self):
+        """The model writes the launchers real Gear Lever 4.6.2 wrote for both official AppImages."""
+        self.assertEqual(self.integrate(make_appimage("2.24.0-beta.6")), self.cf)
+        self.assertEqual(self.integrate(r2_appimage("3.2.20")), self.r2)
+        self.assertEqual(self.cf_desktop.read_text(), (
+            "[Desktop Entry]\nType=Application\nName=WowUp-CF\nComment=World of Warcraft addon updater\n"
+            f"Icon={self.cf_icon}\nTryExec={self.cf}\nExec=env DESKTOPINTEGRATION=1 {self.cf} --no-sandbox %U\n"
+            "Terminal=false\nCategories=Game;\nStartupWMClass=WowUp-CF\nX-AppImage-Version=2.24.0-beta.6\n"
+            "X-AppImage-Name=WowUp-CF\n"))
+        self.assertEqual(self.r2_desktop.read_text(), (
+            "[Desktop Entry]\nType=Application\nName=r2modman\n"
+            "Comment=A simple and easy to use mod manager for many games using Thunderstore.\n"
+            f"Icon={self.r2_icon}\nTryExec={self.r2}\nExec=env DESKTOPINTEGRATION=1 {self.r2} --no-sandbox %U\n"
+            "Terminal=false\nMimeType=x-scheme-handler/ror2mm;\nCategories=Game;\nStartupWMClass=r2modman\n"
+            "X-AppImage-Version=3.2.20\nX-AppImage-Name=r2modman\n"))
+        self.assertEqual(self.gear_lever_config()[f"app.{GearLeverModel.digest(str(self.r2))}"], {
+            "default_exec_arguments": "--no-sandbox %U", "name": "r2modman", "file_path": str(self.r2)})
+        self.assertEqual(sorted(entry["name"] for entry in self.flatpak.listing()), ["WowUp", "WowUp-CF", "r2modman"])
+
+
+class R2modmanTests(GearLeverAppCase):
+    """r2modman: the newest stable release, identified by digest; r2modman's own data is never touched."""
+
+    APP = R2MODMAN
+
+    def setUp(self):
+        super().setUp()
+        self.settings = self.settings_files()
+
+    def settings_files(self):
+        return {str(path): None if path.is_dir() else path.read_bytes()
+                for root in (self.config, self.home / ".config") for path in root.rglob("*")}
+
+    def assert_no_settings_written(self):
+        """Monolith writes no r2modman configuration, and no WowUp-CF preferences either."""
+        self.assertEqual(self.settings_files(), self.settings)
+
+    # --- release policy -----------------------------------------------------------------------------------
+
+    def test_release_selection(self):
+        helper = self.helper
+        app = helper.APPS["r2modman"]
+
+        def pick(*items):
+            return app.select(helper.parse_releases(app, list(items)), None).version
+
+        line = [r2_release("3.2.9"), r2_release("3.2.19"), r2_release("3.2.20")]
+        # Versions compare numerically, in whatever order GitHub lists them.
+        self.assertEqual(pick(*line), "3.2.20")
+        self.assertEqual(pick(*reversed(line)), "3.2.20")
+        self.assertEqual(pick(r2_release("3.10.0"), *line), "3.10.0")
+        # Only GitHub's prerelease flag marks a prerelease; its tag looks like any other.
+        self.assertEqual(pick(*line, r2_release("3.2.21", prerelease=True), r2_release("4.0.0", prerelease=True)),
+                         "3.2.20")
+        rejected = [
+            dict(r2_release("3.3.1", prerelease=True), tag_name="pp3", name="pp3"),
+            dict(r2_release("3.3.2"), tag_name="v3.3.2-beta.1"), dict(r2_release("3.3.3"), tag_name="3.3.3"),
+            dict(r2_release("3.3.4"), prerelease=None), r2_release("3.3.5", draft=True),
+            r2_release("3.3.6", digest=None), r2_release("3.3.7", digest="sha256:" + "Z" * 64),
+            r2_release("3.3.8", digest="md5:" + "0" * 32), r2_release("3.3.9", state="starter"),
+            r2_release("3.3.10", size=0), r2_release("3.3.11", duplicate=True),
+            r2_release("3.3.12", name="r2modman-3.3.12.x86_64.rpm"),
+            r2_release("3.3.13", url="https://github.com/ebkr/r2modman/releases/download/v3.3.13/"
+                                     "r2modman-3.3.13.AppImage"),
+        ]
+        self.assertEqual(pick(*line, *rejected), "3.2.20")
+        # The same version listed twice with different bytes is ambiguous, never guessed.
+        self.assertEqual(pick(*line, r2_release("3.2.20", data=r2_appimage("3.2.20", update_info=b"rebuilt"))),
+                         "3.2.19")
+        with self.assertRaises(helper.HelperError):
+            pick(r2_release("3.2.21", prerelease=True), *rejected)
+
+    def test_installs_only_the_newest_stable_release(self):
+        # r2modman's releases span two pages: ancient pp tags, many releases without a digest, and as the
+        # newest release a prerelease with an ordinary tag, which is neither selected nor downloaded.
+        self.web.publish([dict(r2_release("3.0.1", prerelease=True), tag_name="pp3"),
+                          *(r2_release(f"3.1.{number}", digest=None) for number in range(100)),
+                          r2_release("3.2.19"), r2_release("3.2.20"), r2_release("3.2.21", prerelease=True)],
+                         app=R2MODMAN)
+        for version in ("3.2.20", "3.2.21"):
+            self.web.asset(version, r2_appimage(version), app=R2MODMAN)
+        self.ok(self.install())
+        self.assertEqual(self.r2.read_bytes(), r2_appimage("3.2.20"))
+        self.assertEqual(self.read_receipt()["version"], "3.2.20")
+        self.assertNotIn(R2MODMAN.download_url("3.2.21"), self.web.requests)
+        installed = self.snapshot()
+        # Without a valid stable release nothing changes: not the managed install ...
+        unusable = [r2_release("3.2.21", prerelease=True), r2_release("3.2.22", draft=True),
+                    r2_release("3.2.1", digest=None)]
+        self.serve(assets=["3.2.21", "3.2.22"], extra=unusable)
+        self.failed(self.install())
+        self.assertEqual(self.snapshot(), installed)
+        # ... and nothing is installed fresh.
+        self.ok(self.remove())
+        before = self.snapshot()
+        requests = len(self.web.requests)
+        self.failed(self.install())
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual([url for url in self.web.requests[requests:] if "/releases/download/" in url], [])
+        self.assert_no_settings_written()
+
+    # --- Gear Lever integration --------------------------------------------------------------------------
+
+    def test_fresh_install_repeat_update_and_remove(self):
+        self.serve("3.2.19", assets=["3.2.19"])
+        self.assertEqual(self.status(), "not installed")
+        self.ok(self.install())
+        self.assertEqual(self.launchers(), [self.r2_desktop])
+        self.assertEqual([entry["path"] for entry in self.entries()], [str(self.r2)])
+        self.assertEqual(self.r2.read_bytes(), r2_appimage("3.2.19"))
+        self.assertEqual(self.read_receipt(), {
+            "version": "3.2.19", "source": R2MODMAN.download_url("3.2.19"), "channel": "stable",
+            "sha256": sha256(r2_appimage("3.2.19")), "appimage": str(self.r2), "desktop_id": "r2modman.desktop",
+            "icon": str(self.r2_icon)})
+        self.assertEqual((self.snapshots / "integration.desktop").read_bytes(), self.r2_desktop.read_bytes())
+        self.assertEqual((self.snapshots / "integration.icon").read_bytes(), ICON)
+        self.assertEqual(self.info(), {
+            "status": "installed", "version": "3.2.19", "appimage": str(self.r2), "desktop_id": "r2modman.desktop",
+            "source": R2MODMAN.download_url("3.2.19"), "channel": "stable", "conflicts": []})
+        installed = self.snapshot()
+        self.serve("3.2.19")  # no asset route: a repeat downloads nothing
+        self.ok(self.install())
+        self.assertEqual(self.snapshot(), installed)
+        # The update replaces only the AppImage and the launcher's version line: the launcher ID, custom Exec
+        # arguments and MimeType stay, and there is still exactly one integration.
+        launcher = self.r2_desktop.read_bytes()
+        self.assertIn(b"\nMimeType=x-scheme-handler/ror2mm;\n", launcher)
+        custom = launcher.replace(b" --no-sandbox %U", b" --no-sandbox --enable-features=UseOzonePlatform %U")
+        self.assertNotEqual(custom, launcher)
+        self.r2_desktop.write_bytes(custom)
+        config = self.gear_lever_config()
+        self.serve("3.2.19", "3.2.20", assets=["3.2.20"])
+        self.ok(self.install())
+        self.assertEqual(self.r2.read_bytes(), r2_appimage("3.2.20"))
+        self.assertEqual(self.r2_desktop.read_bytes(), custom.replace(b"X-AppImage-Version=3.2.19\n",
+                                                                      b"X-AppImage-Version=3.2.20\n"))
+        self.assertEqual(self.launchers(), [self.r2_desktop])
+        self.assertEqual([entry["path"] for entry in self.entries()], [str(self.r2)])
+        self.assertEqual(self.gear_lever_config(), config)
+        self.assertEqual((self.read_receipt()["version"], self.status()), ("3.2.20", "installed"))
+        # Removal deletes the integration and Monolith's records; r2modman's own data stays (check_clean).
+        self.ok(self.remove())
+        for path in (self.r2, self.r2_desktop, self.r2_icon, self.receipt, self.snapshots):
+            self.assertFalse(path.exists(), path)
+        self.assertEqual(self.entries(), [])
+        self.assertEqual(self.status(), "not installed")
+        self.failed(self.remove())
+        self.assert_no_settings_written()
+
+    def test_adopts_self_updated_integration_with_stale_launcher_version(self):
+        # r2modman's own updater replaced the AppImage Gear Lever integrated; the launcher still names 3.2.19.
+        self.assertEqual(self.integrate(r2_appimage("3.2.19")), self.r2)
+        self.r2.write_bytes(r2_appimage("3.2.20"))
+        launcher = self.r2_desktop.read_bytes()
+        self.assertIn(b"X-AppImage-Version=3.2.19\n", launcher)
+        self.assertEqual(self.info()["status"], "external")
+        self.serve("3.2.19", "3.2.20")  # no asset route: nothing may be downloaded
+        self.ok(self.install())
+        self.assertEqual(self.r2.read_bytes(), r2_appimage("3.2.20"))
+        self.assertEqual(self.r2_desktop.read_bytes(), launcher.replace(b"X-AppImage-Version=3.2.19\n",
+                                                                        b"X-AppImage-Version=3.2.20\n"))
+        receipt = self.read_receipt()
+        self.assertEqual((receipt["version"], receipt["sha256"], receipt["channel"]),
+                         ("3.2.20", sha256(r2_appimage("3.2.20")), "stable"))
+        self.assertEqual(self.status(), "installed")
+        # It updates itself again after Monolith took over; the new release is recorded, not downloaded.
+        self.r2.write_bytes(r2_appimage("3.2.21"))
+        self.serve("3.2.20", "3.2.21")
+        self.ok(self.install())
+        self.assertEqual((self.read_receipt()["version"], desktop_entry(self.r2_desktop)["X-AppImage-Version"]),
+                         ("3.2.21", "3.2.21"))
+        self.assertEqual(self.r2.read_bytes(), r2_appimage("3.2.21"))
+        self.assert_no_settings_written()
+
+    def test_unidentified_bytes_are_kept_until_r2modman_updates_itself(self):
+        cases = {
+            "a release before 3.2.2, without a published digest": r2_appimage("3.2.1"),
+            "locally rebuilt bytes": r2_appimage("3.2.20", update_info=b"rebuilt"),
+        }
+        for label, data in cases.items():
+            with self.subTest(label):
+                self.integrate(data)
+                self.serve("3.2.20", assets=["3.2.20"], extra=[r2_release("3.2.1", digest=None)])
+                before = self.snapshot()
+                self.failed(self.install())
+                self.assertEqual(self.snapshot(), before)
+                self.assertNotIn(R2MODMAN.download_url("3.2.20"), self.web.requests)
+                self.assertEqual(self.status(), "external")
+                # Once r2modman has updated itself to a published release, Monolith adopts it.
+                self.r2.write_bytes(r2_appimage("3.2.20"))
+                self.ok(self.install())
+                self.assertEqual((self.status(), self.read_receipt()["version"]), ("installed", "3.2.20"))
+                self.ok(self.remove())
+        self.assert_no_settings_written()
+
+    def test_never_downgrades(self):
+        # A prerelease installed by hand is identified by its digest, but never replaced by an older stable.
+        self.integrate(r2_appimage("3.2.21"))
+        prereleases = [r2_release("3.1.58", prerelease=True), r2_release("3.2.21", prerelease=True)]
+        self.serve("3.2.20", assets=["3.2.20"], extra=prereleases)
+        before = self.snapshot()
+        self.failed(self.install())
+        self.assertEqual(self.snapshot(), before)
+        self.assertNotIn(R2MODMAN.download_url("3.2.20"), self.web.requests)
+        # An older prerelease is identified the same way and updated to the newest stable release.
+        self.assertEqual(self.flatpak.gear_lever("--remove", str(self.r2), "--yes", "--delete")[0], 0)
+        self.integrate(r2_appimage("3.1.58"))
+        self.ok(self.install())
+        self.assertEqual(self.r2.read_bytes(), r2_appimage("3.2.20"))
+        self.assertEqual(desktop_entry(self.r2_desktop)["X-AppImage-Version"], "3.2.20")
+        # Bytes known only from Monolith's receipt, after their release disappeared, are kept as well.
+        self.serve("3.2.19")
+        installed = self.snapshot()
+        self.failed(self.install())
+        self.assertEqual(self.snapshot(), installed)
+
+    def test_running_r2modman_blocks_every_change(self):
+        self.managed_install()
+        self.serve("3.2.19", "3.2.20", assets=["3.2.20"])
+        uid = os.getuid()
+        installed = self.snapshot()
+        cases = {
+            "Gear Lever reports it running": lambda: self.flatpak.update(running={str(self.r2): True}),
+            "Gear Lever could not tell": lambda: self.flatpak.update(running={str(self.r2): None}),
+            "its AppImage process": lambda: self.proc.add(4100, uid=uid, environ={"APPIMAGE": str(self.r2)}),
+            "its AppImage runtime": lambda: self.proc.add(
+                4150, uid=uid, comm="r2modman.appima", cmdline=(str(self.r2), "--no-sandbox"), exe=str(self.r2)),
+            "an unreadable r2modman process": lambda: self.proc.add(
+                4200, uid=uid, comm="r2modman", cmdline=("/tmp/.mount_r2modmAbC/r2modman", "--type=gpu-process"),
+                readable=False),
+        }
+        for label, arrange in cases.items():
+            with self.subTest(label):
+                arrange()
+                for action in (self.install, self.remove):
+                    result = action()
+                    self.assertEqual((result.code, result.stderr.strip()),
+                                     (1, "Close r2modman and retry this action."))
+                    self.assertEqual(self.snapshot(), installed)
+                self.flatpak.update(running={})
+                self.proc.clear()
+        self.assertNotIn(R2MODMAN.download_url("3.2.20"), self.web.requests)
+        # WowUp running, even unreadably, and another user's r2modman are no reason to wait.
+        self.flatpak.update(running={str(self.regular): True})
+        self.proc.add(4300, uid=uid, comm="wowup-cf", cmdline=("/tmp/.mount_WowUpCabc/wowup-cf",), readable=False)
+        self.proc.add(4400, uid=uid, comm="wowup.appimage", exe=str(self.regular))
+        self.proc.add(4500, uid=uid + 1, environ={"APPIMAGE": str(self.r2)})
+        self.ok(self.install())
+        self.assertEqual(self.r2.read_bytes(), r2_appimage("3.2.20"))
+
+    # --- read-only inspection -----------------------------------------------------------------------------
+
+    def test_status_and_info_only_read_the_filesystem(self):
+        observe = self.observe_read_only
+        self.assertEqual(observe("not installed")["conflicts"], [])
+        self.integrate(r2_appimage("3.2.20"))
+        self.assertEqual(observe("external")["appimage"], str(self.r2))
+        launcher = self.r2_desktop.read_bytes()
+        self.r2_desktop.write_bytes(launcher.replace(b"X-AppImage-Name=r2modman\n", b""))
+        self.assertEqual(observe("external")["conflicts"], [str(self.r2_desktop)])
+        self.r2_desktop.write_bytes(launcher)
+        self.r2.unlink()
+        self.assertEqual(observe("external")["conflicts"], [str(self.r2)])
+        self.r2_desktop.unlink()
+        self.r2_icon.unlink()
+        self.managed_install()
+        info = observe("installed")
+        self.assertEqual((info["version"], info["channel"], info["source"], info["conflicts"]),
+                         ("3.2.19", "stable", R2MODMAN.download_url("3.2.19"), []))
+        self.r2_icon.unlink()
+        self.assertEqual(observe("needs repair")["conflicts"], [str(self.r2_icon)])
+        receipt = self.receipt.read_text()
+        for broken in (receipt.replace("channel=stable", "channel=beta-bridge"),
+                       receipt.replace("version=3.2.19", "version=3.2.19-beta.1"),
+                       receipt.replace("ebkr/r2modmanPlus", "WowUp/WowUp.CF")):
+            self.receipt.write_text(broken)
+            info = observe("needs repair")
+            self.assertEqual((info["version"], info["conflicts"]), (None, [str(self.receipt)]))
+        self.receipt.write_text(receipt)
+        self.assert_no_settings_written()
+
+
+class CoexistenceTests(GearLeverAppCase):
+    """WowUp-CF and r2modman side by side: each sees and changes only its own integration and records."""
+
+    def lifecycle_beside(self, first, second):
+        """Install `first`, then the second app's whole lifecycle must leave it byte-identical."""
+        self.managed_install(app=first)
+        kept = self.records(first)
+        self.managed_install(app=second)
+        self.assertEqual(self.records(first), kept)
+        for app in (first, second):
+            appimage, desktop, _ = self.files_of(app)
+            self.assertEqual(self.status(app=app), "installed")
+            self.assertEqual(self.launchers(app), [desktop])
+            self.assertEqual([entry["path"] for entry in self.entries(app)], [str(appimage)])
+            self.assertEqual((self.read_receipt(app)["appimage"], self.info(app=app)["appimage"]),
+                             (str(appimage), str(appimage)))
+        # A failed update of the second restores exactly its previous state.
+        self.serve(second.old, second.new, assets=[second.new], app=second)
+        installed = self.records(second)
+        receipt = self.receipt_of(second)
+        write_private = self.helper.Transaction.write_private
+
+        def full_disk(transaction, path, data, label):
+            if Path(path) == receipt:
+                raise OSError(errno.ENOSPC, "No space left on device", str(path))
+            return write_private(transaction, path, data, label)
+
+        with mock.patch.object(self.helper.Transaction, "write_private", full_disk):
+            self.failed(self.install(app=second))
+        self.assertEqual(self.records(second), installed)
+        self.assertEqual(self.records(first), kept)
+        # Its update and removal leave the first untouched as well.
+        self.ok(self.install(app=second))
+        self.assertEqual(self.files_of(second)[0].read_bytes(), make_appimage(second.new, name=second.name))
+        self.assertEqual(self.records(first), kept)
+        self.ok(self.remove(app=second))
+        self.assertEqual((self.status(app=second), self.status(app=first)), ("not installed", "installed"))
+        self.assertEqual(self.records(first), kept)
+        # The first still updates and removes normally.
+        self.serve(first.old, first.new, assets=[first.new], app=first)
+        self.ok(self.install(app=first))
+        self.assertEqual(self.files_of(first)[0].read_bytes(), make_appimage(first.new, name=first.name))
+        self.ok(self.remove(app=first))
+        self.assertEqual(self.status(app=first), "not installed")
+
+    def test_r2modman_beside_wowup_cf(self):
+        self.lifecycle_beside(WOWUP_CF, R2MODMAN)
+
+    def test_wowup_cf_beside_r2modman(self):
+        self.lifecycle_beside(R2MODMAN, WOWUP_CF)
+
+    def test_failed_fresh_install_leaves_the_other_app_alone(self):
+        for first, second in ((WOWUP_CF, R2MODMAN), (R2MODMAN, WOWUP_CF)):
+            with self.subTest(beside=first.id):
+                self.managed_install(app=first)
+                kept = self.records(first)
+                for fault in ("partial", "crash", "corrupt"):
+                    self.serve(second.old, assets=[second.old], app=second)
+                    self.flatpak.fault("integrate", fault)
+                    before = self.snapshot()
+                    self.failed(self.install(app=second))
+                    self.flatpak.update(faults={})
+                    self.assertEqual(self.snapshot(), before)
+                    self.assertEqual(self.entries(second), [])
+                self.assertEqual(self.records(first), kept)
+                self.ok(self.remove(app=first))
+
+    def test_conflicts_are_per_app(self):
+        self.managed_install(app=WOWUP_CF)
+        # Two r2modman integrations are r2modman's conflict alone.
+        self.integrate(r2_appimage("3.2.19"))
+        duplicate = self.integrate(r2_appimage("3.2.20"), keep_both=True)
+        info = self.info(app=R2MODMAN)
+        self.assertEqual((info["status"], sorted(info["conflicts"])),
+                         ("external", [str(path) for path in self.launchers(R2MODMAN)]))
+        self.assertEqual((self.status(app=WOWUP_CF), self.info(app=WOWUP_CF)["conflicts"]), ("installed", []))
+        self.serve("3.2.19", "3.2.20", assets=["3.2.20"], app=R2MODMAN)
+        before = self.snapshot()
+        self.failed(self.install(app=R2MODMAN))
+        self.assertEqual(self.snapshot(), before)
+        # WowUp-CF still updates meanwhile, leaving both r2modman integrations as they were.
+        r2modman_files = [self.integration_files(self.r2), self.integration_files(duplicate)]
+        self.serve(WOWUP_CF.old, WOWUP_CF.new, assets=[WOWUP_CF.new], app=WOWUP_CF)
+        self.ok(self.install(app=WOWUP_CF))
+        self.assertEqual(self.cf.read_bytes(), make_appimage(WOWUP_CF.new))
+        self.assertEqual([self.integration_files(self.r2), self.integration_files(duplicate)], r2modman_files)
+        # A second WowUp-CF integration beside Monolith's own blocks only WowUp-CF.
+        self.assertEqual(self.flatpak.gear_lever("--remove", str(duplicate), "--yes", "--delete")[0], 0)
+        self.ok(self.install(app=R2MODMAN))
+        other = self.integrate(make_appimage("2.24.0-beta.5"), keep_both=True)
+        self.assertEqual(self.status(app=WOWUP_CF), "needs repair")
+        self.assertEqual((self.status(app=R2MODMAN), self.info(app=R2MODMAN)["conflicts"]), ("installed", []))
+        before = self.snapshot()
+        self.failed(self.install(app=WOWUP_CF))
+        self.assertEqual(self.snapshot(), before)
+        kept = self.records(WOWUP_CF)
+        self.ok(self.remove(app=R2MODMAN))
+        self.assertEqual(self.records(WOWUP_CF), kept)
+        self.assertTrue(other.exists())
+
+    def test_rechecks_ignore_the_other_app(self):
+        # Just before publishing, each app checks that its own integrations did not change meanwhile; Gear
+        # Lever gaining or losing the other app's integration during the download is no reason to stop.
+        self.serve(WOWUP_CF.old, assets=[WOWUP_CF.old], app=WOWUP_CF)
+        self.web.routes[WOWUP_CF.download_url(WOWUP_CF.old)]["on_open"] = lambda: self.integrate(
+            r2_appimage("3.2.19"))
+        self.ok(self.install(app=WOWUP_CF))
+        self.assertEqual((self.status(app=WOWUP_CF), self.status(app=R2MODMAN)), ("installed", "external"))
+        self.serve(R2MODMAN.old, R2MODMAN.new, assets=[R2MODMAN.new], app=R2MODMAN)
+        self.web.routes[R2MODMAN.download_url(R2MODMAN.new)]["on_open"] = lambda: self.integrate(
+            make_appimage("2.24.0-beta.5"), keep_both=True)
+        self.ok(self.install(app=R2MODMAN))  # adopts the r2modman integration and updates it
+        self.assertEqual(self.r2.read_bytes(), r2_appimage("3.2.20"))
+        self.assertEqual((self.status(app=R2MODMAN), self.status(app=WOWUP_CF)), ("installed", "needs repair"))
+
+    def test_a_running_app_blocks_only_itself(self):
+        self.managed_install(app=WOWUP_CF)
+        self.managed_install(app=R2MODMAN)
+        uid = os.getuid()
+        for running, other in ((WOWUP_CF, R2MODMAN), (R2MODMAN, WOWUP_CF)):
+            with self.subTest(running=running.id):
+                appimage = self.files_of(running)[0]
+                process = running.name.lower()
+                self.flatpak.update(running={str(appimage): True})
+                self.proc.add(4100, uid=uid, comm=f"{running.stem}.appima", exe=str(appimage),
+                              environ={"APPIMAGE": str(appimage)})
+                self.proc.add(4200, uid=uid, comm=process, cmdline=(f"/tmp/.mount_{running.stem}/{process}",),
+                              readable=False)
+                self.serve(running.old, running.new, assets=[running.new], app=running)
+                self.serve(other.old, other.new, assets=[other.new], app=other)
+                kept = self.records(running)
+                for action in (self.install, self.remove):
+                    result = action(app=running)
+                    self.assertEqual((result.code, result.stderr.strip()),
+                                     (1, f"Close {running.name} and retry this action."))
+                self.assertEqual(self.records(running), kept)
+                self.ok(self.install(app=other))
+                self.assertEqual(self.files_of(other)[0].read_bytes(), make_appimage(other.new, name=other.name))
+                self.flatpak.update(running={})
+                self.proc.clear()
 
 
 MANAGER = ROOT / "files/system/usr/bin/monolith"
 PYTHON_SHIM = """#!/bin/sh
-# Run the real WowUp-CF helper with the suite's HTTP and /proc doubles; other Python runs are real.
+# Run the real Gear Lever app helper with the suite's HTTP and /proc doubles; other Python runs are real.
 if [ "$#" -gt 0 ] && [ "$(readlink -f -- "$1")" = {helper} ]; then
     shift
     exec {python} {suite} run-helper "$@"
@@ -1779,10 +2321,10 @@ exec {python} "$@"
 
 
 class ManagerPrerequisiteTests(unittest.TestCase):
-    """The real `monolith` manager finding, offering, and checking Gear Lever before WowUp-CF changes."""
+    """The real `monolith` manager checking Gear Lever before changing an app, and managing both side by side."""
 
     def setUp(self):
-        temporary = tempfile.TemporaryDirectory(prefix="monolith-wowup-manager-")
+        temporary = tempfile.TemporaryDirectory(prefix="monolith-gear-lever-manager-")
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         self.home = self.root / "home/player"
@@ -1917,13 +2459,46 @@ class ManagerPrerequisiteTests(unittest.TestCase):
         self.assertEqual(self.installs(), [])
         self.assert_wowup_untouched(result)
 
+    def list_statuses(self):
+        """TOOL -> STATUS from `monolith list`, whose columns are separated by at least two spaces."""
+        result = self.run_manager("list")
+        self.assertEqual(result.code, 0, result)
+        rows = [re.split(r" {2,}", line.strip()) for line in result.stdout.splitlines()[2:] if line.strip()]
+        return {row[1]: row[2] for row in rows}
+
+    def test_wowup_cf_and_r2modman_side_by_side(self):
+        self.flatpak.update(installed={"system": "4.6.2"})
+        self.web.publish([r2_release("3.2.19"), r2_release("3.2.20"), r2_release("3.2.21", prerelease=True)],
+                         app=R2MODMAN)
+        self.web.asset("3.2.20", r2_appimage("3.2.20"), app=R2MODMAN)
+        result = self.run_manager("install", "wowup-cf", "r2modman")
+        self.assertEqual(result.code, 0, result)
+        statuses = self.list_statuses()
+        self.assertEqual((statuses["WowUp-CF"], statuses["r2modman"]), ("installed", "installed"))
+        r2modman_receipt = self.receipt.with_name("r2modman.managed")
+        receipt = dict(line.split("=", 1) for line in r2modman_receipt.read_text().splitlines())
+        self.assertEqual(Path(receipt["appimage"]).read_bytes(), r2_appimage("3.2.20"))
+        wowup = [path.read_bytes() for path in (self.receipt, self.appimages / "wowupcf.appimage",
+                                                self.home / ".local/share/applications/wowupcf.desktop")]
+        result = self.run_manager("remove", "r2modman")
+        self.assertEqual(result.code, 0, result)
+        statuses = self.list_statuses()
+        self.assertEqual((statuses["WowUp-CF"], statuses["r2modman"]), ("installed", "not installed"))
+        self.assertFalse(r2modman_receipt.exists())
+        self.assertFalse(Path(receipt["appimage"]).exists())
+        self.assertEqual([path.read_bytes() for path in (self.receipt, self.appimages / "wowupcf.appimage",
+                                                         self.home / ".local/share/applications/wowupcf.desktop")],
+                         wowup)
+        self.assertFalse(self.routes.with_name("http.json.unexpected").exists())
+        self.assertEqual(self.flatpak.unmodelled(), [])
+
 
 def main():
     if sys.argv[1:2] == ["run-helper"]:
         sys.exit(run_helper(sys.argv[2:]))
     if sys.argv[1:2] == ["install-fake-flatpak"]:
         if len(sys.argv) < 4:
-            sys.exit("usage: wowup-cf.py install-fake-flatpak BIN_DIR STATE_FILE [SCOPE=VERSION ...]")
+            sys.exit("usage: gear-lever-apps.py install-fake-flatpak BIN_DIR STATE_FILE [SCOPE=VERSION ...]")
         installed = dict(item.split("=", 1) for item in sys.argv[4:]) or None
         install_fake_flatpak(sys.argv[2], sys.argv[3], installed)
         return

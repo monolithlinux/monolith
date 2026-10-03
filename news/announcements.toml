@@ -20,6 +20,32 @@
 #   files/kde/usr/bin/monolith-news --preview news/announcements.toml
 
 [[announcements]]
+id = "2026-10-03-r2modman"
+date = 2026-10-03
+title = "r2modman joins Monolith Software"
+body = """
+After booting an updated Monolith image, run **monolith**, open **Gaming**, and
+select **r2modman** to install the mod manager for Thunderstore games such as
+**Lethal Company**, **Risk of Rain 2**, and **Valheim**.
+
+As with WowUp-CF, Monolith downloads the official AppImage, checks it against the
+checksum GitHub publishes, and adds it to **Gear Lever**. A supported existing
+r2modman integration is reused instead of creating another launcher. If Gear
+Lever is missing, Monolith asks before installing its Flathub Flatpak for your
+account.
+
+Monolith installs the newest **stable** r2modman release, and r2modman may also
+update itself to newer stable releases. Close r2modman before using **monolith
+update r2modman** or running topgrade. Removal keeps your profiles, mods, and
+settings. If r2modman is not in your Gaming menu yet, update Monolith and reboot
+first.
+"""
+links = [
+  { label = "r2modman releases", url = "https://github.com/ebkr/r2modmanPlus/releases" },
+  { label = "Monolith software guide", url = "https://github.com/monolithlinux/monolith#r2modman" },
+]
+
+[[announcements]]
 id = "2026-10-01-wowup-cf"
 date = 2026-10-01
 title = "WowUp-CF joins Monolith Software"

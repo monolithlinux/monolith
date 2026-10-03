@@ -96,7 +96,7 @@ The dashboard groups software into Developer CLIs, AI coding, Gaming, and
 Appearance, and shows each item's status and version. Type to filter, press
 Enter to open an item, then choose an explicit action: Install, Update, Repair,
 Adopt and update (for a supported copy installed outside Monolith), or Remove.
-Removal asks first and keeps settings, logins, sessions, addon data, and
+Removal asks first and keeps settings, logins, sessions, game addons and mods, and
 projects. Esc goes back. **Update installed** updates every Monolith-managed
 item; inside a category it updates only that category. The `ujust monolith`,
 `ujust software`, and `ujust monolith-software` aliases open the same
@@ -108,7 +108,7 @@ The underlying command also supports scripting and troubleshooting:
 ```bash
 monolith list
 monolith install codex herdr
-monolith install wowup-cf
+monolith install wowup-cf r2modman
 monolith update
 monolith remove codex
 ```
@@ -171,6 +171,22 @@ leaves addon release settings unchanged. Use **Update** in the dashboard or
 Lever update source for WowUp-CF so that only one updater applies this policy.
 Close WowUp-CF before updating or removing it. Removal keeps your WowUp-CF
 settings, game installations, and addons.
+
+### r2modman
+
+**Gaming → r2modman** installs [r2modman](https://github.com/ebkr/r2modmanPlus),
+the mod manager for Thunderstore games such as Lethal Company, Risk of Rain 2,
+and Valheim. As with WowUp-CF, Monolith downloads the official AppImage, checks
+it against the SHA256 digest GitHub publishes, and adds it to Gear Lever. An
+existing Gear Lever r2modman integration is adopted and updated in place rather
+than gaining a second launcher; if it is older than r2modman 3.2.2, which has no
+published checksum, start r2modman once so it updates itself, then adopt it.
+
+Monolith installs the newest stable r2modman release and skips prereleases. Use
+**Update** in the dashboard or `monolith update r2modman`; r2modman may also
+update itself to newer stable releases, which Monolith recognizes. Close
+r2modman before updating or removing it. Removal keeps your profiles, mods, and
+settings in `~/.config/r2modmanPlus-local`.
 
 ### Waywallen wallpapers
 
