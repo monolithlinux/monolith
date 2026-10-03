@@ -12,7 +12,7 @@ STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
 MANAGED_ROOT="$DATA_HOME/monolith/software"
 STATE_ROOT="$STATE_HOME/monolith/software"
 GHOSTTY_THEMES_HELPER="$(dirname -- "$SELF")/../libexec/monolith/ghostty-themes"
-WOWUP_CF_HELPER="$(dirname -- "$SELF")/../libexec/monolith/wowup-cf"
+GEAR_LEVER_APP_HELPER="$(dirname -- "$SELF")/../libexec/monolith/gear-lever-app"
 GEAR_LEVER_ID=it.mijorus.gearlever
 GEAR_LEVER_REF=https://dl.flathub.org/repo/appstream/it.mijorus.gearlever.flatpakref
 GEAR_LEVER_MIN_VERSION=4.6.2
@@ -24,25 +24,20 @@ SELECTOR=numbered
 USE_COLOR=0
 PICKED=""
 
-readonly SELF BIN_DIR DATA_HOME STATE_HOME MANAGED_ROOT STATE_ROOT GHOSTTY_THEMES_HELPER WOWUP_CF_HELPER
+readonly SELF BIN_DIR DATA_HOME STATE_HOME MANAGED_ROOT STATE_ROOT GHOSTTY_THEMES_HELPER GEAR_LEVER_APP_HELPER
 readonly GEAR_LEVER_ID GEAR_LEVER_REF GEAR_LEVER_MIN_VERSION QUIT_TOKEN
 
-ALL_TOOLS=(tea superfile nak ngit claude codex opencode omp herdr wowup-cf ghostty-themes)
+ALL_TOOLS=(tea superfile nak ngit claude codex opencode omp herdr wowup-cf r2modman ghostty-themes)
 CLI_TOOLS=(tea superfile nak ngit)
 AI_TOOLS=(claude codex opencode omp herdr)
-GAMING_TOOLS=(wowup-cf)
+GAMING_TOOLS=(wowup-cf r2modman)
 APPEARANCE_TOOLS=(ghostty-themes)
 
-# Per-render state; menus and list compute each row once.
+# Per-render state; menus and list compute each row once. Gear Lever apps
+# also keep the helper's summary; APP_CONFLICTS holds one path per line.
 declare -A ROW_STATUS=() ROW_VERSION=()
-WOWUP_STATUS=""
-WOWUP_VERSION=""
-WOWUP_APPIMAGE=""
-WOWUP_DESKTOP_ID=""
-WOWUP_SOURCE=""
-WOWUP_CHANNEL=""
-WOWUP_ERROR=""
-WOWUP_CONFLICTS=()
+declare -A APP_VERSION=() APP_APPIMAGE=() APP_DESKTOP_ID=() APP_SOURCE=() APP_CHANNEL=() APP_ERROR=()
+declare -A APP_CONFLICTS=()
 
 die() {
     echo "Error: $*" >&2
@@ -103,6 +98,7 @@ tool_name() {
         omp)       echo "Oh My Pi" ;;
         herdr)     echo "Herdr" ;;
         wowup-cf)  echo "WowUp-CF" ;;
+        r2modman)  echo "r2modman" ;;
         ghostty-themes) echo "Ghostty Themes" ;;
         *)         return 1 ;;
     esac
@@ -120,6 +116,7 @@ tool_description() {
         omp)       echo "coding agent with built-in development tools" ;;
         herdr)     echo "terminal multiplexer for coding agents" ;;
         wowup-cf)  echo "World of Warcraft addon manager with CurseForge and WoW Forever support" ;;
+        r2modman)  echo "Thunderstore mod manager for Lethal Company, Risk of Rain 2, Valheim, and more" ;;
         ghostty-themes) echo "official Ghostty theme collection" ;;
         *)         return 1 ;;
     esac
@@ -129,7 +126,7 @@ tool_category() {
     case "$1" in
         tea|superfile|nak|ngit) echo "Developer CLIs" ;;
         claude|codex|opencode|omp|herdr) echo "AI coding" ;;
-        wowup-cf) echo "Gaming" ;;
+        wowup-cf|r2modman) echo "Gaming" ;;
         ghostty-themes) echo "Appearance" ;;
         *) return 1 ;;
     esac
@@ -146,7 +143,7 @@ tool_commands() {
         opencode)  echo "opencode" ;;
         omp)       echo "omp" ;;
         herdr)     echo "herdr" ;;
-        wowup-cf|ghostty-themes) return 0 ;;
+        wowup-cf|r2modman|ghostty-themes) return 0 ;;
         *)         return 1 ;;
     esac
 }
@@ -211,19 +208,24 @@ launcher_is_managed() {
     fi
 }
 
+# AppImages that Monolith integrates with Gear Lever.
+is_gear_lever_app() {
+    case "$1" in
+        wowup-cf|r2modman) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 is_managed() {
     local tool="$1" root command
     has_marker "$tool" || return 1
-    case "$tool" in
-        ghostty-themes)
-            [ "$(ghostty_themes status)" = installed ]
-            return
-            ;;
-        wowup-cf)
-            [ "$(wowup_cf status)" = installed ]
-            return
-            ;;
-    esac
+    if [ "$tool" = ghostty-themes ]; then
+        [ "$(ghostty_themes status)" = installed ]
+        return
+    elif is_gear_lever_app "$tool"; then
+        [ "$(gear_lever_app "$tool" status)" = installed ]
+        return
+    fi
     root="$(tool_root "$tool")"
     [ -d "$root" ] || return 1
     for command in $(tool_commands "$tool"); do
@@ -248,8 +250,8 @@ external_path() {
 
 tool_status() {
     local tool="$1"
-    if [ "$tool" = wowup-cf ]; then
-        wowup_cf status
+    if is_gear_lever_app "$tool"; then
+        gear_lever_app "$tool" status
     elif is_managed "$tool"; then
         echo "installed"
     elif has_marker "$tool"; then
@@ -286,11 +288,10 @@ marker_version() {
     sed -n 's/^version=//p' "$marker" | head -n 1
 }
 
+# Only tools with commands own paths in ~/.local/bin.
 local_destination_conflict() {
     local tool="$1" path
-    case "$tool" in
-        ghostty-themes|wowup-cf) return 1 ;;
-    esac
+    [ -n "$(tool_commands "$tool")" ] || return 1
     has_marker "$tool" && return 1
 
     for path in $(tool_commands "$tool"); do
@@ -312,9 +313,7 @@ local_destination_conflict() {
 # Print a launcher that the user replaced after Monolith installed the tool.
 replaced_launcher() {
     local tool="$1" command path
-    case "$tool" in
-        ghostty-themes|wowup-cf) return 1 ;;
-    esac
+    [ -n "$(tool_commands "$tool")" ] || return 1
     has_marker "$tool" || return 1
     for command in $(tool_commands "$tool"); do
         path="$BIN_DIR/$command"
@@ -938,20 +937,16 @@ adopt_tool() {
 install_tool() {
     local tool="$1"
     is_known_tool "$tool" || die "unknown tool: $tool"
-    case "$tool" in
-        ghostty-themes)
-            ghostty_themes install
-            ;;
-        wowup-cf)
-            install_wowup_cf
-            ;;
-        *)
-            if ! has_marker "$tool" && can_adopt "$tool"; then
-                adopt_tool "$tool"
-            fi
-            "install_$tool"
-            ;;
-    esac
+    if [ "$tool" = ghostty-themes ]; then
+        ghostty_themes install
+    elif is_gear_lever_app "$tool"; then
+        install_gear_lever_app "$tool"
+    else
+        if ! has_marker "$tool" && can_adopt "$tool"; then
+            adopt_tool "$tool"
+        fi
+        "install_$tool"
+    fi
     printf '\nInstalled %s.\n' "$(tool_name "$tool")"
 }
 
@@ -961,14 +956,21 @@ ghostty_themes() {
     python3 "$GHOSTTY_THEMES_HELPER" "$@"
 }
 
-wowup_cf() {
-    command -v python3 >/dev/null 2>&1 || die "WowUp-CF requires Python 3"
-    [ -f "$WOWUP_CF_HELPER" ] || die "WowUp-CF helper is missing: $WOWUP_CF_HELPER"
-    python3 "$WOWUP_CF_HELPER" "$@" 9>&-
+# Run the Gear Lever app helper for TOOL: status, info, install, or remove.
+gear_lever_app() {
+    local tool="$1" action="$2" scope=()
+    command -v python3 >/dev/null 2>&1 || die "$(tool_name "$tool") requires Python 3"
+    [ -f "$GEAR_LEVER_APP_HELPER" ] || die "Gear Lever app helper is missing: $GEAR_LEVER_APP_HELPER"
+    case "$action" in
+        install|remove) scope=(--scope "$GEAR_LEVER_SCOPE") ;;
+    esac
+    python3 "$GEAR_LEVER_APP_HELPER" "${scope[@]}" "$tool" "$action" 9>&-
 }
 
-wowup_policy() {
-    cat <<'EOF'
+gear_lever_app_policy() {
+    case "$1" in
+        wowup-cf)
+            cat <<'EOF'
 WowUp-CF release policy:
   - Added to Gear Lever; one supported existing integration is reused.
   - Follows only the 2.24.0 beta series (beta.6 or newer) until a compatible
@@ -977,6 +979,26 @@ WowUp-CF release policy:
     settings are unchanged.
   - Monolith, not Gear Lever, selects updates (monolith update wowup-cf).
 EOF
+            ;;
+        r2modman)
+            cat <<'EOF'
+r2modman release policy:
+  - Added to Gear Lever; one supported existing integration is reused.
+  - Installs the newest stable release; prereleases are skipped.
+  - Monolith, not Gear Lever, selects updates (monolith update r2modman);
+    r2modman may also update itself to newer stable releases.
+EOF
+            ;;
+    esac
+}
+
+# What removing TOOL keeps, as a noun phrase.
+kept_data() {
+    case "$1" in
+        wowup-cf) echo "settings, game installations, and addons" ;;
+        r2modman) echo "profiles, mods, and settings" ;;
+        *) echo "settings, authentication, sessions, and project files" ;;
+    esac
 }
 
 # Print the first Flatpak scope that has Gear Lever installed.
@@ -1003,46 +1025,48 @@ version_at_least() {
     [ "$(printf '%s\n%s\n' "$minimum" "$version" | sort -V | head -n 1)" = "$minimum" ]
 }
 
-# Find Gear Lever, offering a per-user Flathub install when it is missing.
-# Runs in the action's own shell so prompts keep the caller's terminal.
+# Find Gear Lever for TOOL, offering a per-user Flathub install when it is
+# missing. Runs in the action's own shell so prompts keep the caller's terminal.
 ensure_gear_lever() {
-    local scope version answer=0
+    local name scope version answer=0
+    name="$(tool_name "$1")"
     command -v flatpak >/dev/null 2>&1 ||
-        die "WowUp-CF needs Gear Lever, but the flatpak command is missing; repair Flatpak, then retry"
+        die "$name needs Gear Lever, but the flatpak command is missing; repair Flatpak, then retry"
     if ! scope="$(gear_lever_scope)"; then
         if [ ! -t 0 ] || [ ! -t 1 ]; then
-            die "WowUp-CF needs Gear Lever. Install it with: flatpak install --user --noninteractive --assumeyes $GEAR_LEVER_REF"
+            die "$name needs Gear Lever. Install it with: flatpak install --user --noninteractive --assumeyes $GEAR_LEVER_REF"
         fi
         confirm_action "Gear Lever is missing. Install its Flathub Flatpak for your account?" \
-            "WowUp-CF is added to Gear Lever. No administrator password is needed." || answer=$?
+            "$name is added to Gear Lever. No administrator password is needed." || answer=$?
         case "$answer" in
             0) ;;
             130) exit 130 ;;
             *)
-                printf 'WowUp-CF was not changed because Gear Lever is required.\n' >&2
+                printf '%s was not changed because Gear Lever is required.\n' "$name" >&2
                 exit 125
                 ;;
         esac
         note "Installing Gear Lever from Flathub for your account"
         flatpak install --user --noninteractive --assumeyes "$GEAR_LEVER_REF" 9>&- ||
-            die "Gear Lever could not be installed; WowUp-CF was not changed"
-        scope="$(gear_lever_scope)" || die "Gear Lever is still missing after installation; WowUp-CF was not changed"
+            die "Gear Lever could not be installed; $name was not changed"
+        scope="$(gear_lever_scope)" || die "Gear Lever is still missing after installation; $name was not changed"
     fi
     version="$(gear_lever_version "$scope")"
     if ! version_at_least "$version" "$GEAR_LEVER_MIN_VERSION"; then
-        die "WowUp-CF needs Gear Lever $GEAR_LEVER_MIN_VERSION or newer, but the $scope installation reports '${version:-unknown}'. Update it with: flatpak update --$scope $GEAR_LEVER_ID"
+        die "$name needs Gear Lever $GEAR_LEVER_MIN_VERSION or newer, but the $scope installation reports '${version:-unknown}'. Update it with: flatpak update --$scope $GEAR_LEVER_ID"
     fi
     GEAR_LEVER_SCOPE="$scope"
 }
 
-install_wowup_cf() {
-    require_amd64 "WowUp-CF"
+install_gear_lever_app() {
+    local tool="$1"
+    require_amd64 "$(tool_name "$tool")"
     # The dashboard's details screen has already shown the policy.
-    if ! has_marker wowup-cf && [ "${MONOLITH_POLICY_SHOWN:-}" != 1 ]; then
-        wowup_policy
+    if ! has_marker "$tool" && [ "${MONOLITH_POLICY_SHOWN:-}" != 1 ]; then
+        gear_lever_app_policy "$tool"
     fi
-    ensure_gear_lever
-    wowup_cf --scope "$GEAR_LEVER_SCOPE" install
+    ensure_gear_lever "$tool"
+    gear_lever_app "$tool" install
 }
 
 remove_link_if_managed() {
@@ -1056,44 +1080,37 @@ remove_link_if_managed() {
 }
 
 remove_tool() {
-    local tool="$1" root marker command
+    local tool="$1" root marker command kept
     is_known_tool "$tool" || die "unknown tool: $tool"
     marker="$(state_file "$tool")"
     has_marker "$tool" || die "$(tool_name "$tool") is not managed by Monolith"
     root="$(tool_root "$tool")"
 
     note "Removing $(tool_name "$tool")"
-    case "$tool" in
-        ghostty-themes)
-            ghostty_themes remove
-            ;;
-        wowup-cf)
-            ensure_gear_lever
-            wowup_cf --scope "$GEAR_LEVER_SCOPE" remove
-            ;;
-        *)
-            # Settings, logins, and sessions live outside the program roots.
-            for command in $(tool_commands "$tool"); do
-                remove_link_if_managed "$command" "$root"
-            done
-            if [ -e "$root" ] || [ -L "$root" ]; then
-                safe_remove_tree "$root"
-            fi
-            case "$tool" in
-                codex) rmdir -- "$HOME/.codex/packages" 2>/dev/null || true ;;
-                opencode) rmdir -- "$HOME/.opencode" 2>/dev/null || true ;;
-            esac
-            ;;
-    esac
+    if [ "$tool" = ghostty-themes ]; then
+        ghostty_themes remove
+    elif is_gear_lever_app "$tool"; then
+        ensure_gear_lever "$tool"
+        gear_lever_app "$tool" remove
+    else
+        # Settings, logins, and sessions live outside the program roots.
+        for command in $(tool_commands "$tool"); do
+            remove_link_if_managed "$command" "$root"
+        done
+        if [ -e "$root" ] || [ -L "$root" ]; then
+            safe_remove_tree "$root"
+        fi
+        case "$tool" in
+            codex) rmdir -- "$HOME/.codex/packages" 2>/dev/null || true ;;
+            opencode) rmdir -- "$HOME/.opencode" 2>/dev/null || true ;;
+        esac
+    fi
 
     rm -f -- "$marker"
     rmdir -- "$STATE_ROOT" "$STATE_HOME/monolith" 2>/dev/null || true
     rmdir -- "$MANAGED_ROOT" "$DATA_HOME/monolith" 2>/dev/null || true
-    if [ "$tool" = wowup-cf ]; then
-        printf '\nRemoved %s. Settings, game installations, and addons were kept.\n' "$(tool_name "$tool")"
-    else
-        printf '\nRemoved %s. Settings, authentication, sessions, and project files were kept.\n' "$(tool_name "$tool")"
-    fi
+    kept="$(kept_data "$tool")"
+    printf '\nRemoved %s. %s were kept.\n' "$(tool_name "$tool")" "${kept^}"
 }
 
 # Serialize every mutation. The descriptor stays open until the action exits;
@@ -1126,7 +1143,7 @@ action_verb() {
         echo "Remove"
     elif [ "$action" = adopt ]; then
         echo "Adopt and update"
-    elif [ "$tool" = wowup-cf ]; then
+    elif is_gear_lever_app "$tool"; then
         case "$(tool_status "$tool" 2>/dev/null || true)" in
             installed) echo "Update" ;;
             "needs repair") echo "Repair" ;;
@@ -1257,12 +1274,12 @@ installed_version() {
     fi
 }
 
-# Load WowUp-CF's filesystem-only summary once per render.
-load_wowup_info() {
-    local json fields lines=()
-    WOWUP_STATUS="" WOWUP_VERSION="" WOWUP_APPIMAGE="" WOWUP_DESKTOP_ID=""
-    WOWUP_SOURCE="" WOWUP_CHANNEL="" WOWUP_ERROR="" WOWUP_CONFLICTS=()
-    if json="$(wowup_cf info 2>/dev/null)" && fields="$(printf '%s' "$json" | python3 -c '
+# Load a Gear Lever app's filesystem-only summary once per render.
+load_app_info() {
+    local tool="$1" json fields status version appimage desktop_id source channel lines=()
+    APP_VERSION[$tool]="" APP_APPIMAGE[$tool]="" APP_DESKTOP_ID[$tool]="" APP_SOURCE[$tool]=""
+    APP_CHANNEL[$tool]="" APP_ERROR[$tool]="" APP_CONFLICTS[$tool]=""
+    if json="$(gear_lever_app "$tool" info 2>/dev/null)" && fields="$(printf '%s' "$json" | python3 -c '
 import json, sys
 data = json.load(sys.stdin)
 if data.get("status") not in ("installed", "needs repair", "external", "not installed"):
@@ -1275,14 +1292,22 @@ for path in data.get("conflicts") or []:
     print(str(path).replace("\n", " "))
 ')"; then
         mapfile -t lines <<<"$fields"
-        IFS=$'\x1f' read -r WOWUP_STATUS WOWUP_VERSION WOWUP_APPIMAGE WOWUP_DESKTOP_ID WOWUP_SOURCE WOWUP_CHANNEL <<<"${lines[0]}"
-        WOWUP_CONFLICTS=("${lines[@]:1}")
+        IFS=$'\x1f' read -r status version appimage desktop_id source channel <<<"${lines[0]}"
+        ROW_STATUS[$tool]="$status"
+        APP_VERSION[$tool]="$version"
+        APP_APPIMAGE[$tool]="$appimage"
+        APP_DESKTOP_ID[$tool]="$desktop_id"
+        APP_SOURCE[$tool]="$source"
+        APP_CHANNEL[$tool]="$channel"
+        if [ "${#lines[@]}" -gt 1 ]; then
+            APP_CONFLICTS[$tool]="$(printf '%s\n' "${lines[@]:1}")"
+        fi
     else
-        WOWUP_ERROR="Monolith could not inspect the WowUp-CF integration."
-        if has_marker wowup-cf; then
-            WOWUP_STATUS="needs repair"
+        APP_ERROR[$tool]="Monolith could not inspect the $(tool_name "$tool") integration."
+        if has_marker "$tool"; then
+            ROW_STATUS[$tool]="needs repair"
         else
-            WOWUP_STATUS="not installed"
+            ROW_STATUS[$tool]="not installed"
         fi
     fi
 }
@@ -1290,9 +1315,8 @@ for path in data.get("conflicts") or []:
 refresh_status() {
     local tool
     for tool in "$@"; do
-        if [ "$tool" = wowup-cf ]; then
-            load_wowup_info
-            ROW_STATUS[$tool]="$WOWUP_STATUS"
+        if is_gear_lever_app "$tool"; then
+            load_app_info "$tool"
         else
             ROW_STATUS[$tool]="$(tool_status "$tool")"
         fi
@@ -1300,20 +1324,17 @@ refresh_status() {
 }
 
 # Version text for a row: the managed program's own version, the receipt for
-# themes and WowUp-CF, or the marker labelled as last recorded.
+# themes and Gear Lever apps, or the marker labelled as last recorded.
 display_version() {
     local tool="$1" status="${ROW_STATUS[$1]:-}" actual recorded
-    case "$tool" in
-        wowup-cf)
-            if [ -n "$WOWUP_VERSION" ]; then printf 'verified %s\n' "$WOWUP_VERSION"; else echo "-"; fi
-            return 0
-            ;;
-        ghostty-themes)
-            recorded="$(marker_version "$tool")"
-            printf '%s\n' "${recorded:--}"
-            return 0
-            ;;
-    esac
+    if is_gear_lever_app "$tool"; then
+        if [ -n "${APP_VERSION[$tool]}" ]; then printf 'verified %s\n' "${APP_VERSION[$tool]}"; else echo "-"; fi
+        return 0
+    elif [ "$tool" = ghostty-themes ]; then
+        recorded="$(marker_version "$tool")"
+        printf '%s\n' "${recorded:--}"
+        return 0
+    fi
     if [ "$status" = installed ] && actual="$(installed_version "$tool")"; then
         printf '%s\n' "$actual"
         return 0
@@ -1577,38 +1598,38 @@ menu_update() {
     menu_actions install "${selected[@]}"
 }
 
-show_wowup_details() {
-    local path
-    if [ -n "$WOWUP_ERROR" ]; then
-        printf '\n%s\n' "$WOWUP_ERROR"
+show_gear_lever_app_details() {
+    local tool="$1" path
+    if [ -n "${APP_ERROR[$tool]}" ]; then
+        printf '\n%s\n' "${APP_ERROR[$tool]}"
     fi
-    if [ -n "$WOWUP_VERSION" ]; then
-        printf 'Last verified version: %s\n' "$WOWUP_VERSION"
+    if [ -n "${APP_VERSION[$tool]}" ]; then
+        printf 'Last verified version: %s\n' "${APP_VERSION[$tool]}"
     fi
-    if [ -n "$WOWUP_SOURCE" ]; then
-        printf 'Source:   %s\n' "$WOWUP_SOURCE"
+    if [ -n "${APP_SOURCE[$tool]}" ]; then
+        printf 'Source:   %s\n' "${APP_SOURCE[$tool]}"
     fi
-    case "$WOWUP_CHANNEL" in
+    case "${APP_CHANNEL[$tool]}" in
         beta-bridge) printf 'Releases: 2.24.0 beta series until a compatible stable exists\n' ;;
         stable) printf 'Releases: stable\n' ;;
     esac
-    if [ -n "$WOWUP_APPIMAGE" ]; then
-        printf 'AppImage: %s\n' "$WOWUP_APPIMAGE"
+    if [ -n "${APP_APPIMAGE[$tool]}" ]; then
+        printf 'AppImage: %s\n' "${APP_APPIMAGE[$tool]}"
     fi
-    if [ -n "$WOWUP_DESKTOP_ID" ]; then
-        printf 'Launcher: %s (Gear Lever)\n' "$WOWUP_DESKTOP_ID"
+    if [ -n "${APP_DESKTOP_ID[$tool]}" ]; then
+        printf 'Launcher: %s (Gear Lever)\n' "${APP_DESKTOP_ID[$tool]}"
     fi
-    if [ "${#WOWUP_CONFLICTS[@]}" -gt 0 ]; then
-        printf '\nResolve these WowUp-CF integrations in Gear Lever, then return here:\n'
-        for path in "${WOWUP_CONFLICTS[@]}"; do
+    if [ -n "${APP_CONFLICTS[$tool]}" ]; then
+        printf '\nResolve these %s integrations in Gear Lever, then return here:\n' "$(tool_name "$tool")"
+        while IFS= read -r path; do
             printf '  %s\n' "$path"
-        done
+        done <<<"${APP_CONFLICTS[$tool]}"
     fi
     # Disclose the release policy where it is accepted: install and adoption.
-    case "$WOWUP_STATUS" in
+    case "${ROW_STATUS[$tool]}" in
         "not installed"|external)
             printf '\n'
-            wowup_policy
+            gear_lever_app_policy "$tool"
             ;;
     esac
 }
@@ -1619,11 +1640,11 @@ show_tool_details() {
     printf 'Category: %s\n' "$(tool_category "$tool")"
     printf 'About:    %s\n' "$(tool_description "$tool")"
     printf 'Status:   %s\n' "$status"
+    if is_gear_lever_app "$tool"; then
+        show_gear_lever_app_details "$tool"
+        return 0
+    fi
     case "$tool" in
-        wowup-cf)
-            show_wowup_details
-            return 0
-            ;;
         ghostty-themes)
             if [ "$version" != "-" ]; then
                 printf 'Bundle:   %s\n' "$version"
@@ -1656,7 +1677,7 @@ show_tool_details() {
 }
 
 manage_tool() {
-    local tool="$1" status conflict options=() answer
+    local tool="$1" status conflict options=() answer kept
     while true; do
         refresh_status "$tool"
         refresh_versions "$tool"
@@ -1684,8 +1705,8 @@ manage_tool() {
                 options+=("Remove"$'\t'"remove")
                 ;;
             *)
-                if [ "$tool" = wowup-cf ]; then
-                    if [ "$status" = external ] && [ "${#WOWUP_CONFLICTS[@]}" -gt 0 ]; then
+                if is_gear_lever_app "$tool"; then
+                    if [ "$status" = external ] && [ -n "${APP_CONFLICTS[$tool]}" ]; then
                         :
                     elif [ "$status" = external ]; then
                         options+=("Adopt and update"$'\t'"install")
@@ -1718,8 +1739,8 @@ manage_tool() {
                 ;;
             remove)
                 answer=0
-                confirm_action "Remove $(tool_name "$tool")?" \
-                    "Settings, authentication, sessions, addon data, and projects are kept." || answer=$?
+                kept="$(kept_data "$tool")"
+                confirm_action "Remove $(tool_name "$tool")?" "${kept^} are kept." || answer=$?
                 case "$answer" in
                     0) menu_actions remove "$tool" ;;
                     130) exit 130 ;;
@@ -1811,7 +1832,7 @@ Commands:
 Tool IDs:
   Developer CLIs   tea superfile nak ngit
   AI coding        claude codex opencode omp herdr
-  Gaming           wowup-cf
+  Gaming           wowup-cf r2modman
   Appearance       ghostty-themes
 EOF
 }

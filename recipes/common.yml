@@ -218,11 +218,11 @@ modules:
         set -euxo pipefail
         test -x /usr/bin/monolith
         test -x /usr/libexec/monolith/ghostty-themes
-        test -x /usr/libexec/monolith/wowup-cf
+        test -x /usr/libexec/monolith/gear-lever-app
         bash -n /usr/bin/monolith
         # Help must not need or touch a home directory.
         HOME=/nonexistent /usr/bin/monolith help >/dev/null
-        HOME=/nonexistent python3 -B /usr/libexec/monolith/wowup-cf --help >/dev/null
+        HOME=/nonexistent python3 -B /usr/libexec/monolith/gear-lever-app --help >/dev/null
         for command in fzf python3 curl flock readelf; do
           command -v "$command" >/dev/null
         done
