@@ -7,8 +7,10 @@ import contextlib
 import dataclasses
 import datetime
 import fcntl
+import html
 import http.client
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -17,12 +19,15 @@ import tempfile
 import threading
 import time
 import tomllib
+import types
 import urllib.error
 import urllib.request
 
 
 REPOSITORY_URL = "https://github.com/monolithlinux/monolith"
 FEED_URL = "https://raw.githubusercontent.com/monolithlinux/monolith/main/news/announcements.toml"
+# Announcements deleted from the feed remain in its history.
+HISTORY_URL = REPOSITORY_URL + "/commits/main/news/announcements.toml"
 USER_AGENT = "monolith-news/1"
 MAX_FEED_BYTES = 256 * 1024
 FETCH_TIMEOUT_SECONDS = 15
@@ -32,16 +37,21 @@ LOGIN_RETRY_SECONDS = 30
 ID_PATTERN = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 URL_PATTERN = re.compile(r"https://\S+")
 MAX_TITLE_CHARS = 120
+MAX_CATEGORY_CHARS = 24
+MAX_INSTALL_STEPS = 5
+MAX_STEP_CHARS = 40
+MAX_NOTE_CHARS = 240
 MAX_LINKS = 3
 MAX_LABEL_CHARS = 40
 FOOTER_LINKS = (
     ("Issues", REPOSITORY_URL + "/issues"),
     ("Releases", REPOSITORY_URL + "/releases"),
-    ("Project Page", REPOSITORY_URL),
+    ("Project page", REPOSITORY_URL),
 )
 STATUS_CHECKING = "Checking for announcements…"
-STATUS_CACHED = "Could not check for new announcements. Showing saved announcements."
-STATUS_UNAVAILABLE = "Could not check for announcements. Check your connection and try again."
+STATUS_CACHED = "Couldn't reach GitHub — showing saved announcements."
+STATUS_UNAVAILABLE = "Couldn't reach GitHub. Check your connection and try again."
+STATUS_EMPTY = "No announcements yet"
 # The system autostart entry plus Hidden=true. Plasma's Autostart page lists this
 # user copy as a disabled entry, and the systemd generator skips it at login.
 LOGIN_OVERRIDE = (
@@ -50,6 +60,48 @@ LOGIN_OVERRIDE = (
     "Exec=/usr/bin/monolith-news --autostart\nIcon=monolith-logo\n"
     "Terminal=false\nOnlyShowIn=KDE;\nHidden=true\n"
 )
+
+
+class Color:
+    """Design tokens from the Monolith News design handoff."""
+
+    WINDOW = "#1b1e22"
+    CHROME = "#16181b"
+    SIDEBAR = "#17191d"
+    INSET = "#15171a"
+    HOVER = "#1f2226"
+    SELECTED = "#24282d"
+    CODE = "#262a30"
+    DIVIDER = "#26292e"
+    INSET_BORDER = "#2a2e34"
+    RING = "#33373e"
+    TEXT = "#e6e4df"
+    BODY = "#c9cbd0"
+    SECONDARY = "#b9bcc2"
+    TERTIARY = "#a9adb4"
+    MUTED = "#8b9099"
+    FAINT = "#5d636c"
+    WHITE = "#ffffff"
+    ACCENT = "#e8a33d"
+    ACCENT_LIGHT = "#f0b65c"
+    ON_ACCENT = "#1a1408"
+    SWITCH_OFF = "#3a3f46"
+    # rgba(232, 163, 61, 0.14) over WINDOW, the only background behind the pill.
+    PILL = "#383126"
+
+
+STYLESHEET = f"""
+QFrame#sidebar {{ background: {Color.SIDEBAR}; border: none; border-right: 1px solid {Color.DIVIDER}; }}
+QFrame#olderBar {{ background: {Color.SIDEBAR}; border: none; border-top: 1px solid {Color.DIVIDER}; }}
+QFrame#getIt {{ background: {Color.INSET}; border: 1px solid {Color.INSET_BORDER}; border-radius: 8px; }}
+QFrame#note {{ background: {Color.HOVER}; border: none; border-radius: 8px; }}
+QFrame#footerBar {{ background: {Color.CHROME}; border: none; border-top: 1px solid {Color.DIVIDER}; }}
+QScrollBar:vertical {{ background: transparent; width: 10px; margin: 0; }}
+QScrollBar::handle:vertical {{ background: {Color.RING}; border-radius: 3px; min-height: 32px; margin: 2px; }}
+QScrollBar::handle:vertical:hover, QScrollBar::handle:vertical:pressed {{ background: {Color.FAINT}; }}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; border: none; background: none; }}
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: none; }}
+"""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -63,7 +115,10 @@ class Announcement:
     id: str
     date: datetime.date
     title: str
+    category: str | None
+    install_path: tuple[str, ...]
     body: str
+    note: str | None
     links: tuple[Link, ...]
 
 
@@ -71,6 +126,14 @@ class Announcement:
 class FeedResult:
     announcements: tuple[Announcement, ...]
     source: str  # "network" | "cache" | "none"
+
+
+@dataclasses.dataclass(frozen=True)
+class NewsState:
+    # Listed in a window that was then closed; only other ids open News at login.
+    dismissed: frozenset[str]
+    # Opened in the reading pane or marked read.
+    read: frozenset[str]
 
 
 class FeedError(ValueError):
@@ -133,6 +196,16 @@ def one_line(value: object, limit: int) -> str | None:
     return text
 
 
+def optional_line(entry: dict, key: str, limit: int) -> str | None:
+    value = entry.get(key)
+    if value is None:
+        return None
+    text = one_line(value, limit)
+    if text is None:
+        raise ValueError(f"{key} must be one line of 1-{limit} characters")
+    return text
+
+
 def parse_announcement(entry: object) -> Announcement:
     """Validate one feed entry; ValueError says why it cannot be shown."""
     if not isinstance(entry, dict):
@@ -147,9 +220,17 @@ def parse_announcement(entry: object) -> Announcement:
     title = one_line(entry.get("title"), MAX_TITLE_CHARS)
     if title is None:
         raise ValueError(f"title must be one line of 1-{MAX_TITLE_CHARS} characters")
+    category = optional_line(entry, "category", MAX_CATEGORY_CHARS)
+    steps = entry.get("install_path", [])
+    if not isinstance(steps, list) or len(steps) > MAX_INSTALL_STEPS:
+        raise ValueError(f"install_path must be a list of at most {MAX_INSTALL_STEPS} steps")
+    install_path = tuple(one_line(step, MAX_STEP_CHARS) for step in steps)
+    if None in install_path:
+        raise ValueError(f"install_path steps must be one line of 1-{MAX_STEP_CHARS} characters")
     body = entry.get("body")
     if not isinstance(body, str) or not body.strip():
         raise ValueError("body must be non-empty text")
+    note = optional_line(entry, "note", MAX_NOTE_CHARS)
     links = entry.get("links", [])
     if not isinstance(links, list) or len(links) > MAX_LINKS:
         raise ValueError(f"links must be a list of at most {MAX_LINKS} tables")
@@ -164,7 +245,9 @@ def parse_announcement(entry: object) -> Announcement:
         if not isinstance(url, str) or not URL_PATTERN.fullmatch(url):
             raise ValueError("link urls must start with https:// and contain no spaces")
         parsed.append(Link(label, url))
-    return Announcement(identifier, date, title, body.strip(), tuple(parsed))
+    return Announcement(id=identifier, date=date, title=title, category=category,
+                        install_path=install_path, body=body.strip(), note=note,
+                        links=tuple(parsed))
 
 
 def parse_feed(data: bytes) -> tuple[list[Announcement], list[str]]:
@@ -249,29 +332,37 @@ def refresh_feed(attempts: int) -> FeedResult:
     return FeedResult((), "none")
 
 
-def load_dismissed() -> set[str]:
+def string_list(value: object) -> bool:
+    return isinstance(value, list) and all(isinstance(item, str) for item in value)
+
+
+def load_state() -> NewsState:
     path = state_path()
     try:
         state = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        return set()
+        return NewsState(frozenset(), frozenset())
     except (OSError, ValueError):
         state = None
-    if (isinstance(state, dict) and state.get("version") == 1
-            and isinstance(state.get("dismissed"), list)
-            and all(isinstance(item, str) for item in state["dismissed"])):
-        return set(state["dismissed"])
+    if isinstance(state, dict) and state.get("version") == 1:
+        dismissed = state.get("dismissed")
+        # Releases before the reading pane saved only dismissals, and their window
+        # showed every announcement in full.
+        read = state.get("read", dismissed)
+        if string_list(dismissed) and string_list(read):
+            return NewsState(frozenset(dismissed), frozenset(read))
     # Showing announcements again is the safe failure.
     warn(f"ignoring invalid state file {path}")
-    return set()
+    return NewsState(frozenset(), frozenset())
 
 
-def save_dismissed(ids) -> None:
+def save_state(dismissed, read) -> None:
     # Never prune ids missing from the feed; a reverted commit would reopen them.
     path = state_path()
     with locked(path.parent):
-        merged = load_dismissed() | set(ids)
-        state = {"version": 1, "dismissed": sorted(merged)}
+        saved = load_state()
+        state = {"version": 1, "dismissed": sorted(saved.dismissed | set(dismissed)),
+                 "read": sorted(saved.read | set(read))}
         atomic_write(path, (json.dumps(state, indent=2) + "\n").encode())
 
 
@@ -280,7 +371,7 @@ def unseen(announcements, dismissed) -> list[Announcement]:
 
 
 def login_check_enabled() -> bool:
-    """Honor the user copy that Plasma's Autostart page and the checkbox manage."""
+    """Honor the user copy that Plasma's Autostart page and the switch manage."""
     parser = configparser.ConfigParser(interpolation=None, strict=False)
     parser.optionxform = str
     try:
@@ -299,12 +390,439 @@ def set_login_check(enabled: bool) -> None:
         atomic_write(path, LOGIN_OVERRIDE.encode())
 
 
-def status_for(feed: FeedResult) -> str:
-    return {"network": "", "cache": STATUS_CACHED, "none": STATUS_UNAVAILABLE}[feed.source]
+def widget_classes():
+    """Define the window's painted widgets; Qt loads only when a window opens."""
+    from PySide6 import QtCore, QtGui, QtWidgets
+    Qt = QtCore.Qt
+    policy = QtWidgets.QSizePolicy.Policy
+    left = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+    wrapped = (Qt.AlignmentFlag.AlignLeft.value | Qt.AlignmentFlag.AlignTop.value
+               | Qt.TextFlag.TextWordWrap.value)
+    antialiasing = QtGui.QPainter.RenderHint.Antialiasing
+
+    def wrapped_box(metrics, text, width):
+        return metrics.boundingRect(QtCore.QRect(0, 0, width, 1 << 16), wrapped, text)
+
+    def balanced_width(metrics, text, width):
+        """Return the narrowest width that keeps text's line count (CSS text-wrap: balance)."""
+        height = wrapped_box(metrics, text, width).height()
+        low, high = 1, max(1, width)
+        while low < high:
+            middle = (low + high) // 2
+            box = wrapped_box(metrics, text, middle)
+            if box.height() <= height and box.width() <= middle:
+                high = middle
+            else:
+                low = middle + 1
+        return low
+
+    def cursor_x(line, position):
+        x = line.cursorToX(position)
+        return x[0] if isinstance(x, tuple) else x
+
+    class TextButton(QtWidgets.QAbstractButton):
+        """A flat button drawn to the design, with an optional trailing arrow."""
+
+        ARROW = "↗"
+        ARROW_GAP = 6
+        RADIUS = 6
+
+        def __init__(self, text, font, *, ink, hover_ink, fill=None, hover_fill=None,
+                     border=None, padding=(0, 0), arrow=False, focus=Color.ACCENT):
+            super().__init__()
+            # Show & literally instead of as a keyboard mnemonic.
+            self.setText(text.replace("&", "&&"))
+            self.label = text
+            self.setFont(font)
+            self.inks = (ink, hover_ink)
+            self.fills = (fill, hover_fill)
+            self.border = border
+            self.arrow = arrow
+            self.focus = focus
+            edge = 1 if border else 0
+            self.setContentsMargins(padding[0] + edge, padding[1] + edge,
+                                    padding[0] + edge, padding[1] + edge)
+            self.setSizePolicy(policy.Fixed, policy.Fixed)
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
+            # Clicks leave no focus ring; Tab still reaches the button.
+            self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+            self.setAttribute(Qt.WidgetAttribute.WA_Hover)
+
+        def sizeHint(self):
+            metrics = self.fontMetrics()
+            width = metrics.horizontalAdvance(self.label)
+            if self.arrow:
+                width += self.ARROW_GAP + metrics.horizontalAdvance(self.ARROW)
+            margins = self.contentsMargins()
+            return QtCore.QSize(width + margins.left() + margins.right(),
+                                metrics.height() + margins.top() + margins.bottom())
+
+        def minimumSizeHint(self):
+            return self.sizeHint()
+
+        def event(self, event):
+            if event.type() in (QtCore.QEvent.Type.HoverEnter, QtCore.QEvent.Type.HoverLeave):
+                self.update()
+            return super().event(event)
+
+        def keyPressEvent(self, event):
+            if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                self.click()
+            else:
+                super().keyPressEvent(event)
+
+        def paintEvent(self, _event):
+            painter = QtGui.QPainter(self)
+            painter.setRenderHint(antialiasing)
+            hot = self.isDown() or self.underMouse()
+            fill = self.fills[hot]
+            outline = self.focus if self.hasFocus() else self.border
+            if fill or outline:
+                painter.setPen(QtGui.QPen(QtGui.QColor(outline), 1) if outline else Qt.PenStyle.NoPen)
+                painter.setBrush(QtGui.QColor(fill) if fill else Qt.BrushStyle.NoBrush)
+                box = QtCore.QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+                painter.drawRoundedRect(box, self.RADIUS, self.RADIUS)
+            area = QtCore.QRectF(self.contentsRect())
+            painter.setPen(QtGui.QColor(self.inks[hot]))
+            painter.drawText(area, left, self.label)
+            if self.arrow:
+                area.setLeft(area.left() + self.fontMetrics().horizontalAdvance(self.label)
+                             + self.ARROW_GAP)
+                painter.setPen(QtGui.QColor(Color.MUTED))
+                painter.drawText(area, left, self.ARROW)
+
+    class LoginSwitch(QtWidgets.QAbstractButton):
+        """A switch whose label is part of what you click."""
+
+        TRACK_WIDTH, TRACK_HEIGHT, KNOB, KNOB_INSET, GAP, RING = 32, 18, 14, 2, 10, 2
+
+        def __init__(self, text, font, checked):
+            super().__init__()
+            self.setText(text)
+            self.setFont(font)
+            self.setCheckable(True)
+            self.setChecked(checked)
+            self.setSizePolicy(policy.Fixed, policy.Fixed)
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+            self.slide = QtCore.QVariantAnimation(self)
+            self.slide.setDuration(150)
+            self.slide.valueChanged.connect(lambda _value: self.update())
+            self.toggled.connect(self.animate)
+
+        def running(self):
+            return self.slide.state() == QtCore.QAbstractAnimation.State.Running
+
+        def animate(self, checked):
+            start = self.slide.currentValue() if self.running() else (0.0 if checked else 1.0)
+            self.slide.stop()
+            self.slide.setStartValue(float(start))
+            self.slide.setEndValue(1.0 if checked else 0.0)
+            self.slide.start()
+
+        def sizeHint(self):
+            metrics = self.fontMetrics()
+            width = (2 * self.RING + self.TRACK_WIDTH + self.GAP
+                     + metrics.horizontalAdvance(self.text()))
+            return QtCore.QSize(width, max(self.TRACK_HEIGHT + 2 * self.RING, metrics.height()))
+
+        def paintEvent(self, _event):
+            painter = QtGui.QPainter(self)
+            painter.setRenderHint(antialiasing)
+            # The animation runs only while sliding; otherwise follow the state.
+            on = self.slide.currentValue() if self.running() else float(self.isChecked())
+            off_color, on_color = QtGui.QColor(Color.SWITCH_OFF), QtGui.QColor(Color.ACCENT)
+            track_color = QtGui.QColor.fromRgbF(
+                *(a + (b - a) * on for a, b in zip(off_color.getRgbF()[:3], on_color.getRgbF()[:3])))
+            top = (self.height() - self.TRACK_HEIGHT) / 2
+            track = QtCore.QRectF(self.RING, top, self.TRACK_WIDTH, self.TRACK_HEIGHT)
+            radius = self.TRACK_HEIGHT / 2
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(track_color)
+            painter.drawRoundedRect(track, radius, radius)
+            travel = self.TRACK_WIDTH - self.KNOB - 2 * self.KNOB_INSET
+            painter.setBrush(QtGui.QColor(Color.WHITE))
+            painter.drawEllipse(QtCore.QRectF(track.left() + self.KNOB_INSET + travel * on,
+                                              top + self.KNOB_INSET, self.KNOB, self.KNOB))
+            if self.hasFocus():
+                painter.setPen(QtGui.QPen(QtGui.QColor(Color.TEXT), 1))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                ring = track.adjusted(-1.5, -1.5, 1.5, 1.5)
+                painter.drawRoundedRect(ring, radius + 1.5, radius + 1.5)
+            painter.setPen(QtGui.QColor(Color.SECONDARY))
+            text = QtCore.QRectF(self.rect())
+            text.setLeft(track.right() + self.GAP)
+            painter.drawText(text, left, self.text())
+
+    class Pill(QtWidgets.QWidget):
+        """The NEW badge beside an announcement's date."""
+
+        def __init__(self, text, font):
+            super().__init__()
+            self.label = text
+            self.setFont(font)
+            self.setSizePolicy(policy.Fixed, policy.Fixed)
+            self.setAccessibleName(text)
+
+        def sizeHint(self):
+            metrics = self.fontMetrics()
+            return QtCore.QSize(metrics.horizontalAdvance(self.label) + 16, metrics.height() + 4)
+
+        def paintEvent(self, _event):
+            painter = QtGui.QPainter(self)
+            painter.setRenderHint(antialiasing)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QtGui.QColor(Color.PILL))
+            radius = self.height() / 2
+            painter.drawRoundedRect(QtCore.QRectF(self.rect()), radius, radius)
+            painter.setPen(QtGui.QColor(Color.ACCENT_LIGHT))
+            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.label)
+
+    class InfoIcon(QtWidgets.QWidget):
+        """The note's ⓘ, drawn so it never depends on a font's symbol coverage."""
+
+        def __init__(self, diameter, line_height):
+            super().__init__()
+            self.diameter = diameter
+            self.setFixedSize(diameter, line_height)
+
+        def paintEvent(self, _event):
+            painter = QtGui.QPainter(self)
+            painter.setRenderHint(antialiasing)
+            color = QtGui.QColor(Color.ACCENT)
+            top = (self.height() - self.diameter) / 2
+            circle = QtCore.QRectF(0.6, top + 0.6, self.diameter - 1.2, self.diameter - 1.2)
+            painter.setPen(QtGui.QPen(color, 1.2))
+            painter.drawEllipse(circle)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(color)
+            middle = circle.center().x()
+            painter.drawEllipse(QtCore.QPointF(middle, circle.top() + circle.height() * 0.28), 0.9, 0.9)
+            painter.drawRect(QtCore.QRectF(middle - 0.6, circle.top() + circle.height() * 0.42,
+                                           1.2, circle.height() * 0.36))
+
+    class Heading(QtWidgets.QWidget):
+        """An announcement title that wraps into balanced lines."""
+
+        def __init__(self, text, font, ink):
+            super().__init__()
+            self.label = text
+            self.ink = ink
+            self.setFont(font)
+            self.setAccessibleName(text)
+            size_policy = QtWidgets.QSizePolicy(policy.Ignored, policy.Preferred)
+            size_policy.setHeightForWidth(True)
+            self.setSizePolicy(size_policy)
+
+        def hasHeightForWidth(self):
+            return True
+
+        def heightForWidth(self, width):
+            return wrapped_box(self.fontMetrics(), self.label, width).height()
+
+        def sizeHint(self):
+            metrics = self.fontMetrics()
+            return QtCore.QSize(metrics.horizontalAdvance(self.label), metrics.height())
+
+        def paintEvent(self, _event):
+            painter = QtGui.QPainter(self)
+            painter.setPen(QtGui.QColor(self.ink))
+            width = balanced_width(self.fontMetrics(), self.label, self.width())
+            painter.drawText(QtCore.QRect(0, 0, width, self.height()), wrapped, self.label)
+
+    class Body(QtWidgets.QTextBrowser):
+        """Markdown that grows with its text, so only the reading pane scrolls."""
+
+        CHIP_PAD = 6
+        CHIP_RADIUS = 4
+
+        def __init__(self, document, chips, chip_font, has_links):
+            super().__init__()
+            document.setParent(self)
+            self.setDocument(document)
+            # Document positions of inline code, drawn as chips behind the text.
+            self.chips = chips
+            self.chip_metrics = QtGui.QFontMetricsF(chip_font)
+            self.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+            self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            # Long words and URLs wrap instead of widening the reading pane.
+            self.setWordWrapMode(QtGui.QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+            self.setOpenLinks(False)
+            # Tab reaches the body only when it has links to follow.
+            self.setFocusPolicy(Qt.FocusPolicy.StrongFocus if has_links
+                                else Qt.FocusPolicy.ClickFocus)
+            self.viewport().setAutoFillBackground(False)
+            self.setSizePolicy(policy.Ignored, policy.Fixed)
+            document.documentLayout().documentSizeChanged.connect(
+                lambda size: self.setFixedHeight(math.ceil(size.height())))
+
+        def wheelEvent(self, event):
+            # The body never scrolls itself, so the wheel goes on to the reading pane.
+            event.ignore()
+
+        def chip_rects(self, start, end):
+            block = self.document().findBlock(start)
+            layout = block.layout()
+            origin = layout.position()
+            first, last = start - block.position(), end - block.position()
+            ascent, descent = self.chip_metrics.ascent(), self.chip_metrics.descent()
+            line = layout.lineForTextPosition(first)
+            while line.isValid() and line.textStart() < last:
+                # The padding sits in letter spacing that run_gui reserves around the code.
+                x1 = origin.x() + cursor_x(line, max(first, line.textStart())) - self.CHIP_PAD
+                x2 = origin.x() + cursor_x(line, min(last, line.textStart() + line.textLength()))
+                baseline = origin.y() + line.y() + line.ascent()
+                yield QtCore.QRectF(max(0.0, x1), baseline - ascent - 1, x2 - max(0.0, x1),
+                                    ascent + descent + 2)
+                line = layout.lineAt(line.lineNumber() + 1)
+
+        def paintEvent(self, event):
+            painter = QtGui.QPainter(self.viewport())
+            painter.setRenderHint(antialiasing)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QtGui.QColor(Color.CODE))
+            for start, end in self.chips:
+                for rect in self.chip_rects(start, end):
+                    painter.drawRoundedRect(rect, self.CHIP_RADIUS, self.CHIP_RADIUS)
+            painter.end()
+            super().paintEvent(event)
+
+    class FlowLayout(QtWidgets.QLayout):
+        """Place widgets in rows that wrap, like the design's link buttons."""
+
+        def __init__(self, spacing):
+            super().__init__()
+            self.entries = []
+            self.gap = spacing
+            self.setContentsMargins(0, 0, 0, 0)
+
+        def addItem(self, item):
+            self.entries.append(item)
+
+        def count(self):
+            return len(self.entries)
+
+        def itemAt(self, index):
+            return self.entries[index] if 0 <= index < len(self.entries) else None
+
+        def takeAt(self, index):
+            return self.entries.pop(index) if 0 <= index < len(self.entries) else None
+
+        def expandingDirections(self):
+            return Qt.Orientation(0)
+
+        def hasHeightForWidth(self):
+            return True
+
+        def heightForWidth(self, width):
+            return self.arrange(QtCore.QRect(0, 0, width, 0), move=False)
+
+        def setGeometry(self, rect):
+            super().setGeometry(rect)
+            self.arrange(rect, move=True)
+
+        def sizeHint(self):
+            return self.minimumSize()
+
+        def minimumSize(self):
+            size = QtCore.QSize()
+            for item in self.entries:
+                size = size.expandedTo(item.minimumSize())
+            return size
+
+        def arrange(self, rect, move):
+            x, y, row_height = rect.x(), rect.y(), 0
+            for item in self.entries:
+                hint = item.sizeHint()
+                if row_height and x + hint.width() > rect.right() + 1:
+                    x, y, row_height = rect.x(), y + row_height + self.gap, 0
+                if move:
+                    item.setGeometry(QtCore.QRect(QtCore.QPoint(x, y), hint))
+                x += hint.width() + self.gap
+                row_height = max(row_height, hint.height())
+            return y + row_height - rect.y()
+
+    class NewsList(QtWidgets.QListWidget):
+        def __init__(self):
+            super().__init__()
+            # The design's list padding; a margin keeps it outside the items' hit area.
+            self.setViewportMargins(8, 0, 8, 8)
+
+    class NewsDelegate(QtWidgets.QStyledItemDelegate):
+        """Draw an announcement: unread dot, balanced title, short date and category."""
+
+        PAD, RIGHT, DOT, DOT_TOP, DOT_GAP, LINE_GAP, ITEM_GAP, RADIUS = 12, 10, 7, 7, 10, 4, 2, 7
+        UNREAD = Qt.ItemDataRole.UserRole.value + 1
+        META = Qt.ItemDataRole.UserRole.value + 2
+
+        def __init__(self, view, title_font, meta_font):
+            super().__init__(view)
+            self.view = view
+            self.title_font = title_font
+            self.meta_font = meta_font
+            self.balanced = {}
+
+        def text_width(self, item_width):
+            return int(item_width) - self.PAD - self.DOT - self.DOT_GAP - self.RIGHT
+
+        def sizeHint(self, _option, index):
+            width = self.view.viewport().width()
+            title = wrapped_box(QtGui.QFontMetrics(self.title_font), index.data(),
+                                self.text_width(width)).height()
+            meta = QtGui.QFontMetrics(self.meta_font).height()
+            return QtCore.QSize(width, 2 * self.PAD + title + self.LINE_GAP + meta + self.ITEM_GAP)
+
+        def paint(self, painter, option, index):
+            painter.save()
+            painter.setRenderHint(antialiasing)
+            box = QtCore.QRectF(option.rect).adjusted(0, 0, 0, -self.ITEM_GAP)
+            current = index.row() == self.view.currentRow()
+            unread = bool(index.data(self.UNREAD))
+            if current:
+                painter.setPen(QtGui.QPen(QtGui.QColor(Color.RING), 1))
+                painter.setBrush(QtGui.QColor(Color.SELECTED))
+                painter.drawRoundedRect(box.adjusted(0.5, 0.5, -0.5, -0.5), self.RADIUS, self.RADIUS)
+            elif option.state & QtWidgets.QStyle.StateFlag.State_MouseOver:
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QtGui.QColor(Color.HOVER))
+                painter.drawRoundedRect(box, self.RADIUS, self.RADIUS)
+            top = box.top() + self.PAD
+            if unread:
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QtGui.QColor(Color.ACCENT))
+                painter.drawEllipse(QtCore.QRectF(box.left() + self.PAD, top + self.DOT_TOP,
+                                                  self.DOT, self.DOT))
+            text_left = box.left() + self.PAD + self.DOT + self.DOT_GAP
+            width = self.text_width(box.width())
+            title = index.data()
+            metrics = QtGui.QFontMetrics(self.title_font)
+            title_height = wrapped_box(metrics, title, width).height()
+            if (title, width) not in self.balanced:
+                self.balanced[title, width] = balanced_width(metrics, title, width)
+            painter.setFont(self.title_font)
+            painter.setPen(QtGui.QColor(Color.TEXT if unread or current else Color.TERTIARY))
+            painter.drawText(QtCore.QRectF(text_left, top, self.balanced[title, width], title_height),
+                             wrapped, title)
+            metrics = QtGui.QFontMetrics(self.meta_font)
+            meta = metrics.elidedText(index.data(self.META), Qt.TextElideMode.ElideRight, width)
+            painter.setFont(self.meta_font)
+            painter.setPen(QtGui.QColor(Color.MUTED))
+            painter.drawText(QtCore.QRectF(text_left, top + title_height + self.LINE_GAP, width,
+                                           metrics.height()), left, meta)
+            painter.restore()
+
+    class Bridge(QtCore.QObject):
+        finished = QtCore.Signal(object)
+
+    return types.SimpleNamespace(TextButton=TextButton, LoginSwitch=LoginSwitch, Pill=Pill,
+                                 InfoIcon=InfoIcon, Heading=Heading, Body=Body,
+                                 FlowLayout=FlowLayout, NewsList=NewsList,
+                                 NewsDelegate=NewsDelegate, Bridge=Bridge)
 
 
-def run_gui(result: FeedResult, dismissed: set[str], *, refresh: bool, record: bool) -> int:
-    """Show announcements; any close dismisses every announcement it rendered."""
+def run_gui(result: FeedResult, state: NewsState, *, refresh: bool, record: bool) -> int:
+    """Show announcements; closing the window dismisses every announcement it lists."""
     # Qt loads only when there is something to show, keeping quiet logins cheap.
     from PySide6 import QtCore, QtGui, QtNetwork, QtWidgets
     Qt = QtCore.Qt
@@ -328,52 +846,162 @@ def run_gui(result: FeedResult, dismissed: set[str], *, refresh: bool, record: b
             probe.disconnectFromServer()
             return 0
 
-    def plain_label(text=""):
-        label = QtWidgets.QLabel(text)
-        label.setTextFormat(Qt.TextFormat.PlainText)
-        return label
+    ui = widget_classes()
+    weight = QtGui.QFont.Weight
+    database = QtGui.QFontDatabase
+    sans = database.systemFont(database.SystemFont.GeneralFont).family()
+    mono = database.systemFont(database.SystemFont.FixedFont).family()
 
-    def emphasize(label, scale=1.0):
-        font = label.font()
-        font.setBold(True)
-        if scale != 1.0 and font.pointSizeF() > 0:
-            font.setPointSizeF(font.pointSizeF() * scale)
-        label.setFont(font)
+    def font(pixels, bold=weight.Normal, *, fixed_pitch=False, spacing=0.0):
+        # The desktop's fonts stand in when IBM Plex is missing.
+        value = QtGui.QFont()
+        value.setFamilies(["IBM Plex Mono", mono] if fixed_pitch else ["IBM Plex Sans", sans])
+        value.setPixelSize(pixels)
+        value.setWeight(bold)
+        if spacing:
+            value.setLetterSpacing(QtGui.QFont.SpacingType.AbsoluteSpacing, spacing)
+        return value
+
+    small_font = font(12)
+    button_font = font(13)
+    body_font = font(15)
+    code_font = font(13, fixed_pitch=True)
+
+    def label(text, label_font, ink, *, wrap=False, rich=False):
+        widget = QtWidgets.QLabel(text)
+        widget.setTextFormat(Qt.TextFormat.RichText if rich else Qt.TextFormat.PlainText)
+        widget.setFont(label_font)
+        widget.setWordWrap(wrap)
+        if wrap:
+            # Take the width the layout offers instead of demanding the longest word's.
+            size_policy = widget.sizePolicy()
+            size_policy.setHorizontalPolicy(QtWidgets.QSizePolicy.Policy.Ignored)
+            widget.setSizePolicy(size_policy)
+        palette = widget.palette()
+        palette.setColor(QtGui.QPalette.ColorRole.WindowText, QtGui.QColor(ink))
+        widget.setPalette(palette)
+        return widget
 
     def open_url(url):
         # Feed link buttons are validated, but Markdown links in bodies are not.
         if url.startswith("https://"):
             QtGui.QDesktopServices.openUrl(QtCore.QUrl(url))
 
+    # The design is dark whatever the desktop color scheme; native parts such as
+    # text selection follow this palette.
+    palette = QtGui.QPalette()
+    role = QtGui.QPalette.ColorRole
+    for color_role, value in (
+            (role.Window, Color.WINDOW), (role.WindowText, Color.TEXT), (role.Base, Color.WINDOW),
+            (role.AlternateBase, Color.SIDEBAR), (role.Text, Color.BODY),
+            (role.Button, Color.SELECTED), (role.ButtonText, Color.TEXT),
+            (role.Highlight, Color.ACCENT), (role.HighlightedText, Color.ON_ACCENT),
+            (role.Link, Color.ACCENT), (role.LinkVisited, Color.ACCENT),
+            (role.PlaceholderText, Color.MUTED), (role.ToolTipBase, Color.CHROME),
+            (role.ToolTipText, Color.TEXT), (role.Light, Color.RING), (role.Midlight, Color.RING),
+            (role.Mid, Color.DIVIDER), (role.Dark, Color.CHROME), (role.Shadow, "#000000")):
+        palette.setColor(color_role, QtGui.QColor(value))
+
     window = QtWidgets.QWidget()
     window.setObjectName("newsWindow")
     window.setWindowTitle("Monolith News")
-    window.resize(560, 520)
-    window.setMinimumSize(420, 320)
+    window.resize(900, 640)
+    window.setMinimumSize(720, 480)
+    window.setPalette(palette)
+    window.setStyleSheet(STYLESHEET)
     layout = QtWidgets.QVBoxLayout(window)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(0)
+    panes = QtWidgets.QHBoxLayout()
+    panes.setSpacing(0)
+    layout.addLayout(panes, 1)
 
-    # The monolith-logo mark is white and would vanish on light color schemes.
-    header = plain_label("Monolith News")
-    emphasize(header, 1.4)
-    layout.addWidget(header)
+    sidebar = QtWidgets.QFrame()
+    sidebar.setObjectName("sidebar")
+    sidebar.setFixedWidth(270)
+    side = QtWidgets.QVBoxLayout(sidebar)
+    side.setContentsMargins(0, 0, 0, 0)
+    side.setSpacing(0)
+    panes.addWidget(sidebar)
 
-    status_label = plain_label()
-    status_label.setObjectName("statusLabel")
-    status_label.setWordWrap(True)
-    layout.addWidget(status_label)
+    header = QtWidgets.QHBoxLayout()
+    header.setContentsMargins(18, 20, 18, 14)
+    heading_font = font(20, weight.Bold, spacing=-0.3)
+    header.addWidget(label("News", heading_font, Color.TEXT), 0, Qt.AlignmentFlag.AlignBottom)
+    header.addStretch()
+    mark_all = ui.TextButton("Mark all read", small_font, ink=Color.MUTED, hover_ink=Color.TEXT)
+    # Raise the smaller text onto the heading's baseline.
+    mark_all.setContentsMargins(0, 0, 0, QtGui.QFontMetrics(heading_font).descent()
+                                - QtGui.QFontMetrics(small_font).descent())
+    header.addWidget(mark_all, 0, Qt.AlignmentFlag.AlignBottom)
+    side.addLayout(header)
 
-    scroll = QtWidgets.QScrollArea()
-    scroll.setWidgetResizable(True)
-    scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
-    cards = QtWidgets.QWidget()
-    cards_layout = QtWidgets.QVBoxLayout(cards)
-    cards_layout.addStretch()
-    scroll.setWidget(cards)
-    layout.addWidget(scroll, 1)
+    news_list = ui.NewsList()
+    news_list.setAccessibleName("Announcements")
+    news_list.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+    news_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    news_list.setVerticalScrollMode(QtWidgets.QAbstractItemView.ScrollMode.ScrollPerPixel)
+    news_list.setResizeMode(QtWidgets.QListView.ResizeMode.Adjust)
+    news_list.setMouseTracking(True)
+    news_list.viewport().setAttribute(Qt.WidgetAttribute.WA_Hover)
+    news_list.viewport().setCursor(Qt.CursorShape.PointingHandCursor)
+    list_palette = news_list.palette()
+    for color_role in (role.Window, role.Base):
+        list_palette.setColor(color_role, QtGui.QColor(Color.SIDEBAR))
+    news_list.setPalette(list_palette)
+    delegate = ui.NewsDelegate(news_list, font(14, weight.DemiBold), small_font)
+    news_list.setItemDelegate(delegate)
+    side.addWidget(news_list, 1)
 
-    login = QtWidgets.QCheckBox("Check for announcements at login")
-    login.setObjectName("loginCheckBox")
-    login.setChecked(login_check_enabled())
+    older_bar = QtWidgets.QFrame()
+    older_bar.setObjectName("olderBar")
+    older_layout = QtWidgets.QVBoxLayout(older_bar)
+    older_layout.setContentsMargins(0, 0, 0, 0)
+    older = ui.TextButton("Older announcements on GitHub →", small_font, ink=Color.MUTED,
+                          hover_ink=Color.TEXT, padding=(18, 12))
+    older.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding,
+                        QtWidgets.QSizePolicy.Policy.Fixed)
+    older.clicked.connect(lambda: open_url(HISTORY_URL))
+    older_layout.addWidget(older)
+    side.addWidget(older_bar)
+
+    def note(text):
+        frame = QtWidgets.QFrame()
+        frame.setObjectName("note")
+        row = QtWidgets.QHBoxLayout(frame)
+        row.setContentsMargins(14, 12, 14, 12)
+        row.setSpacing(10)
+        line_height = QtGui.QFontMetrics(button_font).height()
+        row.addWidget(ui.InfoIcon(13, line_height), 0, Qt.AlignmentFlag.AlignTop)
+        row.addWidget(label(text, button_font, Color.TERTIARY, wrap=True), 1)
+        return frame
+
+    reading = QtWidgets.QScrollArea()
+    reading.setWidgetResizable(True)
+    reading.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+    reading.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    page = QtWidgets.QWidget()
+    page_layout = QtWidgets.QHBoxLayout(page)
+    page_layout.setContentsMargins(36, 28, 36, 32)
+    column = QtWidgets.QWidget()
+    column.setMaximumWidth(600)
+    page_layout.addWidget(column, 1)
+    page_layout.addStretch(0)
+    column_layout = QtWidgets.QVBoxLayout(column)
+    column_layout.setContentsMargins(0, 0, 0, 0)
+    column_layout.setSpacing(16)
+    status_note = note(STATUS_CACHED)
+    column_layout.addWidget(status_note)
+    column_layout.addStretch(1)
+    reading.setWidget(page)
+    panes.addWidget(reading, 1)
+
+    footer = QtWidgets.QFrame()
+    footer.setObjectName("footerBar")
+    bar = QtWidgets.QHBoxLayout(footer)
+    bar.setContentsMargins(18, 12, 14, 12)
+    bar.setSpacing(16)
+    login = ui.LoginSwitch("Show at login", button_font, login_check_enabled())
 
     def toggle_login(checked):
         try:
@@ -385,88 +1013,213 @@ def run_gui(result: FeedResult, dismissed: set[str], *, refresh: bool, record: b
             login.blockSignals(False)
 
     login.toggled.connect(toggle_login)
-    layout.addWidget(login)
-
-    footer = QtWidgets.QHBoxLayout()
-    for label, url in FOOTER_LINKS:
-        button = QtWidgets.QPushButton(label)
+    bar.addWidget(login)
+    bar.addStretch()
+    footer_links = QtWidgets.QHBoxLayout()
+    footer_links.setSpacing(4)
+    for text, url in FOOTER_LINKS:
+        button = ui.TextButton(text, button_font, ink=Color.SECONDARY, hover_ink=Color.TEXT,
+                               hover_fill=Color.SELECTED, padding=(10, 7))
         button.clicked.connect(lambda _checked=False, url=url: open_url(url))
-        footer.addWidget(button)
-    footer.addStretch()
-    close_button = QtWidgets.QPushButton()
-    close_button.setObjectName("dismissButton")
-    close_button.clicked.connect(window.close)
-    footer.addWidget(close_button)
-    layout.addLayout(footer)
+        footer_links.addWidget(button)
+    bar.addLayout(footer_links)
+    done = ui.TextButton("Done", font(13, weight.DemiBold), ink=Color.ON_ACCENT,
+                         hover_ink=Color.ON_ACCENT, fill=Color.ACCENT, hover_fill=Color.ACCENT_LIGHT,
+                         padding=(18, 8), focus=Color.TEXT)
+    done.setObjectName("doneButton")
+    done.clicked.connect(window.close)
+    bar.addWidget(done)
+    layout.addWidget(footer)
     QtGui.QShortcut(QtGui.QKeySequence(Qt.Key.Key_Escape), window).activated.connect(window.close)
 
-    def card(announcement):
-        frame = QtWidgets.QFrame()
-        frame.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
-        box = QtWidgets.QVBoxLayout(frame)
+    def short_date(day):
+        pattern = "MMM d" if day.year == datetime.date.today().year else "MMM d, yyyy"
+        return QtCore.QLocale().toString(QtCore.QDate(day.year, day.month, day.day), pattern)
 
-        heading = QtWidgets.QHBoxLayout()
-        title = plain_label(announcement.title)
-        title.setWordWrap(True)
-        emphasize(title, 1.15)
-        heading.addWidget(title, 1)
-        if announcement.id not in dismissed:
-            badge = plain_label("New")
-            emphasize(badge)
-            badge.setForegroundRole(QtGui.QPalette.ColorRole.Highlight)
-            heading.addWidget(badge, 0, Qt.AlignmentFlag.AlignTop)
-        box.addLayout(heading)
+    def long_date(day):
+        return QtCore.QLocale().toString(QtCore.QDate(day.year, day.month, day.day),
+                                         QtCore.QLocale.FormatType.LongFormat)
 
-        day = announcement.date
-        date = plain_label(QtCore.QLocale().toString(
-            QtCore.QDate(day.year, day.month, day.day), QtCore.QLocale.FormatType.LongFormat))
-        date.setForegroundRole(QtGui.QPalette.ColorRole.PlaceholderText)
-        box.addWidget(date)
-
-        # Qt's Markdown importer shows raw HTML as text instead of rendering it.
+    def body(markdown):
         document = QtGui.QTextDocument()
-        document.setMarkdown(announcement.body,
-                             QtGui.QTextDocument.MarkdownFeature.MarkdownDialectGitHub
+        document.setDefaultFont(body_font)
+        document.setDocumentMargin(0)
+        # Qt's Markdown importer shows raw HTML as text instead of rendering it.
+        document.setMarkdown(markdown, QtGui.QTextDocument.MarkdownFeature.MarkdownDialectGitHub
                              | QtGui.QTextDocument.MarkdownFeature.MarkdownNoHTML)
-        body = QtWidgets.QLabel()
-        body.setTextFormat(Qt.TextFormat.RichText)
-        body.setText(document.toHtml())
-        body.setWordWrap(True)
-        body.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
-        body.setOpenExternalLinks(False)
-        body.linkActivated.connect(open_url)
-        box.addWidget(body)
+        cursor = QtGui.QTextCursor(document)
 
+        def restyle(start, end, change):
+            cursor.setPosition(start)
+            cursor.setPosition(end, QtGui.QTextCursor.MoveMode.KeepAnchor)
+            cursor.mergeCharFormat(change)
+
+        chips = []
+        has_links = False
+        block = document.begin()
+        while block.isValid():
+            following = block.next()
+            lists = block.textList(), following.textList() if following.isValid() else None
+            same_list = None not in lists and lists[0].objectIndex() == lists[1].objectIndex()
+            block_format = block.blockFormat()
+            block_format.setTopMargin(0)
+            block_format.setBottomMargin(0 if not following.isValid() else 6 if same_list else 12)
+            # CSS line-height 1.6 at 15px.
+            block_format.setLineHeight(24, QtGui.QTextBlockFormat.LineHeightTypes.MinimumHeight.value)
+            cursor.setPosition(block.position())
+            cursor.setBlockFormat(block_format)
+            spans = []
+            fragments = block.begin()
+            while not fragments.atEnd():
+                fragment = fragments.fragment()
+                spans.append((fragment.position(), fragment.length(), fragment.charFormat()))
+                fragments += 1
+            for position, length, char_format in spans:
+                change = QtGui.QTextCharFormat()
+                if char_format.isAnchor():
+                    has_links = True
+                    change.setForeground(QtGui.QColor(Color.ACCENT))
+                elif char_format.fontFixedPitch():
+                    change.setFont(code_font, QtGui.QTextCharFormat.FontPropertiesInheritanceBehavior
+                                   .FontPropertiesSpecifiedOnly)
+                    change.setForeground(QtGui.QColor(Color.TEXT))
+                    if chips and chips[-1][1] == position:
+                        chips[-1] = (chips[-1][0], position + length)
+                    else:
+                        chips.append((position, position + length))
+                elif char_format.fontWeight() >= weight.DemiBold.value:
+                    change.setForeground(QtGui.QColor(Color.TEXT))
+                else:
+                    continue
+                restyle(position, position + length, change)
+            block = following
+        # Letter spacing after the character before each chip and after its last
+        # character makes room for the chip's padding without changing copied text.
+        padding = QtGui.QTextCharFormat()
+        padding.setFontLetterSpacingType(QtGui.QFont.SpacingType.AbsoluteSpacing)
+        padding.setFontLetterSpacing(ui.Body.CHIP_PAD)
+        for start, end in chips:
+            if start > document.findBlock(start).position():
+                restyle(start - 1, start, padding)
+            restyle(end - 1, end, padding)
+        view = ui.Body(document, chips, code_font, has_links)
+        view.anchorClicked.connect(lambda url: open_url(url.toString()))
+        return view
+
+    def build_article(announcement):
+        widget = QtWidgets.QWidget()
+        box = QtWidgets.QVBoxLayout(widget)
+        box.setContentsMargins(0, 0, 0, 0)
+        box.setSpacing(16)
+        head = QtWidgets.QVBoxLayout()
+        head.setSpacing(10)
+        meta = QtWidgets.QHBoxLayout()
+        meta.setSpacing(10)
+        if announcement.id not in state.dismissed:
+            meta.addWidget(ui.Pill("NEW", font(11, weight.DemiBold, spacing=0.3)))
+        meta.addWidget(label(long_date(announcement.date), small_font, Color.MUTED))
+        if announcement.category:
+            meta.addWidget(label("·", small_font, Color.MUTED))
+            meta.addWidget(label(announcement.category, small_font, Color.MUTED))
+        meta.addStretch()
+        head.addLayout(meta)
+        head.addWidget(ui.Heading(announcement.title, font(26, weight.Bold, spacing=-0.4),
+                                  Color.TEXT))
+        box.addLayout(head)
+        if announcement.install_path:
+            strip = QtWidgets.QFrame()
+            strip.setObjectName("getIt")
+            row = QtWidgets.QHBoxLayout(strip)
+            row.setContentsMargins(14, 12, 14, 12)
+            row.setSpacing(12)
+            row.addWidget(label("Get it", small_font, Color.MUTED))
+            arrow = f' <span style="color:{Color.FAINT}">→</span> '
+            steps = arrow.join(html.escape(step) for step in announcement.install_path)
+            row.addWidget(label(steps, code_font, Color.TEXT, wrap=True, rich=True), 1)
+            box.addWidget(strip)
+        box.addWidget(body(announcement.body))
+        if announcement.note:
+            box.addWidget(note(announcement.note))
         if announcement.links:
-            row = QtWidgets.QHBoxLayout()
+            buttons = ui.FlowLayout(8)
             for link in announcement.links:
-                # Keep & literal instead of marking a keyboard mnemonic.
-                button = QtWidgets.QPushButton(link.label.replace("&", "&&"))
+                button = ui.TextButton(link.label, button_font, ink=Color.TEXT, hover_ink=Color.WHITE,
+                                       hover_fill=Color.SELECTED, border=Color.RING,
+                                       padding=(12, 7), arrow=True)
                 button.clicked.connect(lambda _checked=False, url=link.url: open_url(url))
-                row.addWidget(button)
-            row.addStretch()
-            box.addLayout(row)
-        return frame
+                buttons.addWidget(button)
+            box.addLayout(buttons)
+        return widget
 
+    listed = []
     shown = set()
+    read = set(state.read)
+    chosen = None  # The user's pick survives a refresh; otherwise show the newest.
+    article = None
 
-    def render(feed, status):
-        # Keep the trailing stretch that holds the cards at the top.
-        while cards_layout.count() > 1:
-            cards_layout.takeAt(0).widget().deleteLater()
-        for announcement in feed.announcements:
-            cards_layout.insertWidget(cards_layout.count() - 1, card(announcement))
-        if not feed.announcements and feed.source != "none":
-            empty = plain_label("No announcements yet.")
-            empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            cards_layout.insertWidget(0, empty)
-        status_label.setText(status)
-        status_label.setVisible(bool(status))
+    def show(widget):
+        nonlocal article
+        if article is not None:
+            column_layout.removeWidget(article)
+            article.deleteLater()
+        article = widget
+        column_layout.insertWidget(1, widget)
+        reading.verticalScrollBar().setValue(0)
+
+    def update_unread():
+        for row, announcement in enumerate(listed):
+            item = news_list.item(row)
+            unread = announcement.id not in read
+            item.setData(delegate.UNREAD, unread)
+            description = item.data(delegate.META) + (", unread" if unread else "")
+            item.setData(Qt.ItemDataRole.AccessibleDescriptionRole, description)
+
+    def open_row(row):
+        announcement = listed[row]
+        read.add(announcement.id)
+        update_unread()
+        show(build_article(announcement))
+
+    def selected(row):
+        nonlocal chosen
+        if 0 <= row < len(listed):
+            chosen = listed[row].id
+            open_row(row)
+
+    def mark_all_read():
+        read.update(announcement.id for announcement in listed)
+        update_unread()
+
+    def render(feed, checking=False):
+        nonlocal listed
+        listed = list(feed.announcements)
+        ids = [announcement.id for announcement in listed]
+        row = ids.index(chosen) if chosen in ids else 0
+        # Qt makes a row current while items arrive; fill the list silently so only
+        # the user's own picks count as choices.
+        news_list.blockSignals(True)
+        news_list.clear()
+        for announcement in listed:
+            item = QtWidgets.QListWidgetItem(announcement.title)
+            category = f" · {announcement.category}" if announcement.category else ""
+            item.setData(delegate.META, short_date(announcement.date) + category)
+            news_list.addItem(item)
+        if listed:
+            news_list.setCurrentRow(row)
+        news_list.blockSignals(False)
+        status_note.setVisible(bool(listed) and feed.source == "cache" and not checking)
+        if listed:
+            open_row(row)
+        else:
+            empty = (STATUS_CHECKING if checking
+                     else STATUS_UNAVAILABLE if feed.source == "none" else STATUS_EMPTY)
+            show(label(empty, body_font, Color.MUTED, wrap=True))
         shown.clear()
-        shown.update(announcement.id for announcement in feed.announcements)
-        close_button.setText("Dismiss" if shown - dismissed else "Close")
+        shown.update(ids)
 
-    render(result, STATUS_CHECKING if refresh else status_for(result))
+    news_list.currentRowChanged.connect(selected)
+    mark_all.clicked.connect(mark_all_read)
+    render(result, checking=refresh)
 
     if server_name is not None:
         QtNetwork.QLocalServer.removeServer(server_name)
@@ -484,27 +1237,25 @@ def run_gui(result: FeedResult, dismissed: set[str], *, refresh: bool, record: b
             warn(f"could not listen on {server_name}: {server.errorString()}")
 
     if refresh:
-        class Bridge(QtCore.QObject):
-            finished = QtCore.Signal(object)
-
         def refreshed(feed):
             # A download finishing as the window closes must not change what it dismisses.
             if window.isVisible():
-                render(feed, status_for(feed))
+                render(feed)
 
         # Render on the GUI thread. The daemon thread lets closing the window exit
         # during a slow download.
-        bridge = Bridge()
+        bridge = ui.Bridge()
         bridge.finished.connect(refreshed, Qt.ConnectionType.QueuedConnection)
         threading.Thread(target=lambda: bridge.finished.emit(refresh_feed(1)), daemon=True).start()
 
     window.show()
+    news_list.setFocus()
     code = app.exec()
     if record and shown:
         try:
-            save_dismissed(shown)
+            save_state(shown, read)
         except OSError as error:
-            warn(f"could not save dismissed announcements: {error}")
+            warn(f"could not save which announcements were seen: {error}")
     return code
 
 
@@ -526,21 +1277,22 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         for problem in problems:
             warn(problem)
-        return run_gui(FeedResult(tuple(announcements), "network"), set(), refresh=False, record=False)
+        return run_gui(FeedResult(tuple(announcements), "network"),
+                       NewsState(frozenset(), frozenset()), refresh=False, record=False)
 
     if args.autostart:
         # Also covers a user manager that has not rerun the autostart generator.
         if not login_check_enabled():
             return 0
         result = refresh_feed(LOGIN_ATTEMPTS)
-        dismissed = load_dismissed()
-        if not unseen(result.announcements, dismissed):
+        state = load_state()
+        if not unseen(result.announcements, state.dismissed):
             return 0
-        return run_gui(result, dismissed, refresh=False, record=True)
+        return run_gui(result, state, refresh=False, record=True)
 
     cached = load_cached_feed()
     initial = FeedResult(tuple(cached), "cache") if cached is not None else FeedResult((), "none")
-    return run_gui(initial, load_dismissed(), refresh=True, record=True)
+    return run_gui(initial, load_state(), refresh=True, record=True)
 
 
 if __name__ == "__main__":

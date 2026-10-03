@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline checks for Monolith News feeds, dismissals, and the login check."""
+"""Offline checks for Monolith News feeds, read state, and the login check."""
 
 import configparser
 import datetime
@@ -22,10 +22,12 @@ ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / "files/kde/usr/bin/monolith-news"
 
 
-def entry(identifier, date="2026-01-01", title="Title", body="Body.", links=None):
+def entry(identifier, date="2026-01-01", title="Title", body="Body.", links=None, **fields):
     """Return one [[announcements]] table; date is raw TOML so tests can pass date-times."""
     lines = ["[[announcements]]", f"id = {json.dumps(identifier)}", f"date = {date}",
              f"title = {json.dumps(title)}", f"body = {json.dumps(body)}"]
+    # JSON strings, numbers, and arrays are also valid TOML values.
+    lines.extend(f"{key} = {json.dumps(value)}" for key, value in fields.items())
     if links is not None:
         tables = (f"{{ label = {json.dumps(label)}, url = {json.dumps(url)} }}" for label, url in links)
         lines.append(f"links = [{', '.join(tables)}]")
@@ -90,9 +92,9 @@ class NewsTests(unittest.TestCase):
         self.assertEqual(self.responses, [])
         if not self.gui.called:
             return None
-        result, dismissed = self.gui.call_args.args
+        result, state = self.gui.call_args.args
         self.assertEqual(self.gui.call_args.kwargs, {"refresh": False, "record": True})
-        return [announcement.id for announcement in result.announcements], result.source, dismissed
+        return [announcement.id for announcement in result.announcements], result.source, state.dismissed
 
     def test_repository_feed_is_valid(self):
         self.assertEqual(self.app.parse_feed((ROOT / "news/announcements.toml").read_bytes())[1], [])
@@ -100,20 +102,20 @@ class NewsTests(unittest.TestCase):
     def test_new_ids_reopen_but_edits_stay_dismissed(self):
         original = feed(entry("a", "2026-01-01", title="First", body="Body."))
         self.assertEqual(self.login(original), (["a"], "network", set()))
-        self.app.save_dismissed({"a"})
+        self.app.save_state({"a"}, set())
         self.assertIsNone(self.login(original))
         edited = entry("a", "2026-05-01", title="Edited", body="New body.",
                        links=[("Details", "https://example.com/details")])
         self.assertIsNone(self.login(feed(edited)))
         self.assertEqual(self.login(feed(entry("b", "2026-06-01"), edited)), (["b", "a"], "network", {"a"}))
         # Dismissals accumulate, so ids missing from the current feed stay dismissed.
-        self.app.save_dismissed({"b"})
+        self.app.save_state({"b"}, set())
         self.assertIsNone(self.login(feed(entry("b", "2026-06-01"), edited)))
 
     def test_dismissals_are_per_user(self):
         data = feed(entry("a"))
         self.assertEqual(self.login(data), (["a"], "network", set()))
-        self.app.save_dismissed({"a"})
+        self.app.save_state({"a"}, set())
         self.assertIsNone(self.login(data))
         other = self.root / "second user"
         with mock.patch.dict(os.environ, {"HOME": str(other / "home"), "XDG_STATE_HOME": str(other / "state")}):
@@ -172,24 +174,63 @@ class NewsTests(unittest.TestCase):
             entry("plain-http", links=[("Docs", "http://example.com/docs")]),
             entry("four-links", links=[docs] * 4),
             entry("x", "2026-02-01"),
+            entry("two-line-category", category="Gaming\nNews"),
+            entry("long-category", category="x" * 25),
+            entry("path-not-list", install_path="monolith"),
+            entry("path-number", install_path=["monolith", 3]),
+            entry("long-path", install_path=["step"] * 6),
+            entry("two-line-note", note="Reboot\nfirst."),
         ))
         self.assertEqual([(a.id, a.date) for a in announcements], [
             ("y", datetime.date(2026, 3, 1)),
             ("z", datetime.date(2026, 3, 1)),
             ("x", datetime.date(2026, 1, 1)),
         ])
-        self.assertEqual(len(problems), 6)
-        for problem, index in zip(problems, (2, 4, 6, 7, 8, 9)):
+        self.assertEqual(len(problems), 12)
+        for problem, index in zip(problems, (2, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15)):
             self.assertTrue(problem.startswith(f"announcement {index}: "), problem)
+
+    def test_optional_display_fields(self):
+        announcements, problems = self.app.parse_feed(feed(
+            entry("full", category=" Gaming ", install_path=["monolith", " Gaming ", "r2modman"],
+                  note=" Reboot first. "),
+            entry("bare"),
+        ))
+        self.assertEqual(problems, [])
+        full, bare = announcements
+        self.assertEqual((full.category, full.install_path, full.note),
+                         ("Gaming", ("monolith", "Gaming", "r2modman"), "Reboot first."))
+        self.assertEqual((bare.category, bare.install_path, bare.note), (None, (), None))
 
     def test_corrupt_state_is_replaced(self):
         self.state.parent.mkdir(parents=True)
-        self.state.write_text("not json")
-        self.assertEqual(self.login(feed(entry("a"))), (["a"], "network", set()))
-        self.app.save_dismissed({"a"})
-        self.assertEqual(json.loads(self.state.read_text()), {"version": 1, "dismissed": ["a"]})
+        corrupt = {
+            "not JSON": "not json",
+            "read is not a list": json.dumps({"version": 1, "dismissed": ["a"], "read": "a"}),
+        }
+        for name, text in corrupt.items():
+            with self.subTest(name):
+                self.state.write_text(text)
+                self.assertEqual(self.login(feed(entry("a"))), (["a"], "network", set()))
+        self.app.save_state({"a"}, set())
+        self.assertEqual(json.loads(self.state.read_text()),
+                         {"version": 1, "dismissed": ["a"], "read": []})
 
-    def test_login_checkbox_override(self):
+    def test_read_state_merges_and_starts_from_older_dismissals(self):
+        # Older releases saved only dismissals, after showing every announcement in full.
+        self.state.parent.mkdir(parents=True)
+        self.state.write_text(json.dumps({"version": 1, "dismissed": ["a"]}))
+        self.assertEqual(self.app.load_state(), self.app.NewsState(frozenset({"a"}), frozenset({"a"})))
+        # Saving adds to what is stored and never prunes it.
+        self.app.save_state({"b"}, {"c"})
+        self.assertEqual(json.loads(self.state.read_text()),
+                         {"version": 1, "dismissed": ["a", "b"], "read": ["a", "c"]})
+        # Once read state is stored, dismissing no longer marks announcements read.
+        self.app.save_state({"d"}, set())
+        self.assertEqual(self.app.load_state(),
+                         self.app.NewsState(frozenset({"a", "b", "d"}), frozenset({"a", "c"})))
+
+    def test_login_switch_override(self):
         self.assertTrue(self.app.login_check_enabled())
         self.app.set_login_check(False)
         parser = configparser.ConfigParser(interpolation=None)
@@ -213,9 +254,9 @@ class NewsTests(unittest.TestCase):
         path = self.root / "preview feed.toml"
         path.write_bytes(feed(entry("a", "2026-01-01"), entry("b", "2026-02-01")))
         self.assertEqual(self.app.main(["--preview", str(path)]), 0)
-        result, dismissed = self.gui.call_args.args
+        result, state = self.gui.call_args.args
         self.assertEqual([announcement.id for announcement in result.announcements], ["b", "a"])
-        self.assertEqual(dismissed, set())
+        self.assertEqual(state, self.app.NewsState(frozenset(), frozenset()))
         self.assertEqual(self.gui.call_args.kwargs, {"refresh": False, "record": False})
         self.opener.assert_not_called()
         for variable in ("XDG_STATE_HOME", "XDG_CACHE_HOME", "XDG_CONFIG_HOME"):
