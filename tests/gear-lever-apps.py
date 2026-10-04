@@ -626,6 +626,14 @@ def flatpak_command(state, arguments, sync_dir):
             return 1, "", f"error: {app_id}/*unspecified*/*unspecified* not installed\n"
         title = "Gear Lever - Manage AppImages" if app_id == APP_ID else app_id
         return 0, f"\n{title}\n\n          ID: {app_id}\n     Version: {version}\n", ""
+    if (len(arguments) == 4 and arguments[0] == "info" and arguments[1] in scopes
+            and arguments[2] == "--show-commit"):
+        app_id = arguments[3]
+        version = installed_apps(state, arguments[1][2:]).get(app_id)
+        if version is None:
+            return 1, "", f"error: {app_id}/*unspecified*/*unspecified* not installed\n"
+        # Each modelled version is its own commit.
+        return 0, hashlib.sha256(f"{app_id}/{version}".encode()).hexdigest() + "\n", ""
     if (len(arguments) == 4 and arguments[0] == "list" and "--app" in arguments
             and "--columns=application:f,version:f" in arguments
             and len(set(arguments) & set(scopes)) == 1):
@@ -1072,6 +1080,9 @@ class GearLeverAppCase(unittest.TestCase):
 
     def install(self, scope="system", app=None):
         return self.call("--scope", scope, (app or self.APP).id, "install")
+
+    def update(self, scope="system", app=None):
+        return self.call("--scope", scope, (app or self.APP).id, "update")
 
     def remove(self, scope="system", app=None):
         return self.call("--scope", scope, (app or self.APP).id, "remove")
@@ -1581,6 +1592,66 @@ class WowUpCfTests(GearLeverAppCase):
         self.proc.add_vanished(4700)
         self.ok(self.install())
         self.assertEqual(self.cf.read_bytes(), make_appimage("2.24.0-beta.10"))
+
+    def test_update_changes_nothing_when_current_even_while_running(self):
+        self.managed_install()
+        installed = self.snapshot()
+        self.flatpak.update(running={str(self.cf): True})
+        result = self.update()
+        self.assertEqual((result.code, result.stdout, result.stderr),
+                         (self.helper.UP_TO_DATE, f"WowUp-CF {WOWUP_CF.old} is already up to date.\n", ""))
+        self.assertEqual(self.snapshot(), installed)
+        # A newer release still waits until WowUp-CF is closed.
+        self.serve(WOWUP_CF.old, WOWUP_CF.new, assets=[WOWUP_CF.new])
+        result = self.update()
+        self.assertEqual((result.code, result.stderr.strip()), (1, RUNNING))
+        self.assertEqual(self.snapshot(), installed)
+        self.assertNotIn(download_url(WOWUP_CF.new), self.web.requests)
+        self.flatpak.update(running={})
+        self.ok(self.update())
+        self.assertEqual(self.cf.read_bytes(), make_appimage(WOWUP_CF.new))
+
+    def test_update_restores_what_monolith_manages_without_downloading(self):
+        self.managed_install()
+        requests = len(self.web.requests)
+
+        def customize_launcher():
+            data = self.cf_desktop.read_bytes()
+            self.assertIn(b" --no-sandbox %U\n", data)
+            self.cf_desktop.write_bytes(data.replace(b" --no-sandbox %U\n", b" --no-sandbox --disable-gpu %U\n"))
+
+        cases = {
+            "the pinned release channel": (
+                lambda: self.write_prefs({"wowup_release_channel_2_6": "0"}),
+                lambda: self.assertEqual(self.prefs_value(), {"wowup_release_channel_2_6": "1"})),
+            "a Gear Lever update source": (
+                lambda: self.assertEqual(self.flatpak.gear_lever(
+                    "--set-update-source", str(self.cf), "--manager", "GithubUpdater", "repo=WowUp/WowUp.CF",
+                    "repo_filename=WowUp-CF-*.AppImage", "allow_prereleases=true")[0], 0),
+                lambda: self.assertEqual([entry["manager"] for entry in self.entries()], [None])),
+            "a deleted icon": (
+                lambda: self.cf_icon.unlink(),
+                lambda: self.assertEqual(self.cf_icon.read_bytes(), ICON)),
+            # Monolith re-saves its repair copy, so a repair restores the customized launcher.
+            "a customized launcher": (
+                customize_launcher,
+                lambda: self.assertEqual((self.snapshots / "integration.desktop").read_bytes(),
+                                         self.cf_desktop.read_bytes())),
+        }
+        for label, (drift, restored) in cases.items():
+            with self.subTest(label):
+                drift()
+                self.ok(self.update())
+                restored()
+                self.assertEqual(self.update().code, self.helper.UP_TO_DATE)
+        # WowUp-CF updated itself to the newest release: Monolith records it and downloads nothing.
+        self.serve(WOWUP_CF.old, WOWUP_CF.new)
+        self.cf.write_bytes(make_appimage(WOWUP_CF.new))
+        self.ok(self.update())
+        self.assertEqual(self.read_receipt()["version"], WOWUP_CF.new)
+        self.assertEqual(desktop_entry(self.cf_desktop)["X-AppImage-Version"], WOWUP_CF.new)
+        self.assertEqual(self.update().code, self.helper.UP_TO_DATE)
+        self.assertEqual([url for url in self.web.requests[requests:] if url.startswith("https://github.com/")], [])
 
     # --- failures and rollback ----------------------------------------------------------------------------
 
@@ -2557,6 +2628,25 @@ class ManagerPrerequisiteTests(unittest.TestCase):
         self.assertEqual([path.read_bytes() for path in (self.receipt, self.appimages / "wowupcf.appimage",
                                                          self.home / ".local/share/applications/wowupcf.desktop")],
                          wowup)
+        self.assertFalse(self.routes.with_name("http.json.unexpected").exists())
+        self.assertEqual(self.flatpak.unmodelled(), [])
+
+    def test_update_reports_a_current_app_and_updates_a_newer_one(self):
+        self.flatpak.update(installed={"system": "4.6.2"})
+        self.assertEqual(self.run_manager("install", "wowup-cf").code, 0)
+        appimage = self.appimages / "wowupcf.appimage"
+        installed = [path.read_bytes() for path in (self.receipt, appimage)]
+        result = self.run_manager("update")
+        self.assertEqual(result.code, 0, result)
+        self.assertIn("WowUp-CF 2.24.0-beta.6 is already up to date.\n", result.stdout)
+        self.assertRegex(result.stdout, r"(?m)^  WowUp-CF +Up to date$")
+        self.assertEqual([path.read_bytes() for path in (self.receipt, appimage)], installed)
+        self.web.publish([release("2.23.1"), release("2.24.0-beta.6"), release("2.24.0-beta.10")])
+        self.web.asset("2.24.0-beta.10", make_appimage("2.24.0-beta.10"))
+        result = self.run_manager("update")
+        self.assertEqual(result.code, 0, result)
+        self.assertRegex(result.stdout, r"(?m)^  WowUp-CF +Updated$")
+        self.assertEqual(appimage.read_bytes(), make_appimage("2.24.0-beta.10"))
         self.assertFalse(self.routes.with_name("http.json.unexpected").exists())
         self.assertEqual(self.flatpak.unmodelled(), [])
 

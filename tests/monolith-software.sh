@@ -97,6 +97,19 @@ case "$url" in
         github_release DanConwayDev/ngit-cli "ngit-$version-x86_64-unknown-linux-musl.tar.gz" \
             "$dir/ngit-$version-x86_64-unknown-linux-musl.tar.gz"
         exit 0 ;;
+    # The sources the upstream installers read their newest version from.
+    https://downloads.claude.ai/claude-code-releases/stable)
+        printf '%s\n' "$plain"
+        exit 0 ;;
+    https://releases.openai.com/codex/channels/latest)
+        printf '{"tag_name":"rust-%s","assets":[]}\n' "$version"
+        exit 0 ;;
+    https://api.github.com/repos/anomalyco/opencode/releases/latest)
+        printf '{"tag_name":"%s"}\n' "$version"
+        exit 0 ;;
+    https://herdr.dev/latest.json)
+        printf '{\n  "version": "%s",\n  "assets": {}\n}\n' "$plain"
+        exit 0 ;;
     https://github.com/can1357/oh-my-pi/releases/download/"$version"/omp-linux-x64)
         payload="$dir/omp-linux-x64" ;;
     https://github.com/can1357/oh-my-pi/releases/download/"$version"/SHA256SUMS.txt)
@@ -616,6 +629,51 @@ test_empty_update_all() {
     [ ! -s "$case_root/curl.log" ] || fail 'empty update performed downloads'
 }
 
+# An update leaves healthy items that already have the newest release alone:
+# it reads only release metadata and republishes nothing. Install still
+# reinstalls on request, and a failed version lookup never counts as current.
+test_update_skips_current_items() {
+    local tools=(tea superfile nak ngit omp herdr claude codex opencode) tool name
+    local names=(Tea Superfile nak ngit 'Oh My Pi' Herdr 'Claude Code' 'Codex CLI' OpenCode)
+    run_monolith install "${tools[@]}"
+    for tool in "${tools[@]}"; do
+        cp -- "$state_root/$tool.managed" "$case_root/$tool.marker-before"
+    done
+    : >"$case_root/curl.log"
+    run_monolith update >"$case_root/update.log"
+    for name in "${names[@]}"; do
+        grep -Eq "^  $name +Up to date\$" "$case_root/update.log" || fail "$name was not reported up to date"
+    done
+    if grep -Ev '/releases/latest$|/claude-code-releases/stable$|/channels/latest$|/latest\.json$' \
+        "$case_root/curl.log"; then
+        fail 'an update with nothing newer downloaded files'
+    fi
+    for tool in "${tools[@]}"; do
+        assert_file_equals "$case_root/$tool.marker-before" "$state_root/$tool.managed"
+    done
+    assert_no_temp_leaks
+
+    : >"$case_root/curl.log"
+    run_monolith install nak
+    grep -q '/nak-v1\.0\.0-linux-amd64$' "$case_root/curl.log" || fail 'install did not download nak again'
+
+    release_version=v2.0.0
+    run_monolith update >"$case_root/update.log"
+    for name in "${names[@]}"; do
+        grep -Eq "^  $name +Updated\$" "$case_root/update.log" || fail "$name was not updated"
+    done
+    assert_version nak 'nak v2.0.0'
+    assert_version claude 'claude v2.0.0'
+    assert_version herdr 'herdr v2.0.0'
+
+    fail_download_match=downloads.claude.ai
+    run_monolith update claude >"$case_root/update.log" 2>&1
+    grep -Fq 'could not check for a newer Claude Code; running its installer' "$case_root/update.log" ||
+        fail 'the failed version lookup was not reported'
+    grep -Eq '^  Claude Code +Updated$' "$case_root/update.log" || fail 'Claude Code installer did not run'
+    assert_no_temp_leaks
+}
+
 test_batch_continues_after_failure() {
     fail_download_match=omp-linux-x64
     expect_failure install nak omp herdr
@@ -1078,16 +1136,24 @@ test_prism_lifecycle() {
     grep -qx "source=$prism_ref" "$state_root/prismlauncher.managed" || fail 'Prism Launcher marker has the wrong source'
     assert_prism_listed 'installed +11\.1\.1'
 
-    # Updating everything updates Prism Launcher through Flatpak beside other tools.
+    # Updating everything updates Prism Launcher through Flatpak beside other
+    # tools; nak has no newer release, so it is left alone.
     run_monolith install nak
     flatpak_state '{"flathub": {"org.prismlauncher.PrismLauncher": "11.2.0"}}'
     forget_flatpak_calls
     run_monolith update >"$case_root/update.log"
-    grep -Eq '^  nak +Updated' "$case_root/update.log" || fail 'nak was not updated'
+    grep -Eq '^  nak +Up to date$' "$case_root/update.log" || fail 'nak was not reported up to date'
     grep -Eq '^  Prism Launcher +Updated' "$case_root/update.log" || fail 'Prism Launcher was not updated'
     assert_flatpak_called "update --user --noninteractive --assumeyes $prism_id"
     grep -qx 'version=11.2.0' "$state_root/prismlauncher.managed" || fail 'Prism Launcher marker did not update'
     assert_prism_listed 'installed +11\.2\.0'
+
+    # Another updater, such as topgrade's Flatpak step, can update it first;
+    # Monolith then reports it current and records the version it finds.
+    flatpak_state '{"flathub": {"org.prismlauncher.PrismLauncher": "11.3.0"}, "apps": {"org.prismlauncher.PrismLauncher": {"user": "11.3.0"}}}'
+    run_monolith update prismlauncher >"$case_root/update.log"
+    grep -Eq '^  Prism Launcher +Up to date$' "$case_root/update.log" || fail 'current Prism Launcher was not reported up to date'
+    grep -qx 'version=11.3.0' "$state_root/prismlauncher.managed" || fail 'Prism Launcher marker did not record 11.3.0'
 
     # Removal uninstalls the app without --delete-data, so its data stays.
     run_monolith remove prismlauncher >"$case_root/remove.log"
@@ -1196,7 +1262,7 @@ passed=0
 failed=0
 for test in omp_lifecycle omp_unmanaged_launcher omp_replaced_launcher omp_checksum_failure failed_publication \
     failed_launcher_publication failed_marker_publication download_failure_cleanup batch_preflight \
-    empty_update_all batch_continues_after_failure tea_lifecycle superfile_lifecycle nak_lifecycle \
+    empty_update_all update_skips_current_items batch_continues_after_failure tea_lifecycle superfile_lifecycle nak_lifecycle \
     ngit_lifecycle herdr_lifecycle digest_failures checksum_list_failures bad_archive_and_broken_program \
     second_ngit_launcher_failure regular_file_adoption failed_adoption_restores_originals \
     claude_broken_launcher_needs_repair native_installers codex_lifecycle_and_inherited_environment \

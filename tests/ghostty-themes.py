@@ -196,6 +196,28 @@ class ThemeTests(unittest.TestCase):
             self.assertEqual((self.themes / name).read_bytes(), b"user edits\n")
         self.assertEqual(set(self.manifest_data()["files"]), {updated})
 
+    def test_update_skips_a_complete_install(self):
+        self.call("install")
+        installed = self.snapshot()
+        output = io.StringIO()
+        with mock.patch("urllib.request.urlopen", side_effect=AssertionError("downloaded")), \
+                mock.patch.object(sys, "argv", ["ghostty-themes", "update"]), \
+                contextlib.redirect_stdout(output):
+            self.assertEqual(self.helper.main(), self.helper.UP_TO_DATE)
+        self.assertEqual(output.getvalue(), f"Ghostty Themes {self.helper.RELEASE} is already up to date.\n")
+        self.assertEqual(self.snapshot(), installed)
+        # A missing theme is repaired, and a newly pinned bundle is installed.
+        (self.themes / self.names[0]).unlink()
+        self.assertTrue(self.call("update"))
+        self.assertEqual(self.snapshot(), installed)
+        data = archive_bytes({f"ghostty/{self.names[0]}": b"background = 123456\n"})
+        self.opener = lambda *args, **kwargs: io.BytesIO(data)
+        with mock.patch.object(self.helper, "SHA256", digest(data)), \
+                mock.patch.object(self.helper, "EXPECTED_COUNT", 1):
+            self.assertTrue(self.call("update"))
+            self.assertFalse(self.call("update"))
+        self.assertEqual((self.themes / self.names[0]).read_bytes(), b"background = 123456\n")
+
     def test_bad_checksum_preserves_previous_install(self):
         self.call("install")
         self.reject_download(self.download, checksum="0" * 64)

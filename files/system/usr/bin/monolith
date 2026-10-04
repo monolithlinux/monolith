@@ -17,15 +17,21 @@ GEAR_LEVER_ID=it.mijorus.gearlever
 GEAR_LEVER_REF=https://dl.flathub.org/repo/appstream/it.mijorus.gearlever.flatpakref
 GEAR_LEVER_MIN_VERSION=4.6.2
 QUIT_TOKEN=__monolith_quit__
+# The Python helpers' update action exits with this when it changed nothing.
+HELPER_UP_TO_DATE=3
 ACTIVE_TEMP=""
 GEAR_LEVER_SCOPE=""
 RUN_INTERRUPTED=0
 SELECTOR=numbered
 USE_COLOR=0
 PICKED=""
+# An update skips a healthy item that already has the newest release;
+# UP_TO_DATE records that this action did so.
+ONLY_IF_OUTDATED=0
+UP_TO_DATE=0
 
 readonly SELF BIN_DIR DATA_HOME STATE_HOME MANAGED_ROOT STATE_ROOT GHOSTTY_THEMES_HELPER GEAR_LEVER_APP_HELPER
-readonly GEAR_LEVER_ID GEAR_LEVER_REF GEAR_LEVER_MIN_VERSION QUIT_TOKEN
+readonly GEAR_LEVER_ID GEAR_LEVER_REF GEAR_LEVER_MIN_VERSION QUIT_TOKEN HELPER_UP_TO_DATE
 
 ALL_TOOLS=(tea superfile nak ngit claude codex opencode omp herdr wowup-cf r2modman prismlauncher ghostty-themes)
 CLI_TOOLS=(tea superfile nak ngit)
@@ -317,6 +323,44 @@ marker_version() {
     sed -n 's/^version=//p' "$marker" | head -n 1
 }
 
+# True while updating a healthy managed TOOL. Installs and repairs never skip.
+updating() {
+    [ "$ONLY_IF_OUTDATED" -eq 1 ] && is_managed "$1"
+}
+
+# Record that this update changed nothing. MONOLITH_RESULT_FILE, set by the
+# batch for each action, lets the summary say "Up to date" instead of "Updated".
+mark_up_to_date() {
+    UP_TO_DATE=1
+    if [ -n "${MONOLITH_RESULT_FILE:-}" ]; then
+        printf 'current\n' >"$MONOLITH_RESULT_FILE"
+    fi
+}
+
+report_up_to_date() {
+    printf '%s %s is already up to date.\n' "$(tool_name "$1")" "$2"
+    mark_up_to_date
+}
+
+# During an update, skip a healthy static TOOL whose marker records VERSION,
+# the release it would install now.
+static_up_to_date() {
+    updating "$1" && [ "$(marker_version "$1")" = "$2" ] || return 1
+    report_up_to_date "$1" "$2"
+}
+
+# Run a Python helper's update action, which exits HELPER_UP_TO_DATE after
+# changing nothing.
+run_helper_update() {
+    local status=0
+    "$@" || status=$?
+    case "$status" in
+        0) ;;
+        "$HELPER_UP_TO_DATE") mark_up_to_date ;;
+        *) exit "$status" ;;
+    esac
+}
+
 # Only tools with commands own paths in ~/.local/bin.
 local_destination_conflict() {
     local tool="$1" path
@@ -598,11 +642,12 @@ install_tea() {
     local tool=tea json tag version filename url tmp
     require_amd64 "Tea"
     preflight_install "$tool"
-    note "Installing Tea"
 
     json="$(curl_fetch metadata https://gitea.com/api/v1/repos/gitea/tea/releases/latest)"
     tag="$(printf '%s' "$json" | release_tag)" || die "could not resolve the latest Tea release"
     version="${tag#v}"
+    static_up_to_date "$tool" "$version" && return 0
+    note "Installing Tea"
     filename="tea-${version}-linux-amd64"
     url="https://dl.gitea.com/tea/${version}/${filename}"
 
@@ -622,9 +667,10 @@ install_superfile() {
     local tool=superfile tag filename base tmp
     require_amd64 "Superfile"
     preflight_install "$tool"
-    note "Installing Superfile"
 
     tag="$(latest_github_tag yorukot/superfile)"
+    static_up_to_date "$tool" "$tag" && return 0
+    note "Installing Superfile"
     filename="superfile-linux-${tag}-amd64.tar.gz"
     base="https://github.com/yorukot/superfile/releases/download/${tag}"
 
@@ -645,10 +691,11 @@ install_nak() {
     local tool=nak asset tag url sha256 tmp
     require_amd64 "nak"
     preflight_install "$tool"
-    note "Installing nak"
 
     asset="$(github_release_asset fiatjaf/nak 'nak-{tag}-linux-amd64')"
     IFS=$'\t' read -r tag url sha256 <<<"$asset"
+    static_up_to_date "$tool" "$tag" && return 0
+    note "Installing nak"
     new_temp_dir
     tmp="$ACTIVE_TEMP"
     mkdir -p "$tmp/bin"
@@ -663,10 +710,11 @@ install_ngit() {
     local tool=ngit asset tag url sha256 filename tmp
     require_amd64 "ngit"
     preflight_install "$tool"
-    note "Installing ngit"
 
     asset="$(github_release_asset DanConwayDev/ngit-cli 'ngit-{tag}-x86_64-unknown-linux-musl.tar.gz')"
     IFS=$'\t' read -r tag url sha256 <<<"$asset"
+    static_up_to_date "$tool" "$tag" && return 0
+    note "Installing ngit"
     filename="${url##*/}"
     new_temp_dir
     tmp="$ACTIVE_TEMP"
@@ -702,6 +750,61 @@ native_executable() {
         claude|codex) echo "$BIN_DIR/$1" ;;
         opencode) echo "$(tool_root opencode)/opencode" ;;
     esac
+}
+
+# Print the release an upstream installer would install now, read from the
+# source that installer uses, without downloading the program.
+latest_installer_version() {
+    local text
+    case "$1" in
+        claude)
+            text="$(curl_fetch metadata https://downloads.claude.ai/claude-code-releases/stable)" || return 1
+            ;;
+        codex)
+            # The installer prefers this channel to GitHub's latest release.
+            text="$(curl_fetch metadata https://releases.openai.com/codex/channels/latest | release_tag)" ||
+                return 1
+            text="${text#rust-v}"
+            ;;
+        opencode)
+            text="$(curl_fetch metadata https://api.github.com/repos/anomalyco/opencode/releases/latest |
+                release_tag)" || return 1
+            text="${text#v}"
+            ;;
+        herdr)
+            # Herdr's installer and `herdr update` both read this manifest.
+            text="$(curl_fetch metadata https://herdr.dev/latest.json | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except ValueError:
+    sys.exit(1)
+version = data.get("version") if isinstance(data, dict) else None
+if not isinstance(version, str):
+    sys.exit(1)
+print(version)')" || return 1
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+    [[ "$text" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.]+)?$ ]] || return 1
+    printf '%s\n' "$text"
+}
+
+# During an update, skip a healthy TOOL whose program reports the release its
+# upstream installer would install now. These tools can update themselves, so
+# the program, not the marker, says what is installed. A failed lookup runs
+# the installer as before.
+installer_up_to_date() {
+    local tool="$1" latest
+    updating "$tool" || return 1
+    if ! latest="$(latest_installer_version "$tool")"; then
+        warn "could not check for a newer $(tool_name "$tool"); running its installer"
+        return 1
+    fi
+    [ "$(installed_version "$tool" || true)" = "$latest" ] || return 1
+    report_up_to_date "$tool" "$latest"
 }
 
 # Check the native layout and print the first line of the installed version.
@@ -786,6 +889,7 @@ with_native_rollback() {
 
 install_claude() {
     preflight_install claude
+    installer_up_to_date claude && return 0
     note "Installing Claude Code with Anthropic's native installer"
     with_native_rollback claude install_native_claude
 }
@@ -797,6 +901,7 @@ install_native_claude() {
 
 install_codex() {
     preflight_install codex
+    installer_up_to_date codex && return 0
     note "Installing Codex CLI with OpenAI's standalone installer"
     with_native_rollback codex install_native_codex
 }
@@ -815,6 +920,7 @@ install_native_codex() {
 
 install_opencode() {
     preflight_install opencode
+    installer_up_to_date opencode && return 0
     note "Installing OpenCode with its upstream installer"
     with_native_rollback opencode install_native_opencode
 }
@@ -839,9 +945,10 @@ install_omp() {
     local tool=omp tag filename=omp-linux-x64 base tmp
     require_amd64 "Oh My Pi"
     preflight_install "$tool"
-    note "Installing Oh My Pi"
 
     tag="$(latest_github_tag can1357/oh-my-pi)"
+    static_up_to_date "$tool" "$tag" && return 0
+    note "Installing Oh My Pi"
     base="https://github.com/can1357/oh-my-pi/releases/download/$tag"
     new_temp_dir
     tmp="$ACTIVE_TEMP"
@@ -858,6 +965,7 @@ install_omp() {
 install_herdr() {
     local tool=herdr output version tmp
     preflight_install "$tool"
+    installer_up_to_date "$tool" && return 0
     note "Installing Herdr with its upstream installer"
     download_installer https://herdr.dev/install.sh
     tmp="$ACTIVE_TEMP"
@@ -967,7 +1075,11 @@ install_tool() {
     local tool="$1"
     is_known_tool "$tool" || die "unknown tool: $tool"
     if [ "$tool" = ghostty-themes ]; then
-        ghostty_themes install
+        if [ "$ONLY_IF_OUTDATED" -eq 1 ]; then
+            run_helper_update ghostty_themes update
+        else
+            ghostty_themes install
+        fi
     elif is_gear_lever_app "$tool"; then
         install_gear_lever_app "$tool"
     elif is_flatpak_app "$tool"; then
@@ -978,7 +1090,7 @@ install_tool() {
         fi
         "install_$tool"
     fi
-    printf '\nInstalled %s.\n' "$(tool_name "$tool")"
+    [ "$UP_TO_DATE" -eq 1 ] || printf '\nInstalled %s.\n' "$(tool_name "$tool")"
 }
 
 ghostty_themes() {
@@ -987,13 +1099,13 @@ ghostty_themes() {
     python3 "$GHOSTTY_THEMES_HELPER" "$@"
 }
 
-# Run the Gear Lever app helper for TOOL: status, info, install, or remove.
+# Run the Gear Lever app helper for TOOL: status, info, install, update, or remove.
 gear_lever_app() {
     local tool="$1" action="$2" scope=()
     command -v python3 >/dev/null 2>&1 || die "$(tool_name "$tool") requires Python 3"
     [ -f "$GEAR_LEVER_APP_HELPER" ] || die "Gear Lever app helper is missing: $GEAR_LEVER_APP_HELPER"
     case "$action" in
-        install|remove) scope=(--scope "$GEAR_LEVER_SCOPE") ;;
+        install|update|remove) scope=(--scope "$GEAR_LEVER_SCOPE") ;;
     esac
     python3 "$GEAR_LEVER_APP_HELPER" "${scope[@]}" "$tool" "$action" 9>&-
 }
@@ -1105,7 +1217,11 @@ install_gear_lever_app() {
         gear_lever_app_policy "$tool"
     fi
     ensure_gear_lever "$tool"
-    gear_lever_app "$tool" install
+    if [ "$ONLY_IF_OUTDATED" -eq 1 ]; then
+        run_helper_update gear_lever_app "$tool" update
+    else
+        gear_lever_app "$tool" install
+    fi
 }
 
 require_flatpak() {
@@ -1113,11 +1229,16 @@ require_flatpak() {
         die "$(tool_name "$1") needs Flatpak, but the flatpak command is missing; repair Flatpak, then retry"
 }
 
+# Print the commit Flatpak installed for the user's app ID, or nothing.
+flatpak_commit() {
+    flatpak info --user --show-commit "$1" 2>/dev/null || true
+}
+
 # Install TOOL from Flathub for the user, or update the user's copy, which also
 # adopts one installed outside Monolith. A system-wide copy updates with the
 # system's Flatpaks, so Monolith leaves it alone rather than adding a second.
 install_flatpak_app() {
-    local tool="$1" name id ref version
+    local tool="$1" name id ref version commit=""
     name="$(tool_name "$tool")"
     id="$(flatpak_app_id "$tool")"
     ref="$(flatpak_app_ref "$tool")"
@@ -1128,8 +1249,20 @@ install_flatpak_app() {
         else
             note "Adopting the existing per-user $name Flatpak"
         fi
+        # An update that leaves the installed commit unchanged found nothing newer.
+        if updating "$tool"; then
+            commit="$(flatpak_commit "$id")"
+        fi
         flatpak update --user --noninteractive --assumeyes "$id" 9>&- ||
             die "$name could not be updated; Flatpak kept the installed version"
+        if [ -n "$commit" ] && [ "$(flatpak_commit "$id")" = "$commit" ]; then
+            # Another updater, such as topgrade's Flatpak step, may have moved it.
+            version="$(flatpak_version user "$id")"
+            [ "$(marker_version "$tool")" = "${version:-unknown}" ] ||
+                write_marker "$tool" "${version:-unknown}" "$ref"
+            report_up_to_date "$tool" "${version:-unknown}"
+            return 0
+        fi
     elif flatpak_installed system "$id"; then
         if has_marker "$tool"; then
             die "$name is no longer installed for your account; only a system-wide copy remains, which updates with the system's Flatpaks. Monolith manages only per-user copies, so nothing was changed. Run monolith remove $tool to drop Monolith's record and keep the system copy"
@@ -1227,6 +1360,7 @@ internal_action() {
     [ "$#" -eq 2 ] || die "internal action needs an action and one tool ID"
     case "$1" in
         install) run=install_tool ;;
+        update) run=update_tool ;;
         remove) run=remove_tool ;;
         adopt) run=adopt_replaced_tool ;;
         *) die "unknown internal action: $1" ;;
@@ -1234,6 +1368,13 @@ internal_action() {
     is_known_tool "$2" || die "unknown tool: $2"
     acquire_operation_lock
     "$run" "$2"
+}
+
+# Update TOOL unless it is healthy and already has the newest release. An
+# unhealthy item is repaired, as an install would.
+update_tool() {
+    ONLY_IF_OUTDATED=1
+    install_tool "$1"
 }
 
 action_verb() {
@@ -1284,11 +1425,11 @@ past_tense() {
 run_actions() {
     local action="$1"
     shift
-    local tools=("$@") total="$#" index=0 status verb tool failed=0 cancelled=0
+    local tools=("$@") total="$#" index=0 status verb tool failed=0 cancelled=0 result_file
     local names=() results=()
 
     case "$action" in
-        install|remove|adopt) ;;
+        install|update|remove|adopt) ;;
         *) die "internal error: unknown action: $action" ;;
     esac
     # Validate the whole request before any child starts.
@@ -1297,7 +1438,12 @@ run_actions() {
         if [ "$action" = remove ] && ! has_marker "$tool"; then
             die "$(tool_name "$tool") is not managed by Monolith"
         fi
+        if [ "$action" = update ] && ! has_marker "$tool"; then
+            die "$(tool_name "$tool") is not installed by Monolith"
+        fi
     done
+    # Each child writes "current" here when its update found nothing newer.
+    result_file="$(mktemp)"
 
     RUN_INTERRUPTED=0
     trap 'RUN_INTERRUPTED=130' INT
@@ -1307,10 +1453,17 @@ run_actions() {
         verb="$(action_verb "$action" "$tool")"
         printf '\n(%d/%d) %s — %s\n' "$index" "$total" "$(tool_name "$tool")" "$verb"
         status=0
-        bash "$SELF" __action "$action" "$tool" || status=$?
+        : >"$result_file"
+        MONOLITH_RESULT_FILE="$result_file" bash "$SELF" __action "$action" "$tool" || status=$?
         names+=("$(tool_name "$tool")")
         case "$status" in
-            0) results+=("$(past_tense "$verb")") ;;
+            0)
+                if [ "$(<"$result_file")" = current ]; then
+                    results+=("Up to date")
+                else
+                    results+=("$(past_tense "$verb")")
+                fi
+                ;;
             125) results+=("Skipped by user"); failed=1 ;;
             130|143) results+=("Cancelled"); cancelled="$status" ;;
             *) results+=("Failed (exit $status)"); failed=1 ;;
@@ -1322,6 +1475,7 @@ run_actions() {
             break
         fi
     done
+    rm -f -- "$result_file"
     trap 'cleanup_active_temp; exit 130' INT
     trap 'cleanup_active_temp; exit 143' TERM
 
@@ -1363,7 +1517,7 @@ update_tools() {
         echo "No Monolith-managed software is installed."
         return 0
     fi
-    run_actions install "${selected[@]}"
+    run_actions update "${selected[@]}"
 }
 
 # Print a short version from a managed command. Never runs unmanaged programs.
@@ -1735,7 +1889,7 @@ menu_update() {
         pause_after_action
         return 0
     fi
-    menu_actions install "${selected[@]}"
+    menu_actions update "${selected[@]}"
 }
 
 show_gear_lever_app_details() {
@@ -1869,7 +2023,7 @@ manage_tool() {
         options=()
         case "$status" in
             installed)
-                options+=("Update"$'\t'"install" "Remove"$'\t'"remove")
+                options+=("Update"$'\t'"update" "Remove"$'\t'"remove")
                 ;;
             "needs repair")
                 if is_flatpak_app "$tool" && [ "${FLATPAK_SCOPE[$tool]}" = system ]; then
@@ -1923,6 +2077,9 @@ manage_tool() {
         case "$PICKED" in
             install)
                 MONOLITH_POLICY_SHOWN=1 menu_actions install "$tool"
+                ;;
+            update)
+                menu_actions update "$tool"
                 ;;
             adopt)
                 menu_actions adopt "$tool"
@@ -2014,9 +2171,10 @@ Without a command, opens the interactive software dashboard.
 
 Commands:
   list                  Show every tool and its current state
-  install TOOL [...]    Install, adopt, or update one or more tools
+  install TOOL [...]    Install, adopt, or reinstall the newest release of tools
   remove TOOL [...]     Remove managed files; keep user settings and edited themes
-  update [TOOL ...]     Update selected tools, or every managed tool
+  update [TOOL ...]     Update selected tools, or every managed tool; items that
+                        already have the newest release are left alone
   help                  Show this help
 
 Tool IDs:

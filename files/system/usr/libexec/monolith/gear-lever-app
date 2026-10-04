@@ -52,6 +52,8 @@ RECEIPT_FIELDS = ("version", "source", "channel", "sha256", "appimage", "desktop
 MAX_SMALL_FILE = 1024 * 1024
 # Preferences and icons; transaction checks must accept whatever the callers read.
 MAX_LARGE_FILE = 64 * 1024 * 1024
+# Exit status of `update` when the integration was complete and current, so nothing changed.
+UP_TO_DATE = 3
 
 # Tests point this at a fixture process table.
 PROC_ROOT = Path("/proc")
@@ -1603,7 +1605,29 @@ def finalize(paths, transaction, integration, release):
     transaction.write_private(paths.receipt, receipt.encode(), paths.receipt.name)
 
 
-def install(app, scope):
+def nothing_to_change(paths, plan, preferences, current, target):
+    """Whether installing target would neither download nor rewrite anything: Monolith's integration is
+    complete, holds target's verified bytes, and already records target everywhere an install writes."""
+    app = paths.app
+    integration = plan.integration
+    if plan.mode != "managed" or plan.missing or current is None or current.sha256 != target.sha256:
+        return False
+    entry, desktop = integration.entry, integration.desktop
+    if entry.manager is not None or entry.embedded or desktop.get("X-AppImage-Version") != target.version:
+        return False
+    if app.setting and (preferences is None or preferences.value.get(app.setting.key) != app.setting.value):
+        return False
+    icon = owned_icon(desktop, entry.path)
+    recorded = Receipt(target.version, target.url, target.channel, target.sha256, entry.path,
+                       integration.desktop_path.name, icon or "")
+    icon_data = read_regular(icon, MAX_LARGE_FILE) if icon else None
+    return (plan.receipt == recorded and read_regular(paths.snapshot_desktop) == desktop.data
+            and read_regular(paths.snapshot_icon, MAX_LARGE_FILE) == icon_data)
+
+
+def install(app, scope, only_if_changed=False):
+    """Install, adopt, update or repair the integration. With only_if_changed, return False without
+    changing anything, even while the application runs, when nothing would change."""
     paths = Paths(app)
     require_readelf(app)
     receipt = load_receipt(paths)
@@ -1612,7 +1636,6 @@ def install(app, scope):
     gear_lever = GearLever(scope)
     plan = make_plan(paths, receipt, inspect_gear_lever(paths, gear_lever))
     load_snapshots(paths, plan)
-    ensure_closed(app, [plan.entry], [plan.appimage])
     releases = parse_releases(app, fetch_releases(app))
     target = app.select(releases, receipt)
     current = None
@@ -1623,6 +1646,10 @@ def install(app, scope):
     if current is not None and current.key > target.key:
         raise HelperError(f"The installed {app.name} {current.version} is newer than {target.version}, the newest "
                           "version Monolith permits; Monolith never downgrades. Nothing was changed.")
+    if only_if_changed and nothing_to_change(paths, plan, preferences_before, current, target):
+        print(f"{app.name} {target.version} is already up to date.", flush=True)
+        return False
+    ensure_closed(app, [plan.entry], [plan.appimage])
     reuse = current is not None and current.sha256 == target.sha256
     print(f"Selected {app.name} {app.describe(target)} from {app.repository}.", flush=True)
     scratch = Scratch(paths)
@@ -1667,6 +1694,7 @@ def install(app, scope):
         print(f"{app.name} {target.version} is installed at {location}.")
     if plan.mode == "adopt":
         print("Monolith now manages this existing Gear Lever integration and its launcher.")
+    return True
 
 
 # --- remove ----------------------------------------------------------------------------------------------
@@ -1822,20 +1850,23 @@ def build_parser():
                "  status    print installed, needs repair, external or not installed\n"
                "  info      print the inspected integration as a JSON object\n"
                "  install   install, adopt, update or repair the Gear Lever integration (needs --scope)\n"
+               "  update    like install, but when nothing would change, change nothing and exit "
+               f"{UP_TO_DATE},\n"
+               "            even while the application runs (needs --scope)\n"
                "  remove    remove the Monolith-managed Gear Lever integration (needs --scope)\n")
     parser.add_argument("--scope", choices=("user", "system"),
-                        help="Flatpak installation providing Gear Lever (required for install and remove)")
+                        help="Flatpak installation providing Gear Lever (required for install, update and remove)")
     parser.add_argument("app", metavar="APP", choices=tuple(APPS), help=" or ".join(APPS))
-    parser.add_argument("action", metavar="ACTION", choices=("status", "info", "install", "remove"),
-                        help="status, info, install or remove")
+    parser.add_argument("action", metavar="ACTION", choices=("status", "info", "install", "update", "remove"),
+                        help="status, info, install, update or remove")
     return parser
 
 
 def main(argv=None):
     parser = build_parser()
     arguments = parser.parse_args(argv)
-    if arguments.action in ("install", "remove") and arguments.scope is None:
-        parser.error("--scope user|system is required for install and remove")
+    if arguments.action in ("install", "update", "remove") and arguments.scope is None:
+        parser.error("--scope user|system is required for install, update and remove")
     app = APPS[arguments.app]
     GUARD.reset()
     previous = {signum: signal.signal(signum, GUARD.handler) for signum in (signal.SIGINT, signal.SIGTERM)}
@@ -1847,6 +1878,9 @@ def main(argv=None):
             print(json.dumps(inspect(Paths(app)), ensure_ascii=False))
         elif arguments.action == "install":
             install(app, arguments.scope)
+        elif arguments.action == "update":
+            if not install(app, arguments.scope, only_if_changed=True):
+                code = UP_TO_DATE
         else:
             remove(app, arguments.scope)
     except Interrupted as error:
@@ -1862,7 +1896,7 @@ def main(argv=None):
     finally:
         for signum, handler in previous.items():
             signal.signal(signum, handler)
-    if code == 0 and GUARD.received is not None:
+    if code in (0, UP_TO_DATE) and GUARD.received is not None:
         code = 128 + GUARD.received
     return code
 
