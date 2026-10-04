@@ -27,17 +27,19 @@ PICKED=""
 readonly SELF BIN_DIR DATA_HOME STATE_HOME MANAGED_ROOT STATE_ROOT GHOSTTY_THEMES_HELPER GEAR_LEVER_APP_HELPER
 readonly GEAR_LEVER_ID GEAR_LEVER_REF GEAR_LEVER_MIN_VERSION QUIT_TOKEN
 
-ALL_TOOLS=(tea superfile nak ngit claude codex opencode omp herdr wowup-cf r2modman ghostty-themes)
+ALL_TOOLS=(tea superfile nak ngit claude codex opencode omp herdr wowup-cf r2modman prismlauncher ghostty-themes)
 CLI_TOOLS=(tea superfile nak ngit)
 AI_TOOLS=(claude codex opencode omp herdr)
-GAMING_TOOLS=(wowup-cf r2modman)
+GAMING_TOOLS=(wowup-cf r2modman prismlauncher)
 APPEARANCE_TOOLS=(ghostty-themes)
 
 # Per-render state; menus and list compute each row once. Gear Lever apps
 # also keep the helper's summary; APP_CONFLICTS holds one path per line.
+# Flatpak apps keep the installation that has them and its version.
 declare -A ROW_STATUS=() ROW_VERSION=()
 declare -A APP_VERSION=() APP_APPIMAGE=() APP_DESKTOP_ID=() APP_SOURCE=() APP_CHANNEL=() APP_ERROR=()
 declare -A APP_CONFLICTS=()
+declare -A FLATPAK_SCOPE=() FLATPAK_VERSION=()
 
 die() {
     echo "Error: $*" >&2
@@ -99,6 +101,7 @@ tool_name() {
         herdr)     echo "Herdr" ;;
         wowup-cf)  echo "WowUp-CF" ;;
         r2modman)  echo "r2modman" ;;
+        prismlauncher) echo "Prism Launcher" ;;
         ghostty-themes) echo "Ghostty Themes" ;;
         *)         return 1 ;;
     esac
@@ -117,6 +120,7 @@ tool_description() {
         herdr)     echo "terminal multiplexer for coding agents" ;;
         wowup-cf)  echo "World of Warcraft addon manager with CurseForge and WoW Forever support" ;;
         r2modman)  echo "Thunderstore mod manager for Lethal Company, Risk of Rain 2, Valheim, and more" ;;
+        prismlauncher) echo "Minecraft launcher for multiple instances, mods, and modpacks" ;;
         ghostty-themes) echo "official Ghostty theme collection" ;;
         *)         return 1 ;;
     esac
@@ -126,7 +130,7 @@ tool_category() {
     case "$1" in
         tea|superfile|nak|ngit) echo "Developer CLIs" ;;
         claude|codex|opencode|omp|herdr) echo "AI coding" ;;
-        wowup-cf|r2modman) echo "Gaming" ;;
+        wowup-cf|r2modman|prismlauncher) echo "Gaming" ;;
         ghostty-themes) echo "Appearance" ;;
         *) return 1 ;;
     esac
@@ -143,7 +147,7 @@ tool_commands() {
         opencode)  echo "opencode" ;;
         omp)       echo "omp" ;;
         herdr)     echo "herdr" ;;
-        wowup-cf|r2modman|ghostty-themes) return 0 ;;
+        wowup-cf|r2modman|prismlauncher|ghostty-themes) return 0 ;;
         *)         return 1 ;;
     esac
 }
@@ -216,6 +220,25 @@ is_gear_lever_app() {
     esac
 }
 
+# Flathub apps that Monolith installs for the user with Flatpak.
+is_flatpak_app() {
+    case "$1" in
+        prismlauncher) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+flatpak_app_id() {
+    case "$1" in
+        prismlauncher) echo "org.prismlauncher.PrismLauncher" ;;
+        *) return 1 ;;
+    esac
+}
+
+flatpak_app_ref() {
+    printf 'https://dl.flathub.org/repo/appstream/%s.flatpakref\n' "$(flatpak_app_id "$1")"
+}
+
 is_managed() {
     local tool="$1" root command
     has_marker "$tool" || return 1
@@ -224,6 +247,9 @@ is_managed() {
         return
     elif is_gear_lever_app "$tool"; then
         [ "$(gear_lever_app "$tool" status)" = installed ]
+        return
+    elif is_flatpak_app "$tool"; then
+        [ "$(tool_status "$tool")" = installed ]
         return
     fi
     root="$(tool_root "$tool")"
@@ -252,6 +278,9 @@ tool_status() {
     local tool="$1"
     if is_gear_lever_app "$tool"; then
         gear_lever_app "$tool" status
+    elif is_flatpak_app "$tool"; then
+        load_flatpak_info "$tool"
+        printf '%s\n' "${ROW_STATUS[$tool]}"
     elif is_managed "$tool"; then
         echo "installed"
     elif has_marker "$tool"; then
@@ -941,6 +970,8 @@ install_tool() {
         ghostty_themes install
     elif is_gear_lever_app "$tool"; then
         install_gear_lever_app "$tool"
+    elif is_flatpak_app "$tool"; then
+        install_flatpak_app "$tool"
     else
         if ! has_marker "$tool" && can_adopt "$tool"; then
             adopt_tool "$tool"
@@ -997,15 +1028,22 @@ kept_data() {
     case "$1" in
         wowup-cf) echo "settings, game installations, and addons" ;;
         r2modman) echo "profiles, mods, and settings" ;;
+        prismlauncher) echo "instances, worlds, accounts, and settings" ;;
         *) echo "settings, authentication, sessions, and project files" ;;
     esac
 }
 
-# Print the first Flatpak scope that has Gear Lever installed.
-gear_lever_scope() {
+# Succeed when Flatpak SCOPE (user or system) has app ID installed. A missing
+# or failing flatpak command counts as not installed.
+flatpak_installed() {
+    flatpak info "--$1" "$2" >/dev/null 2>&1
+}
+
+# Print the first Flatpak scope that has app ID installed.
+flatpak_scope() {
     local scope
     for scope in user system; do
-        if flatpak info "--$scope" "$GEAR_LEVER_ID" >/dev/null 2>&1; then
+        if flatpak_installed "$scope" "$1"; then
             printf '%s\n' "$scope"
             return 0
         fi
@@ -1013,10 +1051,11 @@ gear_lever_scope() {
     return 1
 }
 
-gear_lever_version() {
+# Print the version that Flatpak SCOPE reports for app ID, if any.
+flatpak_version() {
     local listing
     listing="$(flatpak list --app "--$1" --columns=application:f,version:f 2>/dev/null)" || return 0
-    awk -F '\t' -v id="$GEAR_LEVER_ID" '$1 == id { print $2; exit }' <<<"$listing"
+    awk -F '\t' -v id="$2" '$1 == id { print $2; exit }' <<<"$listing"
 }
 
 version_at_least() {
@@ -1032,7 +1071,7 @@ ensure_gear_lever() {
     name="$(tool_name "$1")"
     command -v flatpak >/dev/null 2>&1 ||
         die "$name needs Gear Lever, but the flatpak command is missing; repair Flatpak, then retry"
-    if ! scope="$(gear_lever_scope)"; then
+    if ! scope="$(flatpak_scope "$GEAR_LEVER_ID")"; then
         if [ ! -t 0 ] || [ ! -t 1 ]; then
             die "$name needs Gear Lever. Install it with: flatpak install --user --noninteractive --assumeyes $GEAR_LEVER_REF"
         fi
@@ -1049,9 +1088,9 @@ ensure_gear_lever() {
         note "Installing Gear Lever from Flathub for your account"
         flatpak install --user --noninteractive --assumeyes "$GEAR_LEVER_REF" 9>&- ||
             die "Gear Lever could not be installed; $name was not changed"
-        scope="$(gear_lever_scope)" || die "Gear Lever is still missing after installation; $name was not changed"
+        scope="$(flatpak_scope "$GEAR_LEVER_ID")" || die "Gear Lever is still missing after installation; $name was not changed"
     fi
-    version="$(gear_lever_version "$scope")"
+    version="$(flatpak_version "$scope" "$GEAR_LEVER_ID")"
     if ! version_at_least "$version" "$GEAR_LEVER_MIN_VERSION"; then
         die "$name needs Gear Lever $GEAR_LEVER_MIN_VERSION or newer, but the $scope installation reports '${version:-unknown}'. Update it with: flatpak update --$scope $GEAR_LEVER_ID"
     fi
@@ -1067,6 +1106,64 @@ install_gear_lever_app() {
     fi
     ensure_gear_lever "$tool"
     gear_lever_app "$tool" install
+}
+
+require_flatpak() {
+    command -v flatpak >/dev/null 2>&1 ||
+        die "$(tool_name "$1") needs Flatpak, but the flatpak command is missing; repair Flatpak, then retry"
+}
+
+# Install TOOL from Flathub for the user, or update the user's copy, which also
+# adopts one installed outside Monolith. A system-wide copy updates with the
+# system's Flatpaks, so Monolith leaves it alone rather than adding a second.
+install_flatpak_app() {
+    local tool="$1" name id ref version
+    name="$(tool_name "$tool")"
+    id="$(flatpak_app_id "$tool")"
+    ref="$(flatpak_app_ref "$tool")"
+    require_flatpak "$tool"
+    if flatpak_installed user "$id"; then
+        if has_marker "$tool"; then
+            note "Updating $name from Flathub"
+        else
+            note "Adopting the existing per-user $name Flatpak"
+        fi
+        flatpak update --user --noninteractive --assumeyes "$id" 9>&- ||
+            die "$name could not be updated; Flatpak kept the installed version"
+    elif flatpak_installed system "$id"; then
+        if has_marker "$tool"; then
+            die "$name is no longer installed for your account; only a system-wide copy remains, which updates with the system's Flatpaks. Monolith manages only per-user copies, so nothing was changed. Run monolith remove $tool to drop Monolith's record and keep the system copy"
+        fi
+        die "$name is already installed system-wide and updates with the system's Flatpaks, so Monolith left it alone. To have Monolith manage a per-user copy instead, uninstall the system copy first; your instances in ~/.var/app/$id are kept"
+    else
+        note "Installing $name from Flathub for your account"
+        flatpak install --user --noninteractive --assumeyes "$ref" 9>&- ||
+            die "$name could not be installed from Flathub"
+    fi
+    flatpak_installed user "$id" || die "Flatpak does not list $name for your account; Monolith recorded nothing"
+    version="$(flatpak_version user "$id")"
+    write_marker "$tool" "${version:-unknown}" "$ref"
+}
+
+# Uninstall the user's copy of TOOL. Its data in ~/.var/app stays, and a
+# system-wide copy is never touched.
+remove_flatpak_app() {
+    local tool="$1" name id
+    name="$(tool_name "$tool")"
+    id="$(flatpak_app_id "$tool")"
+    require_flatpak "$tool"
+    if ! flatpak_installed user "$id"; then
+        # Forget the record only when Flatpak can show the copy is gone.
+        flatpak list --app --user --columns=application:f,version:f >/dev/null 2>&1 ||
+            die "Flatpak could not list your installation, so $name was not changed; repair Flatpak, then retry"
+        printf '%s was already uninstalled for your account; Monolith removed its own record.\n' "$name"
+        return 0
+    fi
+    flatpak uninstall --user --noninteractive --assumeyes "$id" 9>&- ||
+        die "$name could not be uninstalled; Monolith kept its record so the removal can be retried"
+    if flatpak_installed user "$id"; then
+        die "$name is still installed for your account; Monolith kept its record so the removal can be retried"
+    fi
 }
 
 remove_link_if_managed() {
@@ -1092,6 +1189,8 @@ remove_tool() {
     elif is_gear_lever_app "$tool"; then
         ensure_gear_lever "$tool"
         gear_lever_app "$tool" remove
+    elif is_flatpak_app "$tool"; then
+        remove_flatpak_app "$tool"
     else
         # Settings, logins, and sessions live outside the program roots.
         for command in $(tool_commands "$tool"); do
@@ -1149,6 +1248,16 @@ action_verb() {
             "needs repair") echo "Repair" ;;
             external) echo "Adopt and update" ;;
             *) echo "Install" ;;
+        esac
+    elif is_flatpak_app "$tool"; then
+        # Only a per-user copy is adopted; a system-wide one is refused.
+        load_flatpak_info "$tool"
+        case "${ROW_STATUS[$tool]}" in
+            installed) echo "Update" ;;
+            "needs repair") echo "Repair" ;;
+            *)
+                if [ "${FLATPAK_SCOPE[$tool]}" = user ]; then echo "Adopt and update"; else echo "Install"; fi
+                ;;
         esac
     elif has_marker "$tool"; then
         if is_managed "$tool"; then echo "Update"; else echo "Repair"; fi
@@ -1312,23 +1421,54 @@ for path in data.get("conflicts") or []:
     fi
 }
 
+# Find which Flatpak installation has TOOL once per render. Monolith manages
+# only a per-user copy: a system-wide one alone is external, or needs repair
+# while Monolith's record of a per-user copy remains.
+load_flatpak_info() {
+    local tool="$1" id scope
+    id="$(flatpak_app_id "$tool")"
+    scope="$(flatpak_scope "$id")" || scope=""
+    FLATPAK_SCOPE[$tool]="$scope"
+    FLATPAK_VERSION[$tool]=""
+    if [ -n "$scope" ]; then
+        FLATPAK_VERSION[$tool]="$(flatpak_version "$scope" "$id")"
+    fi
+    if has_marker "$tool"; then
+        if [ "$scope" = user ]; then
+            ROW_STATUS[$tool]="installed"
+        else
+            ROW_STATUS[$tool]="needs repair"
+        fi
+    elif [ -n "$scope" ]; then
+        ROW_STATUS[$tool]="external"
+    else
+        ROW_STATUS[$tool]="not installed"
+    fi
+}
+
 refresh_status() {
     local tool
     for tool in "$@"; do
         if is_gear_lever_app "$tool"; then
             load_app_info "$tool"
+        elif is_flatpak_app "$tool"; then
+            load_flatpak_info "$tool"
         else
             ROW_STATUS[$tool]="$(tool_status "$tool")"
         fi
     done
 }
 
-# Version text for a row: the managed program's own version, the receipt for
-# themes and Gear Lever apps, or the marker labelled as last recorded.
+# Version text for a row: the managed program's own version, Flatpak's report
+# for an installed Flatpak app, the receipt for themes and Gear Lever apps, or
+# the marker labelled as last recorded.
 display_version() {
     local tool="$1" status="${ROW_STATUS[$1]:-}" actual recorded
     if is_gear_lever_app "$tool"; then
         if [ -n "${APP_VERSION[$tool]}" ]; then printf 'verified %s\n' "${APP_VERSION[$tool]}"; else echo "-"; fi
+        return 0
+    elif is_flatpak_app "$tool" && { [ "$status" = installed ] || [ "$status" = external ]; }; then
+        printf '%s\n' "${FLATPAK_VERSION[$tool]:--}"
         return 0
     elif [ "$tool" = ghostty-themes ]; then
         recorded="$(marker_version "$tool")"
@@ -1634,6 +1774,45 @@ show_gear_lever_app_details() {
     esac
 }
 
+show_flatpak_app_details() {
+    local tool="$1" name id version="${ROW_VERSION[$1]}"
+    name="$(tool_name "$tool")"
+    id="$(flatpak_app_id "$tool")"
+    case "$version" in
+        -) ;;
+        recorded\ *) printf 'Last recorded version: %s\n' "${version#recorded }" ;;
+        *) printf 'Version:  %s\n' "$version" ;;
+    esac
+    printf 'Source:   Flathub (%s)\n' "$id"
+    case "${FLATPAK_SCOPE[$tool]}" in
+        user) printf 'Scope:    your account (per-user Flatpak)\n' ;;
+        system) printf 'Scope:    every account (system-wide Flatpak, not managed by Monolith)\n' ;;
+    esac
+    printf 'Data:     %s\n' "$HOME/.var/app/$id"
+    case "${ROW_STATUS[$tool]}:${FLATPAK_SCOPE[$tool]}" in
+        "needs repair:system")
+            printf '\n%s is no longer installed for your account, and a system-wide copy\n' "$name"
+            printf 'is installed instead. Remove drops Monolith'\''s record and keeps that copy.\n'
+            ;;
+        "needs repair:"*)
+            printf '\n%s is no longer installed for your account. Repair installs it again;\n' "$name"
+            printf 'Remove drops Monolith'\''s record. Your data is kept either way.\n'
+            ;;
+        external:system)
+            printf '\n%s is installed system-wide and updates with the system'\''s Flatpaks,\n' "$name"
+            printf 'so Monolith leaves it alone instead of installing a second copy. To have\n'
+            printf 'Monolith manage a per-user copy, first uninstall the system-wide one; your data\n'
+            printf 'is kept.\n'
+            ;;
+        external:user|"not installed:"*)
+            printf '\nMonolith installs %s from Flathub for your account; no\n' "$name"
+            printf 'administrator password is needed. Bazaar, flatpak update, topgrade, and\n'
+            printf 'automatic Flatpak updates keep it current as well.\n'
+            printf 'Removal keeps your %s.\n' "$(kept_data "$tool")"
+            ;;
+    esac
+}
+
 show_tool_details() {
     local tool="$1" status="${ROW_STATUS[$1]}" version="${ROW_VERSION[$1]}" command path
     printf '%s (%s)\n' "$(tool_name "$tool")" "$tool"
@@ -1642,6 +1821,9 @@ show_tool_details() {
     printf 'Status:   %s\n' "$status"
     if is_gear_lever_app "$tool"; then
         show_gear_lever_app_details "$tool"
+        return 0
+    elif is_flatpak_app "$tool"; then
+        show_flatpak_app_details "$tool"
         return 0
     fi
     case "$tool" in
@@ -1690,7 +1872,9 @@ manage_tool() {
                 options+=("Update"$'\t'"install" "Remove"$'\t'"remove")
                 ;;
             "needs repair")
-                if conflict="$(replaced_launcher "$tool")"; then
+                if is_flatpak_app "$tool" && [ "${FLATPAK_SCOPE[$tool]}" = system ]; then
+                    :
+                elif conflict="$(replaced_launcher "$tool")"; then
                     if can_adopt_replaced "$tool"; then
                         printf '\n%s is a standalone copy outside Monolith'\''s managed layout.\n' "$conflict"
                         printf 'Adopt it so Monolith manages and updates it, or remove Monolith'\''s record and keep the file.\n'
@@ -1711,6 +1895,12 @@ manage_tool() {
                     elif [ "$status" = external ]; then
                         options+=("Adopt and update"$'\t'"install")
                     else
+                        options+=("Install"$'\t'"install")
+                    fi
+                elif is_flatpak_app "$tool"; then
+                    if [ "${FLATPAK_SCOPE[$tool]}" = user ]; then
+                        options+=("Adopt and update"$'\t'"install")
+                    elif [ "$status" != external ]; then
                         options+=("Install"$'\t'"install")
                     fi
                 elif can_adopt "$tool"; then
@@ -1832,7 +2022,7 @@ Commands:
 Tool IDs:
   Developer CLIs   tea superfile nak ngit
   AI coding        claude codex opencode omp herdr
-  Gaming           wowup-cf r2modman
+  Gaming           wowup-cf r2modman prismlauncher
   Appearance       ghostty-themes
 EOF
 }

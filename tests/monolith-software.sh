@@ -227,6 +227,11 @@ ln -sfn "$root/releases/$version/codex" "$CODEX_INSTALL_DIR/codex"
 if [ "${MOCK_INSTALLER_FAIL:-}" = codex ]; then echo "Injected installer failure" >&2; exit 1; fi
 MOCK
 chmod 0755 "$mock_bin"/*
+# Flatpak answers from a per-case model state; see tests/gear-lever-apps.py.
+fake_flatpak="$repo_root/tests/gear-lever-apps.py"
+python3 "$fake_flatpak" install-fake-flatpak "$mock_bin" "$fixtures/flatpak-state.json"
+prism_id=org.prismlauncher.PrismLauncher
+prism_ref="https://dl.flathub.org/repo/appstream/$prism_id.flatpakref"
 
 setup_case() {
     case_root="$test_root/$1"
@@ -247,6 +252,7 @@ setup_case() {
     extra_env=()
     mkdir -p "$case_home" "$case_root"/{data,state,config,cache,runtime,tmp} "$bin_dir"
     : >"$case_root/curl.log"
+    cp -- "$fixtures/flatpak-state.json" "$case_root/flatpak-state.json"
 }
 
 monolith_env() {
@@ -263,6 +269,7 @@ monolith_env() {
         MOCK_FAIL_PUBLISH_TOOL="$fail_publish_tool" MOCK_MANAGED_ROOT="$managed_root"
         MOCK_FAIL_MOVE_DESTINATION="$fail_move_destination"
         MOCK_MV_FAILURE_SEEN="$case_root/mv-failed"
+        MONOLITH_TEST_FLATPAK_STATE="$case_root/flatpak-state.json"
         "${extra_env[@]}" "$manager")
 }
 
@@ -329,6 +336,64 @@ seed_user_data() {
 
 assert_user_data_preserved() {
     sha256sum --check --quiet "$case_root/seeded.sha256" || fail 'user data changed'
+}
+
+# Replace top-level keys of the case's Flatpak model, such as "apps" or "faults".
+flatpak_state() {
+    python3 "$fake_flatpak" update-fake-flatpak "$case_root/flatpak-state.json" "$1"
+}
+
+# Print each flatpak call the manager made as one line of arguments.
+flatpak_calls() {
+    [ -f "$case_root/flatpak-state.json.calls" ] || return 0
+    python3 -c '
+import json, sys
+for line in open(sys.argv[1]):
+    record = json.loads(line)
+    if "argv" in record:
+        print(" ".join(record["argv"]))' "$case_root/flatpak-state.json.calls"
+}
+
+forget_flatpak_calls() {
+    rm -f -- "$case_root/flatpak-state.json.calls"
+}
+
+assert_flatpak_called() {
+    flatpak_calls >"$case_root/flatpak-calls.log"
+    grep -Fxq -- "$1" "$case_root/flatpak-calls.log" || fail "flatpak was not called with: $1"
+}
+
+assert_no_flatpak_changes() {
+    flatpak_calls >"$case_root/flatpak-calls.log"
+    if grep -Eq '^(install|update|uninstall) ' "$case_root/flatpak-calls.log"; then
+        fail "unexpected flatpak changes: $(grep -E '^(install|update|uninstall) ' "$case_root/flatpak-calls.log")"
+    fi
+}
+
+assert_flatpak_modelled() {
+    if grep -q '"unmodelled"' "$case_root/flatpak-state.json.calls" 2>/dev/null; then
+        fail "unmodelled flatpak calls: $(grep '"unmodelled"' "$case_root/flatpak-state.json.calls")"
+    fi
+}
+
+# Print Prism Launcher's installations in the model, such as {"user": "11.1.1"}.
+prism_installations() {
+    python3 -c '
+import json, sys
+state = json.load(open(sys.argv[1]))
+print(json.dumps(state.get("apps", {}).get(sys.argv[2], {}), sort_keys=True))' \
+        "$case_root/flatpak-state.json" "$prism_id"
+}
+
+write_prism_marker() {
+    mkdir -p "$state_root"
+    printf 'version=%s\nsource=%s\n' "$1" "$prism_ref" >"$state_root/prismlauncher.managed"
+}
+
+assert_prism_listed() {
+    run_monolith list >"$case_root/list.log"
+    grep -Eq "^Gaming +Prism Launcher +$1\$" "$case_root/list.log" ||
+        fail "Prism Launcher is not listed as '$1': $(grep 'Prism Launcher' "$case_root/list.log")"
 }
 
 seed_omp_data() {
@@ -1001,6 +1066,132 @@ test_terminate_cleans_staging() {
     assert_no_temp_leaks
 }
 
+# Prism Launcher is the Flathub Flatpak, installed for the user only.
+test_prism_lifecycle() {
+    local data="$case_home/.var/app/$prism_id/data/PrismLauncher"
+    seed_user_data "$data/instances/Vanilla/instance.cfg" "$data/accounts.json"
+    assert_prism_listed 'not installed +-'
+    run_monolith install prismlauncher
+    assert_flatpak_called "install --user --noninteractive --assumeyes $prism_ref"
+    [ "$(prism_installations)" = '{"user": "11.1.1"}' ] || fail "unexpected installations: $(prism_installations)"
+    grep -qx 'version=11.1.1' "$state_root/prismlauncher.managed" || fail 'Prism Launcher marker has the wrong version'
+    grep -qx "source=$prism_ref" "$state_root/prismlauncher.managed" || fail 'Prism Launcher marker has the wrong source'
+    assert_prism_listed 'installed +11\.1\.1'
+
+    # Updating everything updates Prism Launcher through Flatpak beside other tools.
+    run_monolith install nak
+    flatpak_state '{"flathub": {"org.prismlauncher.PrismLauncher": "11.2.0"}}'
+    forget_flatpak_calls
+    run_monolith update >"$case_root/update.log"
+    grep -Eq '^  nak +Updated' "$case_root/update.log" || fail 'nak was not updated'
+    grep -Eq '^  Prism Launcher +Updated' "$case_root/update.log" || fail 'Prism Launcher was not updated'
+    assert_flatpak_called "update --user --noninteractive --assumeyes $prism_id"
+    grep -qx 'version=11.2.0' "$state_root/prismlauncher.managed" || fail 'Prism Launcher marker did not update'
+    assert_prism_listed 'installed +11\.2\.0'
+
+    # Removal uninstalls the app without --delete-data, so its data stays.
+    run_monolith remove prismlauncher >"$case_root/remove.log"
+    assert_flatpak_called "uninstall --user --noninteractive --assumeyes $prism_id"
+    grep -Fq 'Instances, worlds, accounts, and settings were kept.' "$case_root/remove.log" ||
+        fail 'removal did not say what it kept'
+    assert_absent "$state_root/prismlauncher.managed"
+    [ "$(prism_installations)" = '{}' ] || fail "Prism Launcher is still installed: $(prism_installations)"
+    assert_prism_listed 'not installed +-'
+    assert_user_data_preserved
+    assert_flatpak_modelled
+    assert_no_temp_leaks
+}
+
+test_prism_adopts_user_copy() {
+    flatpak_state '{"apps": {"org.prismlauncher.PrismLauncher": {"user": "11.0.0"}}}'
+    assert_prism_listed 'external +11\.0\.0'
+    run_monolith install prismlauncher >"$case_root/install.log"
+    grep -Fq '(1/1) Prism Launcher — Adopt and update' "$case_root/install.log" || fail 'adoption was not announced'
+    assert_flatpak_called "update --user --noninteractive --assumeyes $prism_id"
+    if grep -q '^install ' "$case_root/flatpak-calls.log"; then
+        fail 'adoption installed a second copy'
+    fi
+    [ "$(prism_installations)" = '{"user": "11.1.1"}' ] || fail "unexpected installations: $(prism_installations)"
+    grep -qx 'version=11.1.1' "$state_root/prismlauncher.managed" || fail 'adopted Prism Launcher was not recorded'
+    assert_prism_listed 'installed +11\.1\.1'
+    assert_flatpak_modelled
+}
+
+# A system-wide copy updates with the system's Flatpaks and is never duplicated.
+test_prism_leaves_system_copy_alone() {
+    flatpak_state '{"apps": {"org.prismlauncher.PrismLauncher": {"system": "11.1.1"}}}'
+    assert_prism_listed 'external +11\.1\.1'
+    expect_failure install prismlauncher
+    assert_failure_reported "Prism Launcher"
+    grep -Fq 'already installed system-wide' "$case_root/expected-failure.log" ||
+        fail 'the refusal did not explain the system-wide copy'
+    assert_absent "$state_root/prismlauncher.managed"
+
+    # A record of a per-user copy that a system-wide one has since replaced.
+    write_prism_marker 11.0.0
+    assert_prism_listed 'needs repair +recorded 11\.0\.0'
+    expect_failure update prismlauncher
+    assert_failure_reported "Prism Launcher"
+    grep -Fq 'Run monolith remove prismlauncher' "$case_root/expected-failure.log" ||
+        fail 'the refusal did not say how to drop the record'
+    run_monolith remove prismlauncher >"$case_root/remove.log"
+    grep -Fq 'already uninstalled for your account' "$case_root/remove.log" || fail 'removal did not explain itself'
+    assert_absent "$state_root/prismlauncher.managed"
+    [ "$(prism_installations)" = '{"system": "11.1.1"}' ] || fail "the system-wide copy changed: $(prism_installations)"
+    assert_no_flatpak_changes
+    assert_flatpak_modelled
+}
+
+test_prism_repair_and_failures() {
+    # A recorded copy that was uninstalled elsewhere is reinstalled by Repair.
+    write_prism_marker 11.0.0
+    assert_prism_listed 'needs repair +recorded 11\.0\.0'
+    run_monolith install prismlauncher >"$case_root/install.log"
+    grep -Fq '(1/1) Prism Launcher — Repair' "$case_root/install.log" || fail 'repair was not announced'
+    assert_flatpak_called "install --user --noninteractive --assumeyes $prism_ref"
+    grep -qx 'version=11.1.1' "$state_root/prismlauncher.managed" || fail 'repair was not recorded'
+
+    # Failed updates and removals keep the record so they can be retried.
+    cp -- "$state_root/prismlauncher.managed" "$case_root/marker-before"
+    flatpak_state '{"flathub": {"org.prismlauncher.PrismLauncher": "11.2.0"}, "faults": {"app-update": "fail"}}'
+    expect_failure update prismlauncher
+    assert_failure_reported "Prism Launcher"
+    assert_file_equals "$case_root/marker-before" "$state_root/prismlauncher.managed"
+    for fault in fail partial; do
+        flatpak_state "{\"faults\": {\"app-uninstall\": \"$fault\"}}"
+        expect_failure remove prismlauncher
+        assert_failure_reported "Prism Launcher"
+        grep -Fq 'kept its record so the removal can be retried' "$case_root/expected-failure.log" ||
+            fail "a $fault removal did not keep the record"
+        assert_file_equals "$case_root/marker-before" "$state_root/prismlauncher.managed"
+    done
+    [ "$(prism_installations)" = '{"user": "11.1.1"}' ] || fail "unexpected installations: $(prism_installations)"
+
+    # A failed fresh installation records nothing.
+    flatpak_state '{"apps": {}, "faults": {"app-install": "fail"}}'
+    rm -f -- "$state_root/prismlauncher.managed"
+    expect_failure install prismlauncher
+    assert_failure_reported "Prism Launcher"
+    assert_absent "$state_root/prismlauncher.managed"
+    assert_flatpak_modelled
+    assert_no_temp_leaks
+}
+
+# A failing Flatpak never breaks listing and never loses Monolith's record.
+test_prism_with_broken_flatpak() {
+    flatpak_state '{"apps": {"org.prismlauncher.PrismLauncher": {"user": "11.1.1"}}, "faults": {"flatpak": "broken"}}'
+    assert_prism_listed 'not installed +-'
+    write_prism_marker 11.1.1
+    cp -- "$state_root/prismlauncher.managed" "$case_root/marker-before"
+    assert_prism_listed 'needs repair +recorded 11\.1\.1'
+    expect_failure install prismlauncher
+    assert_failure_reported "Prism Launcher"
+    expect_failure remove prismlauncher
+    assert_failure_reported "Prism Launcher"
+    assert_file_equals "$case_root/marker-before" "$state_root/prismlauncher.managed"
+    assert_flatpak_modelled
+}
+
 passed=0
 failed=0
 for test in omp_lifecycle omp_unmanaged_launcher omp_replaced_launcher omp_checksum_failure failed_publication \
@@ -1012,7 +1203,9 @@ for test in omp_lifecycle omp_unmanaged_launcher omp_replaced_launcher omp_check
     native_failures_roll_back native_adoption herdr_legacy_launcher herdr_replaced_launcher \
     legacy_herdr_adoption replaced_launcher_adoption adopted_copy_survives_failed_update \
     adoption_refuses_unusable_copies \
-    overlapping_mutation_is_locked interrupt_rolls_back_and_cancels_batch terminate_cleans_staging; do
+    overlapping_mutation_is_locked interrupt_rolls_back_and_cancels_batch terminate_cleans_staging \
+    prism_lifecycle prism_adopts_user_copy prism_leaves_system_copy_alone prism_repair_and_failures \
+    prism_with_broken_flatpak; do
     # Do not put the subshell in an if condition: that disables Bash errexit
     # throughout the test function and can conceal a failing manager command.
     set +e
