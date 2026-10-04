@@ -43,8 +43,6 @@ over by itself and keeps your settings, Flatpaks, and Secure Boot key.
   `ujust enroll-monolith-secure-boot-key` work as before. Run `ujust` to see
   Monolith's own list of helper commands; Universal Blue's extra recipes
   (for example `ujust distrobox-assemble` and `ujust toggle-nvk`) are gone.
-- **First reboot:** the update is a full image download, so it takes longer
-  than usual.
 
 If something stopped working after this update, report it on GitHub.
 """
