@@ -223,7 +223,7 @@ modules:
         # Help must not need or touch a home directory.
         HOME=/nonexistent /usr/bin/monolith help >/dev/null
         HOME=/nonexistent python3 -B /usr/libexec/monolith/gear-lever-app --help >/dev/null
-        for command in fzf python3 curl flock readelf; do
+        for command in fzf python3 curl flock readelf flatpak; do
           command -v "$command" >/dev/null
         done
         # The login rule must link a drop-in that the image ships.

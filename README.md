@@ -96,8 +96,8 @@ The dashboard groups software into Developer CLIs, AI coding, Gaming, and
 Appearance, and shows each item's status and version. Type to filter, press
 Enter to open an item, then choose an explicit action: Install, Update, Repair,
 Adopt and update (for a supported copy installed outside Monolith), or Remove.
-Removal asks first and keeps settings, logins, sessions, game addons and mods, and
-projects. Esc goes back. **Update installed** updates every Monolith-managed
+Removal asks first and keeps settings, logins, sessions, game addons and mods,
+Minecraft instances, and projects. Esc goes back. **Update installed** updates every Monolith-managed
 item; inside a category it updates only that category. The `ujust monolith`,
 `ujust software`, and `ujust monolith-software` aliases open the same
 dashboard. Without fzf, or with `TERM=dumb`, it uses numbered menus; set
@@ -108,7 +108,7 @@ The underlying command also supports scripting and troubleshooting:
 ```bash
 monolith list
 monolith install codex herdr
-monolith install wowup-cf r2modman
+monolith install wowup-cf r2modman prismlauncher
 monolith update
 monolith remove codex
 ```
@@ -187,6 +187,32 @@ Monolith installs the newest stable r2modman release and skips prereleases. Use
 update itself to newer stable releases, which Monolith recognizes. Close
 r2modman before updating or removing it. Removal keeps your profiles, mods, and
 settings in `~/.config/r2modmanPlus-local`.
+
+### Prism Launcher
+
+**Gaming → Prism Launcher** installs [Prism Launcher](https://prismlauncher.org),
+the Minecraft launcher for separate instances, mod loaders, and modpacks, as the
+official [Flathub Flatpak](https://flathub.org/apps/org.prismlauncher.PrismLauncher).
+Monolith installs it for your account only, so no administrator password or Gear
+Lever is needed. The first installation may also download the KDE runtime that it
+uses. A Prism Launcher Flatpak already installed for your account is adopted
+rather than installed twice.
+
+A system-wide Prism Launcher, for example one installed through Bazaar, already
+updates with the system's Flatpaks, so Monolith leaves it alone and does not add
+a second copy. To have Monolith manage a per-user copy instead, uninstall the
+system-wide one first. Both copies keep their data in the same place, so your
+instances stay.
+
+Prism Launcher stays an ordinary Flatpak. Use **Update** in the dashboard or
+`monolith update prismlauncher`; Bazaar, `flatpak update`, topgrade, and the
+daily automatic Flatpak update keep it current as well. You do not need to close
+Prism Launcher first, because an update takes effect the next time it starts.
+Removal keeps your instances, worlds, accounts, and settings in
+`~/.var/app/org.prismlauncher.PrismLauncher`. Monolith does not move instances
+from a non-Flatpak Prism Launcher; to bring them over, copy the folders in
+`~/.local/share/PrismLauncher/instances` to
+`~/.var/app/org.prismlauncher.PrismLauncher/data/PrismLauncher/instances`.
 
 ### Waywallen wallpapers
 

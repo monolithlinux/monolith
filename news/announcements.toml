@@ -28,6 +28,36 @@
 #   files/kde/usr/bin/monolith-news --preview news/announcements.toml
 
 [[announcements]]
+id = "2026-10-03-prism-launcher"
+date = 2026-10-03
+title = "Prism Launcher joins Monolith Software"
+category = "Gaming"
+install_path = ["monolith", "Gaming", "Prism Launcher"]
+body = """
+Prism Launcher is a Minecraft launcher for separate instances, mod loaders, and
+modpacks. To install it, run `monolith`, open **Gaming**, and select
+**Prism Launcher**.
+
+- **No extra setup:** Monolith installs the official Flathub Flatpak for your
+  account, so no administrator password or Gear Lever is needed.
+- **Already installed?** Monolith reuses a copy installed for your account. A
+  system-wide copy, such as one from Bazaar, is left alone rather than installed
+  twice.
+- **Updates:** It updates like any other Flatpak, including the daily automatic
+  update, Bazaar, topgrade, and `monolith update prismlauncher`. You do not need
+  to close it first.
+- **Your data stays:** Removing Prism Launcher keeps your instances, worlds,
+  accounts, and settings.
+
+Not in your Gaming menu yet? Update Monolith and reboot first.
+"""
+links = [
+  { label = "Prism Launcher", url = "https://prismlauncher.org" },
+  { label = "Prism Launcher on Flathub", url = "https://flathub.org/apps/org.prismlauncher.PrismLauncher" },
+  { label = "Monolith software guide", url = "https://github.com/monolithlinux/monolith#prism-launcher" },
+]
+
+[[announcements]]
 id = "2026-10-03-r2modman"
 date = 2026-10-03
 title = "r2modman joins Monolith Software"

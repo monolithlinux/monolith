@@ -6,13 +6,16 @@ Besides running the suite, this file provides test doubles for other harnesses:
 
   python3 tests/gear-lever-apps.py fake-flatpak ARGS...
       Act as `flatpak` against the JSON state file named by $MONOLITH_TEST_FLATPAK_STATE:
-      `info --user|--system it.mijorus.gearlever`,
+      `info --user|--system APP_ID`,
       `list --app --user|--system --columns=application:f,version:f`,
-      `install --user --noninteractive --assumeyes <official flatpakref>` and
+      `install --user --noninteractive --assumeyes <official flatpakref>`,
+      `update|uninstall --user --noninteractive --assumeyes APP_ID` for apps other than Gear Lever and
       `run --user|--system it.mijorus.gearlever ACTION ...` (Gear Lever 4.6.2's CLI, maintaining real
       AppImage, desktop, icon and gearlever.conf files under $HOME). Other calls exit 97 and are logged.
   python3 tests/gear-lever-apps.py install-fake-flatpak BIN_DIR STATE_FILE [SCOPE=VERSION ...]
       Write a `flatpak` shim into BIN_DIR and a default state (Gear Lever system=4.6.2 unless given).
+  python3 tests/gear-lever-apps.py update-fake-flatpak STATE_FILE JSON
+      Replace the top-level state keys given as a JSON object (see default_state).
   python3 tests/gear-lever-apps.py run-helper [--scope user|system] APP ACTION
       Run the real helper with HTTP answered from the routes file $MONOLITH_TEST_HTTP (see FakeWeb.save)
       and processes read from $MONOLITH_TEST_PROC_ROOT; unknown URLs fail and are written to
@@ -39,7 +42,14 @@ THIS = Path(__file__).resolve()
 ROOT = THIS.parents[1]
 HELPER = ROOT / "files/system/usr/libexec/monolith/gear-lever-app"
 APP_ID = "it.mijorus.gearlever"
-FLATPAKREF = "https://dl.flathub.org/repo/appstream/it.mijorus.gearlever.flatpakref"
+PRISM_ID = "org.prismlauncher.PrismLauncher"
+
+
+def flatpakref(app_id):
+    return f"https://dl.flathub.org/repo/appstream/{app_id}.flatpakref"
+
+
+FLATPAKREF = flatpakref(APP_ID)
 STATE_ENV = "MONOLITH_TEST_FLATPAK_STATE"
 HTTP_ENV = "MONOLITH_TEST_HTTP"
 PROC_ENV = "MONOLITH_TEST_PROC_ROOT"
@@ -187,17 +197,32 @@ def default_state(installed=None):
 
     installed: {"user"|"system": "4.6.2"} Gear Lever installations by scope.
     install_version / install_fails: result of the official flatpakref user installation.
+    apps: {app ID: {"user"|"system": version}} installations of other Flatpak apps.
+    flathub: {app ID: version} what installing an app's official flatpakref for the user, or updating
+             the user's copy, delivers.
     home: GLib home directory Gear Lever sees (default: the caller's $HOME).
     running: {AppImage path or "*": true|false|null} reported in the JSON `running` field.
     faults: {"list": "fail"|"bad-json"|"schema"|"hang", "integrate": "fail"|"partial"|"crash"|"corrupt"|"block",
-             "remove": "fail"|"partial", "set-update-source": "fail"}; a {"mode": ..., "once": true}
-             value is consumed by its first use. "crash" stops after copying the AppImage and icon.
+             "remove": "fail"|"partial", "set-update-source": "fail", "app-install": "fail",
+             "app-update": "fail", "app-uninstall": "fail"|"partial", "flatpak": "broken"}; a
+             {"mode": ..., "once": true} value is consumed by its first use. "crash" stops after copying the
+             AppImage and icon. A broken flatpak fails every call with exit status 1.
     The AppImage folder is the appimages-default-folder GSettings value in Gear Lever's keyfile
     (see set_gear_lever_folder), as in the real Flatpak.
     """
     return {"installed": dict({"system": "4.6.2"} if installed is None else installed),
-            "install_version": "4.6.2", "install_fails": False, "home": None,
-            "running": {}, "faults": {}, "hang_seconds": 30}
+            "install_version": "4.6.2", "install_fails": False, "apps": {}, "flathub": {PRISM_ID: "11.1.1"},
+            "home": None, "running": {}, "faults": {}, "hang_seconds": 30}
+
+
+def take_fault(state, name):
+    value = state.get("faults", {}).get(name)
+    if isinstance(value, dict):
+        if value.get("once"):
+            del state["faults"][name]
+            state["_dirty"] = True
+        return value.get("mode")
+    return value
 
 
 def settings_keyfile(home):
@@ -265,13 +290,7 @@ class GearLeverModel:
         self.parser.read(self.config_path)
 
     def fault(self, name):
-        value = self.state.get("faults", {}).get(name)
-        if isinstance(value, dict):
-            if value.get("once"):
-                del self.state["faults"][name]
-                self.state["_dirty"] = True
-            return value.get("mode")
-        return value
+        return take_fault(self.state, name)
 
     # ini_config.Config
     def write_config(self):
@@ -548,8 +567,50 @@ def write_state(path, state):
     os.replace(temporary, path)
 
 
+def installed_apps(state, scope):
+    """{app ID: version} installed in a scope, Gear Lever included."""
+    apps = {app_id: scopes[scope] for app_id, scopes in state.get("apps", {}).items() if scope in scopes}
+    if state["installed"].get(scope):
+        apps[APP_ID] = state["installed"][scope]
+    return apps
+
+
+def flatpak_app_command(state, arguments):
+    """Install from an official flatpakref, update or uninstall a user's app other than Gear Lever."""
+    action, target = arguments[0], arguments[4]
+    if action == "install":
+        app_id = next((app_id for app_id in state.get("flathub", {}) if flatpakref(app_id) == target), None)
+        if app_id is None or app_id == APP_ID:
+            return None
+        if take_fault(state, "app-install") == "fail":
+            return 1, "", f"error: Failed to install {app_id}: Could not connect\n"
+        state.setdefault("apps", {}).setdefault(app_id, {})["user"] = state["flathub"][app_id]
+        return 0, f"Installing app/{app_id}/x86_64/stable\nInstallation complete.\n", ""
+    app_id = target
+    if app_id == APP_ID:
+        return None
+    if "user" not in state.get("apps", {}).get(app_id, {}):
+        return 1, "", f"error: {app_id}/*unspecified*/*unspecified* not installed\n"
+    if action == "update":
+        if take_fault(state, "app-update") == "fail":
+            return 1, "", f"error: Failed to update {app_id}: Could not connect\n"
+        latest = state.get("flathub", {}).get(app_id)
+        if latest is None or latest == state["apps"][app_id]["user"]:
+            return 0, "Nothing to do.\n", ""
+        state["apps"][app_id]["user"] = latest
+        return 0, f"Updating app/{app_id}/x86_64/stable\nUpdates complete.\n", ""
+    fault = take_fault(state, "app-uninstall")
+    if fault == "fail":
+        return 1, "", f"error: Failed to uninstall {app_id}\n"
+    if fault != "partial":  # "partial" reports success but leaves the app installed
+        del state["apps"][app_id]["user"]
+    return 0, f"Uninstalling app/{app_id}/x86_64/stable\nUninstall complete.\n", ""
+
+
 def flatpak_command(state, arguments, sync_dir):
     scopes = ("--user", "--system")
+    if take_fault(state, "flatpak") == "broken":
+        return 1, "", "error: fake flatpak is broken\n"
     if arguments[:1] == ["run"]:
         if len(arguments) < 4 or arguments[1] not in scopes or arguments[2] != APP_ID:
             return None
@@ -558,23 +619,28 @@ def flatpak_command(state, arguments, sync_dir):
             return 1, "", f"error: app/{APP_ID}/x86_64/master not installed\n"
         model = GearLeverModel(state.get("home") or os.environ["HOME"], state, version, sync_dir)
         return model.cli(arguments[3:])
-    if len(arguments) == 3 and arguments[0] == "info" and arguments[1] in scopes and arguments[2] == APP_ID:
-        version = state["installed"].get(arguments[1][2:])
+    if len(arguments) == 3 and arguments[0] == "info" and arguments[1] in scopes:
+        app_id = arguments[2]
+        version = installed_apps(state, arguments[1][2:]).get(app_id)
         if version is None:
-            return 1, "", f"error: {APP_ID}/*unspecified*/*unspecified* not installed\n"
-        return 0, f"\nGear Lever - Manage AppImages\n\n          ID: {APP_ID}\n     Version: {version}\n", ""
+            return 1, "", f"error: {app_id}/*unspecified*/*unspecified* not installed\n"
+        title = "Gear Lever - Manage AppImages" if app_id == APP_ID else app_id
+        return 0, f"\n{title}\n\n          ID: {app_id}\n     Version: {version}\n", ""
     if (len(arguments) == 4 and arguments[0] == "list" and "--app" in arguments
             and "--columns=application:f,version:f" in arguments
             and len(set(arguments) & set(scopes)) == 1):
         scope = next(item for item in arguments if item in scopes)[2:]
-        version = state["installed"].get(scope)
-        return 0, f"{APP_ID}\t{version}\n" if version else "", ""
+        apps = installed_apps(state, scope)
+        return 0, "".join(f"{app_id}\t{apps[app_id]}\n" for app_id in sorted(apps)), ""
     if arguments == ["install", "--user", "--noninteractive", "--assumeyes", FLATPAKREF]:
         if state.get("install_fails"):
             return 1, "", "error: Failed to install it.mijorus.gearlever: Could not connect\n"
         state["installed"]["user"] = state.get("install_version", "4.6.2")
         state["_dirty"] = True
         return 0, "Installing app/it.mijorus.gearlever/x86_64/stable\nInstallation complete.\n", ""
+    if (len(arguments) == 5 and arguments[0] in ("install", "update", "uninstall")
+            and arguments[1:4] == ["--user", "--noninteractive", "--assumeyes"]):
+        return flatpak_app_command(state, arguments)
     return None
 
 
@@ -2475,6 +2541,8 @@ class ManagerPrerequisiteTests(unittest.TestCase):
         self.assertEqual(result.code, 0, result)
         statuses = self.list_statuses()
         self.assertEqual((statuses["WowUp-CF"], statuses["r2modman"]), ("installed", "installed"))
+        # Listing also asks Flatpak about Prism Launcher, a Flatpak app beside the Gear Lever apps.
+        self.assertEqual(statuses["Prism Launcher"], "not installed")
         r2modman_receipt = self.receipt.with_name("r2modman.managed")
         receipt = dict(line.split("=", 1) for line in r2modman_receipt.read_text().splitlines())
         self.assertEqual(Path(receipt["appimage"]).read_bytes(), r2_appimage("3.2.20"))
@@ -2501,6 +2569,13 @@ def main():
             sys.exit("usage: gear-lever-apps.py install-fake-flatpak BIN_DIR STATE_FILE [SCOPE=VERSION ...]")
         installed = dict(item.split("=", 1) for item in sys.argv[4:]) or None
         install_fake_flatpak(sys.argv[2], sys.argv[3], installed)
+        return
+    if sys.argv[1:2] == ["update-fake-flatpak"]:
+        if len(sys.argv) != 4:
+            sys.exit("usage: gear-lever-apps.py update-fake-flatpak STATE_FILE JSON")
+        state = read_state(sys.argv[2])
+        state.update(json.loads(sys.argv[3]))
+        write_state(sys.argv[2], state)
         return
     unittest.main()
 
