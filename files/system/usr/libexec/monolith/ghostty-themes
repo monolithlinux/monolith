@@ -21,6 +21,8 @@ URL = f"https://deps.files.ghostty.org/ghostty-themes-release-{RELEASE}.tgz"
 SHA256 = "14200bb86a0c814ab69609d500b280b396b6d2eb835edf0676de4a789c0aa8fd"
 EXPECTED_COUNT = 463
 MAX_ARCHIVE_BYTES = 16 * 1024 * 1024
+# Exit status of `update` when the pinned bundle was already installed.
+UP_TO_DATE = 3
 
 
 def paths():
@@ -168,6 +170,24 @@ def install():
     print(f"Ghostty themes: {len(managed)} managed; {preserved} existing or edited files preserved.")
 
 
+def read_marker(marker):
+    try:
+        lines = marker.read_text().splitlines()
+    except OSError:
+        return None
+    return dict(line.partition("=")[::2] for line in lines)
+
+
+def update():
+    """Install the pinned bundle unless it is complete and already recorded; True when it ran."""
+    marker = paths()[2]
+    if status() == "installed" and read_marker(marker) == {"version": RELEASE, "source": URL, "sha256": SHA256}:
+        print(f"Ghostty Themes {RELEASE} is already up to date.")
+        return False
+    install()
+    return True
+
+
 def remove():
     themes, root, marker = paths()
     with locked(root):
@@ -201,17 +221,20 @@ def status():
 
 
 def main():
-    if len(sys.argv) != 2 or sys.argv[1] not in ("install", "remove", "status"):
-        raise ValueError("usage: ghostty-themes install|remove|status")
+    if len(sys.argv) != 2 or sys.argv[1] not in ("install", "update", "remove", "status"):
+        raise ValueError("usage: ghostty-themes install|update|remove|status")
     if sys.argv[1] == "status":
         print(status())
+    elif sys.argv[1] == "update":
+        return 0 if update() else UP_TO_DATE
     else:
         globals()[sys.argv[1]]()
+    return 0
 
 
 if __name__ == "__main__":
     try:
-        main()
+        sys.exit(main())
     except (OSError, ValueError, tarfile.TarError) as error:
         print(f"Error: {error}", file=sys.stderr)
         sys.exit(1)

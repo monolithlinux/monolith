@@ -33,8 +33,9 @@ of `monolith`. This downloads Ghostty's official 463-theme bundle for your user,
 including names such as `Gruvbox Dark`. The original collection is downloaded
 on request rather than included in the image. Existing custom theme files and
 your selected theme are preserved. Use `monolith update ghostty-themes` to repair
-or refresh the managed collection, or `monolith remove ghostty-themes` to remove
-its unchanged files while keeping your edits.
+the managed collection, `monolith install ghostty-themes` to download it again,
+or `monolith remove ghostty-themes` to remove its unchanged files while keeping
+your edits.
 
 On KDE, Ghostty remembers its last normal window size across logins and reboots.
 A KWin script saves the dimensions, and a window rule restores them on launch.
@@ -118,12 +119,17 @@ reported and the rest of the batch continues; the command then exits with an
 error. Ctrl-C cancels the current item and the rest of the batch. Only one
 install, update, or removal runs at a time.
 
+`monolith update`, and **Update** in the dashboard, first check each item for a
+newer release. An item that already has it, and needs no repair, is reported as
+`Up to date` and left alone, so nothing is downloaded. `monolith install` always
+installs the newest release again.
+
 Running `topgrade` also runs `monolith update`, as its **Monolith software**
-step after the other updates. Items that cannot update, such as WowUp-CF while
-it is open, are reported as a failure in topgrade's summary; the rest still
-update. At each login, Monolith links `~/.config/topgrade.d/monolith.toml` to
-the image's copy unless a file already exists there. To opt out, replace that
-link with an empty file, or run
+step after the other updates. Items that need an update but cannot be updated,
+such as WowUp-CF while it is open, are reported as a failure in topgrade's
+summary; the rest still update. At each login, Monolith links
+`~/.config/topgrade.d/monolith.toml` to the image's copy unless a file already
+exists there. To opt out, replace that link with an empty file, or run
 `ln -s /dev/null ~/.config/user-tmpfiles.d/monolith-topgrade.conf` and then
 delete the link.
 
@@ -169,7 +175,8 @@ series. Monolith sets WowUp-CF's own Application Release Channel to Stable and
 leaves addon release settings unchanged. Use **Update** in the dashboard or
 `monolith update wowup-cf` for application updates; Monolith clears any Gear
 Lever update source for WowUp-CF so that only one updater applies this policy.
-Close WowUp-CF before updating or removing it. Removal keeps your WowUp-CF
+Close WowUp-CF before updating or removing it; an update that finds no newer
+release leaves it alone, so it can stay open. Removal keeps your WowUp-CF
 settings, game installations, and addons.
 
 ### r2modman
@@ -185,7 +192,8 @@ published checksum, start r2modman once so it updates itself, then adopt it.
 Monolith installs the newest stable r2modman release and skips prereleases. Use
 **Update** in the dashboard or `monolith update r2modman`; r2modman may also
 update itself to newer stable releases, which Monolith recognizes. Close
-r2modman before updating or removing it. Removal keeps your profiles, mods, and
+r2modman before updating or removing it; an update that finds no newer release
+leaves it alone, so it can stay open. Removal keeps your profiles, mods, and
 settings in `~/.config/r2modmanPlus-local`.
 
 ### Prism Launcher
