@@ -4,7 +4,7 @@
 
 [![Build](https://github.com/monolithlinux/monolith/actions/workflows/build.yml/badge.svg)](https://github.com/monolithlinux/monolith/actions/workflows/build.yml)
 
-Monolith is a Fedora Atomic desktop image built with BlueBuild on Universal Blue. It publishes KDE Plasma editions with the CachyOS kernel and a set of desktop and gaming tools.
+Monolith is a Fedora Atomic desktop image built with BlueBuild on Fedora Kinoite. It publishes KDE Plasma editions with the CachyOS kernel and a set of desktop and gaming tools.
 
 ## Pick your edition
 
@@ -83,6 +83,8 @@ ujust monolith-adopt
 ```
 
 Rebased accounts use this to copy missing `/etc/skel` defaults and rebuild the font cache. A different existing topgrade configuration is backed up first.
+
+Run `ujust` to list Monolith's helper commands (updates, firmware, logs, Secure Boot key enrollment).
 
 ## Optional software
 

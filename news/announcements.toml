@@ -28,6 +28,31 @@
 #   files/kde/usr/bin/monolith-news --preview news/announcements.toml
 
 [[announcements]]
+id = "2026-10-04-fedora-kinoite-base"
+date = 2026-10-04
+title = "Monolith now builds directly on Fedora Kinoite"
+category = "Monolith"
+body = """
+Monolith images are now built on Fedora's own Kinoite image instead of
+Universal Blue's. Nothing is required from you: the next update switches
+over by itself and keeps your settings, Flatpaks, and Secure Boot key.
+
+- **Same tools:** the CachyOS kernel, Terra Mesa, Steam, codecs, controller
+  rules, and the daily automatic updates are all still included.
+- **Same commands:** `ujust monolith-adopt` and
+  `ujust enroll-monolith-secure-boot-key` work as before. Run `ujust` to see
+  Monolith's own list of helper commands; Universal Blue's extra recipes
+  (for example `ujust distrobox-assemble` and `ujust toggle-nvk`) are gone.
+- **First reboot:** the update is a full image download, so it takes longer
+  than usual.
+
+If something stopped working after this update, report it on GitHub.
+"""
+links = [
+  { label = "Report a problem", url = "https://github.com/monolithlinux/monolith/issues" },
+]
+
+[[announcements]]
 id = "2026-10-03-prism-launcher"
 date = 2026-10-03
 title = "Prism Launcher joins Monolith Software"

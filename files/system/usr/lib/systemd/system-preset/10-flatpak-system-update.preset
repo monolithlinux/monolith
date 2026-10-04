@@ -1,0 +1,2 @@
+# From ublue-os/packages (Apache-2.0); kept identical so existing systems behave the same.
+enable flatpak-system-update.timer
