@@ -28,11 +28,14 @@ toggle-updates ACTION="status":
     case "{{ ACTION }}" in
       enable)
         sudo systemctl enable --now rpm-ostreed-automatic.timer flatpak-system-update.timer
+        systemctl --user unmask flatpak-user-update.timer
         systemctl --user enable --now flatpak-user-update.timer
         echo "Automatic updates enabled." ;;
       disable)
         sudo systemctl disable --now rpm-ostreed-automatic.timer flatpak-system-update.timer
-        systemctl --user disable --now flatpak-user-update.timer
+        # The image enables this timer globally, which a per-user disable cannot undo.
+        systemctl --user stop flatpak-user-update.timer
+        systemctl --user mask flatpak-user-update.timer
         echo "Automatic updates disabled." ;;
       status)
         if systemctl -q is-enabled rpm-ostreed-automatic.timer; then state=enabled; else state=disabled; fi
