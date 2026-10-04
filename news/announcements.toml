@@ -34,21 +34,22 @@ title = "r2modman joins Monolith Software"
 category = "Gaming"
 install_path = ["monolith", "Gaming", "r2modman"]
 body = """
-After booting an updated Monolith image, run **monolith**, open **Gaming**, and
-select **r2modman** to install the mod manager for Thunderstore games such as
-**Lethal Company**, **Risk of Rain 2**, and **Valheim**.
+r2modman is a mod manager for Thunderstore games such as **Lethal Company**,
+**Risk of Rain 2**, and **Valheim**. To install it, run `monolith`, open
+**Gaming**, and select **r2modman**.
 
-As with WowUp-CF, Monolith downloads the official AppImage, checks it against the
-checksum GitHub publishes, and adds it to **Gear Lever**. A supported existing
-r2modman integration is reused instead of creating another launcher. If Gear
-Lever is missing, Monolith asks before installing its Flathub Flatpak for your
-account.
+- **Verified download:** Monolith downloads the official AppImage, checks it
+  against the checksum GitHub publishes, and adds it to Gear Lever. If Gear
+  Lever is missing, Monolith offers to install it from Flathub for your account.
+- **Already installed?** Monolith reuses a supported copy in Gear Lever rather
+  than adding a second launcher.
+- **Updates:** Monolith installs the newest stable release, and r2modman can
+  also update itself to newer stable releases. Close r2modman before running
+  `monolith update r2modman` or topgrade.
+- **Your data stays:** Removing r2modman keeps your profiles, mods, and
+  settings.
 
-Monolith installs the newest **stable** r2modman release, and r2modman may also
-update itself to newer stable releases. Close r2modman before using **monolith
-update r2modman** or running topgrade. Removal keeps your profiles, mods, and
-settings. If r2modman is not in your Gaming menu yet, update Monolith and reboot
-first.
+Not in your Gaming menu yet? Update Monolith and reboot first.
 """
 links = [
   { label = "r2modman releases", url = "https://github.com/ebkr/r2modmanPlus/releases" },
@@ -62,23 +63,25 @@ title = "WowUp-CF joins Monolith Software"
 category = "Gaming"
 install_path = ["monolith", "Gaming", "WowUp-CF"]
 body = """
-After booting an updated Monolith image, run **monolith**, open **Gaming**, and
-select **WowUp-CF** to install the CurseForge edition with **World of Warcraft:
-Forever** support. The refreshed software menu has explicit install, update, and
-remove actions.
+WowUp-CF is the CurseForge edition of the WowUp addon manager, with
+**World of Warcraft: Forever** support. To install it, run `monolith`, open
+**Gaming**, and select **WowUp-CF**.
 
-Monolith adds WowUp-CF to **Gear Lever** and reuses a supported existing
-integration instead of creating another launcher. If Gear Lever is missing,
-Monolith asks before installing its Flathub Flatpak for your account.
+- **Gear Lever:** Monolith adds WowUp-CF to Gear Lever. If Gear Lever is
+  missing, Monolith offers to install it from Flathub for your account.
+- **Already installed?** Monolith reuses a supported copy in Gear Lever rather
+  than adding a second launcher.
+- **Beta for now:** Monolith follows the 2.24.0 beta series until a compatible
+  2.24.0 or newer stable release is out, then switches to stable and skips
+  later betas. WowUp-CF's own application release channel is set to Stable;
+  addon release settings are unchanged.
+- **Updates:** Close WowUp-CF before running `monolith update wowup-cf`.
+- **Your data stays:** Removing WowUp-CF keeps your settings, game
+  installations, and addons.
+- **Also new:** The software menu now has explicit install, update, and remove
+  actions.
 
-For now, Monolith follows only the **2.24.0 beta** series. Once a compatible
-**2.24.0 or newer stable** is available, it switches to stable and does not enroll
-you in later beta series. WowUp's application release channel is set to Stable;
-addon release settings are unchanged.
-
-Close WowUp-CF before using **monolith update wowup-cf**. Removal keeps your
-settings, game installations, and addons. If Gaming is not in your menu yet,
-update Monolith and reboot first.
+No Gaming category in your menu yet? Update Monolith and reboot first.
 """
 links = [
   { label = "WowUp-CF releases", url = "https://github.com/WowUp/WowUp.CF/releases" },
@@ -91,13 +94,14 @@ date = 2026-09-30
 title = "Welcome to Monolith News"
 category = "Monolith"
 body = """
-Monolith News shares project announcements, such as required actions and notable
-changes. It checks the Monolith GitHub repository when you log in and opens only
-when there is something new.
+Monolith News shares project announcements, such as required actions and
+notable changes.
 
-After you close this window, it stays closed until the next announcement. Open
-**Monolith News** from the application menu to read past announcements, or turn
-off the login check at the bottom of this window.
+- It checks the Monolith GitHub repository when you log in and opens only when
+  there is something new.
+- After you close this window, it stays closed until the next announcement.
+- To read past announcements, open **Monolith News** from the application menu.
+- To stop the login check, turn it off at the bottom of this window.
 """
 links = [
   { label = "Read the README", url = "https://github.com/monolithlinux/monolith#readme" },
