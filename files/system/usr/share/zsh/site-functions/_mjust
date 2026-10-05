@@ -1,6 +1,6 @@
-#compdef ujust
+#compdef mjust ujust
 
-_ujust() {
+_mjust() {
   # Hardcode justfile arguments into the completion context
   words=(just --justfile "/usr/share/monolith/justfile" "${words[@]:1}")
   (( CURRENT += 2 ))
@@ -9,4 +9,4 @@ _ujust() {
   _just
 }
 
-_ujust "$@"
+_mjust "$@"

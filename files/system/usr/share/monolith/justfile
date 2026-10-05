@@ -1,7 +1,7 @@
-# Monolith helper commands. Run `ujust` to list them.
+# Monolith helper commands. Run `mjust` to list them.
 
 _default:
-    @/usr/bin/ujust --list --list-heading $'Monolith commands:\n' --list-prefix $' - '
+    @/usr/bin/mjust --list --list-heading $'Monolith commands:\n' --list-prefix $' - '
 
 import "/usr/share/monolith/just/10-system.just"
 import "/usr/share/monolith/just/60-monolith.just"

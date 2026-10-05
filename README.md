@@ -80,12 +80,12 @@ To rebase an existing Fedora Atomic installation:
 After the final reboot, run the adoption helper once per user account:
 
 ```
-ujust monolith-adopt
+mjust monolith-adopt
 ```
 
 Rebased accounts use this to copy missing `/etc/skel` defaults and rebuild the font cache. A different existing topgrade configuration is backed up first.
 
-Run `ujust` to list Monolith's helper commands (updates, firmware, logs, Secure Boot key enrollment, TPM disk unlock).
+Run `mjust` to list Monolith's helper commands (updates, firmware, logs, Secure Boot key enrollment, TPM disk unlock). `ujust`, its former name, still works.
 
 ## Optional software
 
@@ -101,8 +101,8 @@ Enter to open an item, then choose an explicit action: Install, Update, Repair,
 Adopt and update (for a supported copy installed outside Monolith), or Remove.
 Removal asks first and keeps settings, logins, sessions, game addons and mods,
 Minecraft instances, and projects. Esc goes back. **Update installed** updates every Monolith-managed
-item; inside a category it updates only that category. The `ujust monolith`,
-`ujust software`, and `ujust monolith-software` aliases open the same
+item; inside a category it updates only that category. The `mjust monolith`,
+`mjust software`, and `mjust monolith-software` aliases open the same
 dashboard. Without fzf, or with `TERM=dumb`, it uses numbered menus; set
 `NO_COLOR` to turn off colour.
 
@@ -268,7 +268,7 @@ Monolith signs the CachyOS kernel and NVIDIA modules with its own Machine Owner 
 After installing or rebasing, run:
 
 ```bash
-ujust enroll-monolith-secure-boot-key
+mjust enroll-monolith-secure-boot-key
 ```
 
 Reboot, then choose **Enroll MOK → Continue** in MokManager and enter `monolith`.
