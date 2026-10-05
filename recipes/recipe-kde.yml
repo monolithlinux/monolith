@@ -1,8 +1,8 @@
 ---
 # yaml-language-server: $schema=https://schema.blue-build.org/recipe-v1.json
 name: kde
-description: Monolith KDE image based on Universal Blue Kinoite Main.
-base-image: ghcr.io/ublue-os/kinoite-main
+description: Monolith KDE image based on Fedora Kinoite.
+base-image: quay.io/fedora/fedora-kinoite
 image-version: 44
 
 modules:
@@ -24,6 +24,17 @@ modules:
       DOCUMENTATION_URL: https://github.com/monolithlinux/monolith
       SUPPORT_URL: https://github.com/monolithlinux/monolith/issues
       BUG_REPORT_URL: https://github.com/monolithlinux/monolith/issues
+
+  - type: script
+    snippets:
+      - |
+        # Changing the login shell breaks an account when a later image lacks
+        # that shell, so the old base removed these too; Ghostty starts fish by
+        # itself. Last, so no later package transaction can restore them.
+        set -euxo pipefail
+        rm -f /usr/bin/chsh /usr/bin/lchsh
+        test ! -e /usr/bin/chsh
+        test ! -e /usr/bin/lchsh
 
   - type: initramfs
 

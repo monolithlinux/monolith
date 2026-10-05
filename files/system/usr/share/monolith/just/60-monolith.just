@@ -1,6 +1,4 @@
-# Monolith user helpers (ujust).
-# The enrollment recipe has a distinct name to avoid the uBlue recipe imported
-# earlier from 00-default.just.
+# Monolith user helpers.
 
 # Per-user optional software manager.
 alias software := monolith
@@ -37,6 +35,8 @@ monolith-adopt:
     fc-cache -rf >/dev/null 2>&1
     echo "Rebuilt the user font cache."
     echo "Done. Log out and back in so running apps pick everything up."
+
+alias enroll-secure-boot-key := enroll-monolith-secure-boot-key
 
 # Enroll the MOK after rebasing instead of installing from an ISO.
 enroll-monolith-secure-boot-key:

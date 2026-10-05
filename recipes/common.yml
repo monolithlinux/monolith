@@ -7,6 +7,75 @@ modules:
       - source: system
         destination: /
 
+  # Codec and VA-API overrides that the ublue base used to provide.
+  - type: dnf
+    repos:
+      files:
+        - https://negativo17.org/repos/fedora-multimedia.repo
+      keys:
+        - https://negativo17.org/repos/RPM-GPG-KEY-slaanesh
+    remove:
+      auto-remove: false
+      packages:
+        # Flathub comes from the default-flatpaks module; drop Fedora's filtered
+        # third-party plumbing (also removes plasma-welcome-fedora).
+        - fedora-third-party
+        - fedora-flathub-remote
+        - fedora-workstation-repositories
+    replace:
+      - from-repo: fedora-multimedia
+        skip-unavailable: true
+        packages:
+          - libva
+
+  - type: dnf
+    install:
+      packages:
+        - repo: fedora-multimedia
+          skip-unavailable: true
+          packages:
+            - intel-vaapi-driver
+    replace:
+      - from-repo: fedora-multimedia
+        skip-unavailable: true
+        packages:
+          - libva-intel-media-driver
+          - intel-gmmlib
+          - intel-mediasdk
+          - intel-vpl-gpu-rt
+
+  - type: dnf
+    install:
+      packages:
+        - repo: fedora-multimedia
+          packages:
+            - libva-utils
+            - pipewire-libs-extra
+    replace:
+      - from-repo: fedora-multimedia
+        packages:
+          - old: ffmpeg-free
+            new: ffmpeg
+          - old: fdk-aac-free
+            new: libfdk-aac
+          - old: libavcodec-free
+            new: libavcodec
+
+  - type: dnf
+    install:
+      packages:
+        - repo: fedora-multimedia
+          packages:
+            - ffmpeg-libs
+
+  - type: script
+    snippets:
+      - |
+        # Keep negativo17 multimedia ahead of Fedora for user layering, as the old
+        # base did, and never let it offer Mesa (Mesa comes from Terra below).
+        set -euxo pipefail
+        dnf5 -y config-manager setopt fedora-multimedia.priority=90 "fedora-multimedia.exclude=mesa-*"
+
   - type: dnf
     repos:
       copr:
@@ -70,11 +139,41 @@ modules:
         - edk2-ovmf
         - swtpm
         - swtpm-tools
+        # Packages the ublue base used to provide.
+        - just                      # ujust front-end
+        - fuse                      # fusermount for libfuse2 AppImages
+        - flatpak-spawn
+        - alsa-firmware
+        - libratbag-ratbagd
+        - openrgb-udev-rules
+        - solaar-udev
+        - libimobiledevice-utils
+        - pam-u2f
+        - pam_yubico
+        - pamu2fcfg
+        - yubikey-manager
+        - nvtop
+        - lshw
+        - powerstat
+        - squashfs-tools
+        - symlinks
+        - tmux
+        - vim-enhanced
+        - tcpdump
+        - traceroute
+        - apr
+        - apr-util
+        - grub2-tools-extra
+        - libcamera-gstreamer
+        - libcamera-tools
+        - google-noto-sans-balinese-fonts
+        - google-noto-sans-cjk-fonts       # static CJK fonts; /usr/share/fonts/noto-cjk target
+        - google-noto-sans-javanese-fonts
+        - google-noto-sans-sundanese-fonts
     remove:
       packages:
         - firefox
         - firefox-langpacks
-        - htop
         # Distrobox replaces toolbox.
         - toolbox
 
@@ -157,6 +256,15 @@ modules:
         - virtstoraged.socket
         - virtlogd.socket
         - virtlockd.socket
+        # Daily 04:00 staged OS and Flatpak updates, as on the old base.
+        - rpm-ostreed-automatic.timer
+        - flatpak-system-update.timer
+      masked:
+        # default-flatpaks deletes the Fedora remote again on every boot.
+        - flatpak-add-fedora-repos.service
+    user:
+      enabled:
+        - flatpak-user-update.timer
 
   - type: fonts
     fonts:
@@ -232,6 +340,38 @@ modules:
           systemd-tmpfiles --user --create /usr/share/user-tmpfiles.d/monolith-topgrade.conf
         test -f "$(readlink "$home/.config/topgrade.d/monolith.toml")"
         rm -rf "$home"
+        # Replacements for the old base: ujust, FUSE 2, rescue boot, codecs, updates.
+        test -x /usr/bin/ujust
+        HOME=/nonexistent /usr/bin/ujust --list >/dev/null
+        recipes="$(HOME=/nonexistent /usr/bin/ujust --summary | tr ' ' '\n')"
+        for recipe in monolith monolith-adopt enroll-monolith-secure-boot-key update changelogs \
+            toggle-updates check-idle-power-draw setup-luks-tpm-unlock remove-luks-tpm-unlock; do
+          grep -qx "$recipe" <<<"$recipes"
+        done
+        test -x /usr/bin/fusermount
+        test -x /usr/lib/systemd/system-generators/coreos-sulogin-force-generator
+        test -x /usr/libexec/luks-enable-tpm2-autounlock
+        test -x /usr/libexec/luks-disable-tpm2-autounlock
+        decoders="$(ffmpeg -hide_banner -decoders)"
+        grep -qE '^ V.* h264 ' <<<"$decoders"
+        grep -qE '^ V.* hevc ' <<<"$decoders"
+        vendors="$(rpm -q --qf '%{VENDOR}\n' ffmpeg-libs libavcodec libva pipewire-libs-extra)"
+        if grep -vx 'negativo17.org' <<<"$vendors"; then exit 1; fi
+        grep -qx 'AutomaticUpdatePolicy=stage' /etc/rpm-ostreed.conf
+        test -f /etc/flatpak/remotes.d/flathub.flatpakrepo
+      - |
+        # Flatpak apps miss host CJK glyphs with fontconfig 2.17 (Fedora 44)
+        # unless this path exists; fontconfig 2.18 (Fedora 45) fixes it.
+        set -euxo pipefail
+        if [ "$(rpm -E %fedora)" -le 44 ] && [ ! -e /usr/share/fonts/noto-cjk ]; then
+          ln -s /usr/share/fonts/google-noto-sans-cjk-fonts /usr/share/fonts/noto-cjk
+        fi
+      - |
+        # Bash completion for ujust: just's dynamic completion, re-pointed at
+        # ujust so it lists Monolith's recipes.
+        set -euxo pipefail
+        JUST_COMPLETE=bash just | sed -E 's/just/ujust/g' > /usr/share/bash-completion/completions/ujust
+        grep -q 'complete .*-F _clap_complete_ujust ujust' /usr/share/bash-completion/completions/ujust
       - |
         # Install Pure system-wide without a runtime plugin manager.
         set -euxo pipefail

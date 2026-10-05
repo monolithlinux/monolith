@@ -2,7 +2,7 @@ name: bluebuild
 on:
   schedule:
     - cron:
-        "00 06 * * *" # daily, after upstream images
+        "00 06 * * *" # daily, after Fedora publishes its Kinoite image
   push:
     branches: [main]
     paths-ignore:

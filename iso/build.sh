@@ -98,7 +98,7 @@ fi
 # Pre-stage the image's configured system Flatpaks.
 /usr/libexec/bluebuild/default-flatpaks/system-flatpak-setup
 
-# Stage Universal Blue's EFI binaries where titanoboa expects them.
+# Stage Fedora's bootupd EFI payload where titanoboa expects them.
 mkdir -p /boot/efi
 cp -av /usr/lib/efi/*/*/EFI /boot/efi/
 cp -v /boot/efi/EFI/fedora/grubx64.efi /boot/efi/EFI/BOOT/fbx64.efi

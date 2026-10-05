@@ -1,0 +1,60 @@
+Udev rules in /usr/lib/udev/rules.d/ copied unchanged from these upstream
+sources. Universal Blue shipped the same files in ublue-os-udev-rules and
+oversteer-udev; Monolith now ships them itself.
+
+game-devices-udev 0.23 (MIT, game-devices-udev-LICENSE)
+  https://codeberg.org/fabiscafe/game-devices-udev/src/tag/0.23
+  71-8bitdo-controllers.rules
+  71-alpha_imaging_technology_co-vr.rules
+  71-astro_gaming-controllers.rules
+  71-betop-controllers.rules
+  71-google-controllers.rules
+  71-hori-controllers.rules
+  71-htc-vr.rules
+  71-logitech-controllers.rules
+  71-mad_catz-controllers.rules
+  71-microsoft-controllers.rules
+  71-nacon-controllers.rules
+  71-nintendo-controllers.rules
+  71-nvidia-controllers.rules
+  71-pdp-controllers.rules
+  71-personal_communication_systems_inc-controllers.rules
+  71-pid_codes-controllers.rules
+  71-powera-controllers.rules
+  71-razer-controllers.rules
+  71-sony-controllers.rules
+  71-sony-vr.rules
+  71-uinput-dev-early-creation.rules
+  71-valve-controllers.rules
+  71-valve-vr.rules
+  71-zeroplus_technology_corporation-controllers.rules
+
+ublue-os/packages 56553f100ec67f10e7fbb0aaae0d95304b98d22c (Apache-2.0, ublue-os-packages-LICENSE)
+  https://github.com/ublue-os/packages/tree/56553f100ec67f10e7fbb0aaae0d95304b98d22c/packages/ublue-os-udev-rules/src/udev-rules.d
+  10-switch.rules
+  50-framework16.rules
+  50-steam-horipad-controller.rules
+  50-usb-realtek-net.rules
+  50-zsa.rules
+  60-arduino-mbed.rules
+  70-titan-key.rules
+  70-u2f.rules
+  70-wooting.rules
+  88-neutron_hifi_dac.rules
+  90-apple-superdrive.rules
+  92-viia.rules
+  99-thinkpad-thresholds-udev.rules
+
+LizardByte/Sunshine v2025.122.141614 (GPL-3.0, same text as oversteer-LICENSE)
+  https://github.com/LizardByte/Sunshine/blob/v2025.122.141614/src_assets/linux/misc/60-sunshine.rules
+  60-sunshine-ublue.rules (upstream 60-sunshine.rules, kept under the name existing systems have)
+
+FrameworkComputer/inputmodule-rs v0.2.0 (MIT, inputmodule-rs-LICENSE)
+  https://github.com/FrameworkComputer/inputmodule-rs/blob/v0.2.0/release/50-framework-inputmodule.rules
+  50-framework-inputmodule.rules
+
+berarma/oversteer 7f6b3ad8ebedb23b8d5c3d32e63ae653f4d02480 (GPL-3.0, oversteer-LICENSE)
+  https://github.com/berarma/oversteer/tree/7f6b3ad8ebedb23b8d5c3d32e63ae653f4d02480/data/udev
+  99-logitech-wheel-perms.rules
+  99-thrustmaster-wheel-perms.rules
+  99-fanatec-wheel-perms.rules
