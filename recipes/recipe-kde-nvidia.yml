@@ -27,6 +27,17 @@ modules:
       SUPPORT_URL: https://github.com/monolithlinux/monolith/issues
       BUG_REPORT_URL: https://github.com/monolithlinux/monolith/issues
 
+  - type: script
+    snippets:
+      - |
+        # Changing the login shell breaks an account when a later image lacks
+        # that shell, so the old base removed these too; Ghostty starts fish by
+        # itself. Last, so no later package transaction can restore them.
+        set -euxo pipefail
+        rm -f /usr/bin/chsh /usr/bin/lchsh
+        test ! -e /usr/bin/chsh
+        test ! -e /usr/bin/lchsh
+
   - type: initramfs
 
   - type: signing

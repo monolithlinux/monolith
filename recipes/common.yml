@@ -344,7 +344,7 @@ modules:
         test -x /usr/bin/ujust
         HOME=/nonexistent /usr/bin/ujust --list >/dev/null
         recipes="$(HOME=/nonexistent /usr/bin/ujust --summary | tr ' ' '\n')"
-        for recipe in monolith monolith-adopt enroll-monolith-secure-boot-key update changelogs toggle-updates; do
+        for recipe in monolith monolith-adopt enroll-monolith-secure-boot-key update changelogs toggle-updates check-idle-power-draw; do
           grep -qx "$recipe" <<<"$recipes"
         done
         test -x /usr/bin/fusermount
@@ -355,6 +355,7 @@ modules:
         vendors="$(rpm -q --qf '%{VENDOR}\n' ffmpeg-libs libavcodec libva pipewire-libs-extra)"
         if grep -vx 'negativo17.org' <<<"$vendors"; then exit 1; fi
         grep -qx 'AutomaticUpdatePolicy=stage' /etc/rpm-ostreed.conf
+        test -f /etc/flatpak/remotes.d/flathub.flatpakrepo
       - |
         # Flatpak apps miss host CJK glyphs with fontconfig 2.17 (Fedora 44)
         # unless this path exists; fontconfig 2.18 (Fedora 45) fixes it.

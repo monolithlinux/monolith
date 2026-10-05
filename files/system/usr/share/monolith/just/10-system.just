@@ -114,3 +114,8 @@ check-local-overrides:
 device-info:
     #!/usr/bin/bash
     fpaste <(rpm-ostree status) <(fpaste --sysinfo --printonly) <(flatpak list --columns=application,version,options)
+
+# Measure idle power draw
+check-idle-power-draw:
+    #!/usr/bin/bash
+    sudo powerstat -a -r
