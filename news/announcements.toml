@@ -28,8 +28,8 @@
 #   files/kde/usr/bin/monolith-news --preview news/announcements.toml
 
 [[announcements]]
-id = "2026-10-04-fedora-kinoite-base"
-date = 2026-10-04
+id = "2026-10-05-fedora-kinoite-base"
+date = 2026-10-05
 title = "Monolith now builds directly on Fedora Kinoite"
 category = "Monolith"
 body = """
