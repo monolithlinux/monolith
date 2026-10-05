@@ -140,7 +140,7 @@ modules:
         - swtpm
         - swtpm-tools
         # Packages the ublue base used to provide.
-        - just                      # ujust front-end
+        - just                      # mjust front-end
         - fuse                      # fusermount for libfuse2 AppImages
         - flatpak-spawn
         - alsa-firmware
@@ -340,10 +340,11 @@ modules:
           systemd-tmpfiles --user --create /usr/share/user-tmpfiles.d/monolith-topgrade.conf
         test -f "$(readlink "$home/.config/topgrade.d/monolith.toml")"
         rm -rf "$home"
-        # Replacements for the old base: ujust, FUSE 2, rescue boot, codecs, updates.
-        test -x /usr/bin/ujust
-        HOME=/nonexistent /usr/bin/ujust --list >/dev/null
-        recipes="$(HOME=/nonexistent /usr/bin/ujust --summary | tr ' ' '\n')"
+        # Replacements for the old base: mjust (formerly ujust), FUSE 2, rescue boot, codecs, updates.
+        test -x /usr/bin/mjust
+        HOME=/nonexistent /usr/bin/mjust --list >/dev/null
+        recipes="$(HOME=/nonexistent /usr/bin/mjust --summary | tr ' ' '\n')"
+        test "$(HOME=/nonexistent /usr/bin/ujust --summary)" = "$(HOME=/nonexistent /usr/bin/mjust --summary)"
         for recipe in monolith monolith-adopt enroll-monolith-secure-boot-key update changelogs \
             toggle-updates check-idle-power-draw setup-luks-tpm-unlock remove-luks-tpm-unlock; do
           grep -qx "$recipe" <<<"$recipes"
@@ -367,11 +368,13 @@ modules:
           ln -s /usr/share/fonts/google-noto-sans-cjk-fonts /usr/share/fonts/noto-cjk
         fi
       - |
-        # Bash completion for ujust: just's dynamic completion, re-pointed at
-        # ujust so it lists Monolith's recipes.
+        # Bash completion for mjust and its former name ujust: just's dynamic
+        # completion, re-pointed at each command so it lists Monolith's recipes.
         set -euxo pipefail
-        JUST_COMPLETE=bash just | sed -E 's/just/ujust/g' > /usr/share/bash-completion/completions/ujust
-        grep -q 'complete .*-F _clap_complete_ujust ujust' /usr/share/bash-completion/completions/ujust
+        for cmd in mjust ujust; do
+          JUST_COMPLETE=bash just | sed -E "s/just/${cmd}/g" > "/usr/share/bash-completion/completions/${cmd}"
+          grep -q "complete .*-F _clap_complete_${cmd} ${cmd}" "/usr/share/bash-completion/completions/${cmd}"
+        done
       - |
         # Install Pure system-wide without a runtime plugin manager.
         set -euxo pipefail

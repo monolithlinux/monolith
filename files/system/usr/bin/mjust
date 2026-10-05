@@ -1,0 +1,3 @@
+#!/usr/bin/bash
+# Monolith's `just` front-end; recipes live in /usr/share/monolith/just/.
+JUST_JUSTFILE=/usr/share/monolith/justfile exec /usr/bin/just "$@"

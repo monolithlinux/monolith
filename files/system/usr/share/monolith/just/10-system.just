@@ -21,7 +21,7 @@ update-firmware:
 
 alias auto-update := toggle-updates
 
-# Turn the daily automatic OS and Flatpak updates on or off: ujust toggle-updates enable|disable
+# Turn the daily automatic OS and Flatpak updates on or off: mjust toggle-updates enable|disable
 toggle-updates ACTION="status":
     #!/usr/bin/bash
     set -euo pipefail
@@ -39,9 +39,9 @@ toggle-updates ACTION="status":
         echo "Automatic updates disabled." ;;
       status)
         if systemctl -q is-enabled rpm-ostreed-automatic.timer; then state=enabled; else state=disabled; fi
-        echo "Automatic updates are ${state}. Use: ujust toggle-updates enable|disable" ;;
+        echo "Automatic updates are ${state}. Use: mjust toggle-updates enable|disable" ;;
       *)
-        echo "Usage: ujust toggle-updates enable|disable" >&2
+        echo "Usage: mjust toggle-updates enable|disable" >&2
         exit 1 ;;
     esac
 
