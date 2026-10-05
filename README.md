@@ -84,7 +84,7 @@ ujust monolith-adopt
 
 Rebased accounts use this to copy missing `/etc/skel` defaults and rebuild the font cache. A different existing topgrade configuration is backed up first.
 
-Run `ujust` to list Monolith's helper commands (updates, firmware, logs, Secure Boot key enrollment).
+Run `ujust` to list Monolith's helper commands (updates, firmware, logs, Secure Boot key enrollment, TPM disk unlock).
 
 ## Optional software
 

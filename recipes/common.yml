@@ -344,11 +344,14 @@ modules:
         test -x /usr/bin/ujust
         HOME=/nonexistent /usr/bin/ujust --list >/dev/null
         recipes="$(HOME=/nonexistent /usr/bin/ujust --summary | tr ' ' '\n')"
-        for recipe in monolith monolith-adopt enroll-monolith-secure-boot-key update changelogs toggle-updates check-idle-power-draw; do
+        for recipe in monolith monolith-adopt enroll-monolith-secure-boot-key update changelogs \
+            toggle-updates check-idle-power-draw setup-luks-tpm-unlock remove-luks-tpm-unlock; do
           grep -qx "$recipe" <<<"$recipes"
         done
         test -x /usr/bin/fusermount
         test -x /usr/lib/systemd/system-generators/coreos-sulogin-force-generator
+        test -x /usr/libexec/luks-enable-tpm2-autounlock
+        test -x /usr/libexec/luks-disable-tpm2-autounlock
         decoders="$(ffmpeg -hide_banner -decoders)"
         grep -qE '^ V.* h264 ' <<<"$decoders"
         grep -qE '^ V.* hevc ' <<<"$decoders"
