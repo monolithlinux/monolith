@@ -41,3 +41,8 @@ modules:
   - type: initramfs
 
   - type: signing
+
+  # Last, after everything that writes files; see the script.
+  - type: script
+    scripts:
+      - stabilize-layers.py
