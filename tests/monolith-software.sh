@@ -1458,6 +1458,28 @@ test_moonfin_existing_copies() {
     assert_no_temp_leaks
 }
 
+# Flathub carries only Fluxer's stable channel, so Fluxer Canary installs from
+# Fluxer's own repository. The two channels are separate apps side by side.
+test_fluxer_channels() {
+    flatpak_state '{"flathub": {"app.fluxer.Fluxer": "2026.1004.10845", "app.fluxer.FluxerCanary": "2026.1007.194714"}}'
+    assert_listed Communication 'Fluxer Canary' 'not installed +-'
+    run_monolith install fluxer fluxer-canary
+    assert_flatpak_called 'install --user --noninteractive --assumeyes https://dl.flathub.org/repo/appstream/app.fluxer.Fluxer.flatpakref'
+    assert_flatpak_called 'install --user --noninteractive --assumeyes https://pkgs.fluxer.com/flatpak/fluxer-canary.flatpakref'
+    assert_listed Communication Fluxer 'installed +2026\.1004\.10845'
+    assert_listed Communication 'Fluxer Canary' 'installed +2026\.1007\.194714'
+
+    flatpak_state '{"flathub": {"app.fluxer.Fluxer": "2026.1004.10845", "app.fluxer.FluxerCanary": "2026.1008.10000"}}'
+    run_monolith update >"$case_root/update.log"
+    grep -Eq '^  Fluxer +Up to date$' "$case_root/update.log" || fail 'current Fluxer was not reported up to date'
+    grep -Eq '^  Fluxer Canary +Updated$' "$case_root/update.log" || fail 'Fluxer Canary was not updated'
+    run_monolith remove fluxer-canary
+    [ "$(app_installations app.fluxer.FluxerCanary)" = '{}' ] || fail 'Fluxer Canary is still installed'
+    [ "$(app_installations app.fluxer.Fluxer)" = '{"user": "2026.1004.10845"}' ] ||
+        fail "removing Fluxer Canary changed Fluxer: $(app_installations app.fluxer.Fluxer)"
+    assert_flatpak_modelled
+}
+
 passed=0
 failed=0
 for test in omp_lifecycle omp_unmanaged_launcher omp_replaced_launcher omp_checksum_failure failed_publication \
@@ -1472,7 +1494,7 @@ for test in omp_lifecycle omp_unmanaged_launcher omp_replaced_launcher omp_check
     overlapping_mutation_is_locked interrupt_rolls_back_and_cancels_batch terminate_cleans_staging \
     prism_lifecycle prism_adopts_user_copy prism_leaves_system_copy_alone prism_repair_and_failures \
     prism_with_broken_flatpak moonfin_lifecycle moonfin_refuses_unverified_bundles moonfin_runtime_sources \
-    moonfin_existing_copies; do
+    moonfin_existing_copies fluxer_channels; do
     # Do not put the subshell in an if condition: that disables Bash errexit
     # throughout the test function and can conceal a failing manager command.
     set +e

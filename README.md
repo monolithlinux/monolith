@@ -104,7 +104,7 @@ monolith
 ```
 
 The dashboard groups software into Developer CLIs, AI coding, Gaming, Media,
-and Appearance, and shows each item's status and version. Type to filter, press
+Communication, and Appearance, and shows each item's status and version. Type to filter, press
 Enter to open an item, then choose an explicit action: Install, Update, Repair,
 Adopt and update (for a supported copy installed outside Monolith), or Remove.
 Removal asks first and keeps settings, logins, sessions, game addons and mods,
@@ -119,7 +119,7 @@ The underlying command also supports scripting and troubleshooting:
 ```bash
 monolith list
 monolith install codex herdr
-monolith install wowup-cf r2modman prismlauncher moonfin plezy
+monolith install wowup-cf r2modman prismlauncher moonfin plezy fluxer-canary
 monolith update
 monolith remove codex
 ```
@@ -281,6 +281,28 @@ As with Moonfin, only Monolith updates Plezy: use **Update** in the dashboard,
 installed, updating or installing again downloads nothing. Plezy can stay open
 while it updates. Removal keeps your servers, sign-ins, settings, and downloads
 in `~/.var/app/com.edde746.plezy`.
+
+### Fluxer
+
+**Communication → Fluxer** installs [Fluxer](https://fluxer.app), an open-source
+chat app with voice calls, as the official
+[Flathub Flatpak](https://flathub.org/apps/app.fluxer.Fluxer).
+**Communication → Fluxer Canary** installs Fluxer's early-access channel,
+`app.fluxer.FluxerCanary`, which gets new features first. Flathub carries only
+the stable channel, so Monolith installs Canary from
+[Fluxer's own signed Flatpak repository](https://pkgs.fluxer.com/flatpak/fluxer-canary.flatpakref),
+which adds that repository to your account's Flatpak sources as `fluxer`. Both
+install for your account only, without an administrator password, and can be
+installed side by side with separate data.
+
+Like Prism Launcher, both stay ordinary Flatpaks: Bazaar, `flatpak update`,
+topgrade, the daily automatic Flatpak update, and `monolith update` keep them
+current. A copy already installed for your account is adopted. A system-wide
+copy, for example Fluxer installed through Bazaar, is left alone rather than
+installed twice. Removal keeps your sign-ins and settings in
+`~/.var/app/app.fluxer.Fluxer` or `~/.var/app/app.fluxer.FluxerCanary`; the
+`fluxer` repository stays in your Flatpak sources until you run
+`flatpak remote-delete --user fluxer`.
 
 ### Waywallen wallpapers
 
