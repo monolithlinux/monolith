@@ -28,6 +28,36 @@
 #   files/kde/usr/bin/monolith-news --preview news/announcements.toml
 
 [[announcements]]
+id = "2026-10-07-plezy"
+date = 2026-10-07
+title = "Plezy joins Monolith Software"
+category = "Media"
+install_path = ["monolith", "Media", "Plezy"]
+body = """
+Plezy is a media client for Plex, Jellyfin, and Emby servers. To install it,
+run `monolith`, open **Media**, and select **Plezy**.
+
+- **Checked first:** Plezy is not on Flathub, so Monolith downloads the Flatpak
+  from Plezy's GitHub releases and installs it only if it matches the SHA256
+  digest GitHub publishes. It is installed for your account, so no
+  administrator password is needed.
+- **Updates:** Bazaar and the daily automatic Flatpak update cannot update this
+  Flatpak. Monolith does, through `mjust update`, topgrade, or
+  `monolith update plezy`, and downloads only a newer release.
+- **Already installed?** Monolith takes over a copy installed for your account.
+  A system-wide copy is left alone rather than installed twice.
+- **Your data stays:** Removing Plezy keeps your servers, sign-ins, settings,
+  and downloads.
+
+Plezy not in your Media menu yet? Update Monolith and reboot first.
+"""
+links = [
+  { label = "Plezy", url = "https://plezy.app" },
+  { label = "Plezy releases", url = "https://github.com/edde746/plezy/releases" },
+  { label = "Monolith software guide", url = "https://github.com/monolithlinux/monolith#plezy" },
+]
+
+[[announcements]]
 id = "2026-10-06-moonfin"
 date = 2026-10-06
 title = "Moonfin joins Monolith Software"

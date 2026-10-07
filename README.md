@@ -111,7 +111,7 @@ The underlying command also supports scripting and troubleshooting:
 ```bash
 monolith list
 monolith install codex herdr
-monolith install wowup-cf r2modman prismlauncher moonfin
+monolith install wowup-cf r2modman prismlauncher moonfin plezy
 monolith update
 monolith remove codex
 ```
@@ -254,6 +254,25 @@ newest release is already installed, updating or installing again downloads
 nothing. Moonfin can stay open while it updates: the new version starts the next
 time you open it. Removal keeps your servers, sign-ins, settings, and downloads
 in `~/.var/app/org.moonfin.linux`.
+
+### Plezy
+
+**Media → Plezy** installs [Plezy](https://plezy.app), a media client for Plex,
+Jellyfin, and Emby servers. Plezy is not on Flathub either and publishes no
+AppImage, so it works like Moonfin: Monolith downloads the Flatpak bundle of the
+newest [Plezy release](https://github.com/edde746/plezy/releases), checks it
+against the SHA256 digest GitHub publishes, and installs it for your account
+only. Plezy uses the freedesktop runtime (`org.freedesktop.Platform` 25.08),
+which Flatpak takes from the system's Flatpaks or downloads from Flathub. A
+Plezy Flatpak already installed for your account is adopted. A system-wide copy
+is left alone; to have Monolith manage Plezy instead, uninstall it first with
+`flatpak uninstall --system com.edde746.plezy`.
+
+As with Moonfin, only Monolith updates Plezy: use **Update** in the dashboard,
+`monolith update plezy`, or `mjust update`. When the newest release is already
+installed, updating or installing again downloads nothing. Plezy can stay open
+while it updates. Removal keeps your servers, sign-ins, settings, and downloads
+in `~/.var/app/com.edde746.plezy`.
 
 ### Waywallen wallpapers
 

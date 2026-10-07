@@ -34,11 +34,11 @@ UP_TO_DATE=0
 readonly SELF BIN_DIR DATA_HOME STATE_HOME MANAGED_ROOT STATE_ROOT GHOSTTY_THEMES_HELPER GEAR_LEVER_APP_HELPER
 readonly GEAR_LEVER_ID GEAR_LEVER_REF GEAR_LEVER_MIN_VERSION FLATHUB_REPO QUIT_TOKEN HELPER_UP_TO_DATE
 
-ALL_TOOLS=(tea superfile nak ngit claude codex opencode omp herdr wowup-cf r2modman prismlauncher moonfin ghostty-themes)
+ALL_TOOLS=(tea superfile nak ngit claude codex opencode omp herdr wowup-cf r2modman prismlauncher moonfin plezy ghostty-themes)
 CLI_TOOLS=(tea superfile nak ngit)
 AI_TOOLS=(claude codex opencode omp herdr)
 GAMING_TOOLS=(wowup-cf r2modman prismlauncher)
-MEDIA_TOOLS=(moonfin)
+MEDIA_TOOLS=(moonfin plezy)
 APPEARANCE_TOOLS=(ghostty-themes)
 
 # Per-render state; menus and list compute each row once. Gear Lever apps
@@ -111,6 +111,7 @@ tool_name() {
         r2modman)  echo "r2modman" ;;
         prismlauncher) echo "Prism Launcher" ;;
         moonfin)   echo "Moonfin" ;;
+        plezy)     echo "Plezy" ;;
         ghostty-themes) echo "Ghostty Themes" ;;
         *)         return 1 ;;
     esac
@@ -131,6 +132,7 @@ tool_description() {
         r2modman)  echo "Thunderstore mod manager for Lethal Company, Risk of Rain 2, Valheim, and more" ;;
         prismlauncher) echo "Minecraft launcher for multiple instances, mods, and modpacks" ;;
         moonfin)   echo "media client for Jellyfin and Emby servers" ;;
+        plezy)     echo "media client for Plex, Jellyfin, and Emby servers" ;;
         ghostty-themes) echo "official Ghostty theme collection" ;;
         *)         return 1 ;;
     esac
@@ -141,7 +143,7 @@ tool_category() {
         tea|superfile|nak|ngit) echo "Developer CLIs" ;;
         claude|codex|opencode|omp|herdr) echo "AI coding" ;;
         wowup-cf|r2modman|prismlauncher) echo "Gaming" ;;
-        moonfin) echo "Media" ;;
+        moonfin|plezy) echo "Media" ;;
         ghostty-themes) echo "Appearance" ;;
         *) return 1 ;;
     esac
@@ -158,7 +160,7 @@ tool_commands() {
         opencode)  echo "opencode" ;;
         omp)       echo "omp" ;;
         herdr)     echo "herdr" ;;
-        wowup-cf|r2modman|prismlauncher|moonfin|ghostty-themes) return 0 ;;
+        wowup-cf|r2modman|prismlauncher|moonfin|plezy|ghostty-themes) return 0 ;;
         *)         return 1 ;;
     esac
 }
@@ -235,7 +237,7 @@ is_gear_lever_app() {
 # Flatpak bundle of a GitHub release (see flatpak_bundle_release).
 is_flatpak_app() {
     case "$1" in
-        prismlauncher|moonfin) return 0 ;;
+        prismlauncher|moonfin|plezy) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -244,6 +246,7 @@ flatpak_app_id() {
     case "$1" in
         prismlauncher) echo "org.prismlauncher.PrismLauncher" ;;
         moonfin) echo "org.moonfin.linux" ;;
+        plezy) echo "com.edde746.plezy" ;;
         *) return 1 ;;
     esac
 }
@@ -257,6 +260,7 @@ flatpak_app_ref() {
 flatpak_bundle_release() {
     case "$1" in
         moonfin) printf '%s\t%s\n' Moonfin-Client/Moonfin-Core 'Moonfin_Linux_v{tag}.flatpak' ;;
+        plezy) printf '%s\t%s\n' edde746/plezy plezy-linux-x64.flatpak ;;
         *) return 1 ;;
     esac
 }
@@ -1159,7 +1163,7 @@ kept_data() {
         wowup-cf) echo "settings, game installations, and addons" ;;
         r2modman) echo "profiles, mods, and settings" ;;
         prismlauncher) echo "instances, worlds, accounts, and settings" ;;
-        moonfin) echo "servers, sign-ins, settings, and downloads" ;;
+        moonfin|plezy) echo "servers, sign-ins, settings, and downloads" ;;
         *) echo "settings, authentication, sessions, and project files" ;;
     esac
 }
@@ -1334,6 +1338,9 @@ install_flatpak_bundle() {
     fi
     asset="$(github_release_asset "$repo" "$template")"
     IFS=$'\t' read -r tag url sha256 <<<"$asset"
+    if [ "$had_copy" -eq 1 ] && ! has_marker "$tool"; then
+        note "Adopting the existing per-user $name Flatpak"
+    fi
     # The installed copy decides, even when another bundle replaced it by hand.
     # A copy that already reports the newest release is only recorded, also
     # when installing or adopting: Flatpak refuses the commit it already has,
@@ -1342,9 +1349,6 @@ install_flatpak_bundle() {
     if [ "$installed" = "$tag" ]; then
         [ "$(marker_version "$tool")" = "$tag" ] || write_marker "$tool" "$tag" "$url"
         report_up_to_date "$tool" "$tag"
-    if [ "$had_copy" -eq 1 ] && ! has_marker "$tool"; then
-        note "Adopting the existing per-user $name Flatpak"
-    fi
         return 0
     fi
     note "Downloading $name $tag from GitHub"
@@ -2294,7 +2298,7 @@ Tool IDs:
   Developer CLIs   tea superfile nak ngit
   AI coding        claude codex opencode omp herdr
   Gaming           wowup-cf r2modman prismlauncher
-  Media            moonfin
+  Media            moonfin plezy
   Appearance       ghostty-themes
 EOF
 }
