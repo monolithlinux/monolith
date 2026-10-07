@@ -1335,13 +1335,17 @@ install_flatpak_bundle() {
     asset="$(github_release_asset "$repo" "$template")"
     IFS=$'\t' read -r tag url sha256 <<<"$asset"
     # The installed copy decides, even when another bundle replaced it by hand.
-    if updating "$tool" && [ "$installed" = "$tag" ]; then
+    # A copy that already reports the newest release is only recorded, also
+    # when installing or adopting: Flatpak refuses the commit it already has,
+    # and forcing it with --reinstall while the app runs leaves Flatpak unable
+    # to uninstall or reinstall the app.
+    if [ "$installed" = "$tag" ]; then
         [ "$(marker_version "$tool")" = "$tag" ] || write_marker "$tool" "$tag" "$url"
         report_up_to_date "$tool" "$tag"
-        return 0
-    fi
     if [ "$had_copy" -eq 1 ] && ! has_marker "$tool"; then
         note "Adopting the existing per-user $name Flatpak"
+    fi
+        return 0
     fi
     note "Downloading $name $tag from GitHub"
     new_temp_dir
@@ -1354,9 +1358,9 @@ install_flatpak_bundle() {
     ensure_user_flathub ||
         warn "Flathub could not be added for your account; the installation fails if $name's runtime is missing"
     note "Installing $name $tag for your account"
-    # --reinstall lets Flatpak accept the bundle of the installed commit; a
-    # different release still updates the installed copy in place.
-    if ! flatpak install --user --noninteractive --assumeyes --reinstall --bundle "$bundle" 9>&-; then
+    # Over an installed copy, Flatpak deploys the new release in place and keeps
+    # the old files while an instance still runs from them.
+    if ! flatpak install --user --noninteractive --assumeyes --bundle "$bundle" 9>&-; then
         if [ "$had_copy" -eq 1 ] && flatpak_installed user "$id"; then
             die "$name $tag could not be installed; Flatpak kept the installed version"
         fi

@@ -124,7 +124,8 @@ install, update, or removal runs at a time.
 `monolith update`, and **Update** in the dashboard, first check each item for a
 newer release. An item that already has it, and needs no repair, is reported as
 `Up to date` and left alone, so nothing is downloaded. `monolith install` always
-installs the newest release again.
+installs the newest release again; only a Flatpak app that already has it is left
+as it is.
 
 Running `topgrade` also runs `monolith update`, as its **Monolith software**
 step after the other updates. Items that need an update but cannot be updated,
@@ -235,8 +236,8 @@ account only, so no administrator password is needed. Moonfin uses the GNOME
 runtime, which Flatpak takes from the system's Flatpaks when they have the
 version it needs; otherwise the installation downloads it from Flathub, which
 Monolith adds to your account's Flatpak remotes if it is missing. A Moonfin
-Flatpak already installed for your account is adopted: Monolith installs the
-newest verified release over it.
+Flatpak already installed for your account is adopted, and Monolith installs the
+newest verified release over it unless it already has that release.
 
 A system-wide Moonfin, for example one installed with `flatpak install` without
 `--user`, is left alone rather than installed twice. To have Monolith manage
@@ -248,11 +249,11 @@ Flatpak cannot update the bundle, so Bazaar, `flatpak update`, and the daily
 automatic Flatpak update leave Moonfin as it is. Monolith updates it instead:
 use **Update** in the dashboard, `monolith update moonfin`, or `mjust update`,
 which runs topgrade and with it `monolith update`. Moonfin tells you inside the
-app when a new release is out; you do not need to download it yourself. An
-update downloads nothing when the newest release is already installed, and
-Moonfin can stay open: the new version starts the next time you open it.
-Removal keeps your servers, sign-ins, settings, and downloads in
-`~/.var/app/org.moonfin.linux`.
+app when a new release is out; you do not need to download it yourself. When the
+newest release is already installed, updating or installing again downloads
+nothing. Moonfin can stay open while it updates: the new version starts the next
+time you open it. Removal keeps your servers, sign-ins, settings, and downloads
+in `~/.var/app/org.moonfin.linux`.
 
 ### Waywallen wallpapers
 
