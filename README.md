@@ -95,12 +95,12 @@ Run the interactive per-user software dashboard:
 monolith
 ```
 
-The dashboard groups software into Developer CLIs, AI coding, Gaming, and
-Appearance, and shows each item's status and version. Type to filter, press
+The dashboard groups software into Developer CLIs, AI coding, Gaming, Media,
+and Appearance, and shows each item's status and version. Type to filter, press
 Enter to open an item, then choose an explicit action: Install, Update, Repair,
 Adopt and update (for a supported copy installed outside Monolith), or Remove.
 Removal asks first and keeps settings, logins, sessions, game addons and mods,
-Minecraft instances, and projects. Esc goes back. **Update installed** updates every Monolith-managed
+Minecraft instances, media downloads, and projects. Esc goes back. **Update installed** updates every Monolith-managed
 item; inside a category it updates only that category. The `mjust monolith`,
 `mjust software`, and `mjust monolith-software` aliases open the same
 dashboard. Without fzf, or with `TERM=dumb`, it uses numbered menus; set
@@ -111,7 +111,7 @@ The underlying command also supports scripting and troubleshooting:
 ```bash
 monolith list
 monolith install codex herdr
-monolith install wowup-cf r2modman prismlauncher
+monolith install wowup-cf r2modman prismlauncher moonfin
 monolith update
 monolith remove codex
 ```
@@ -223,6 +223,36 @@ Removal keeps your instances, worlds, accounts, and settings in
 from a non-Flatpak Prism Launcher; to bring them over, copy the folders in
 `~/.local/share/PrismLauncher/instances` to
 `~/.var/app/org.prismlauncher.PrismLauncher/data/PrismLauncher/instances`.
+
+### Moonfin
+
+**Media → Moonfin** installs [Moonfin](https://moonfin.io), a media client for
+Jellyfin and Emby servers. Moonfin is not on Flathub, so Monolith downloads the
+Flatpak bundle of the newest
+[Moonfin release](https://github.com/Moonfin-Client/Moonfin-Core/releases),
+checks it against the SHA256 digest GitHub publishes, and installs it for your
+account only, so no administrator password is needed. Moonfin uses the GNOME
+runtime, which Flatpak takes from the system's Flatpaks when they have the
+version it needs; otherwise the installation downloads it from Flathub, which
+Monolith adds to your account's Flatpak remotes if it is missing. A Moonfin
+Flatpak already installed for your account is adopted: Monolith installs the
+newest verified release over it.
+
+A system-wide Moonfin, for example one installed with `flatpak install` without
+`--user`, is left alone rather than installed twice. To have Monolith manage
+Moonfin, uninstall the system-wide copy first with
+`flatpak uninstall --system org.moonfin.linux`. Both copies keep their data in
+the same place, so your servers and settings stay.
+
+Flatpak cannot update the bundle, so Bazaar, `flatpak update`, and the daily
+automatic Flatpak update leave Moonfin as it is. Monolith updates it instead:
+use **Update** in the dashboard, `monolith update moonfin`, or `mjust update`,
+which runs topgrade and with it `monolith update`. Moonfin tells you inside the
+app when a new release is out; you do not need to download it yourself. An
+update downloads nothing when the newest release is already installed, and
+Moonfin can stay open: the new version starts the next time you open it.
+Removal keeps your servers, sign-ins, settings, and downloads in
+`~/.var/app/org.moonfin.linux`.
 
 ### Waywallen wallpapers
 

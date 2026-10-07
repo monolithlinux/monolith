@@ -41,6 +41,9 @@ for version in v1.0.0 v2.0.0 v9.9.9; do
     } >"superfile-$version-checksums.txt")
     cp -- "$dir/ngit" "$dir/git-remote-nostr" "$dir/ngit-src/"
     tar -czf "$dir/ngit-$version-x86_64-unknown-linux-musl.tar.gz" -C "$dir/ngit-src" ngit git-remote-nostr
+    # A Flatpak bundle that the fake flatpak installs; see tests/gear-lever-apps.py.
+    printf '{"app": "org.moonfin.linux", "version": "%s", "runtime": "org.gnome.Platform/x86_64/50"}\n' \
+        "$plain" >"$dir/Moonfin_Linux_v$plain.flatpak"
 done
 # A correctly checksummed Superfile archive without the expected program.
 mkdir -p "$fixtures/bad-archive/dist/elsewhere"
@@ -70,19 +73,20 @@ version="$MOCK_VERSION"
 plain="${version#v}"
 dir="$MOCK_FIXTURES/$version"
 
-# GitHub release metadata with an uploaded asset and its digest.
+# GitHub release metadata with an uploaded asset and its digest. TAG defaults
+# to the release version.
 github_release() {
-    local repo="$1" name="$2" file="$3" digest
+    local repo="$1" name="$2" file="$3" tag="${4:-$version}" digest
     case "${MOCK_DIGEST:-normal}" in
         normal) digest="\"sha256:$(sha256sum -- "$file" | cut -d ' ' -f 1)\"" ;;
         missing) digest=null ;;
         wrong) digest="\"sha256:$(printf '%064d' 0)\"" ;;
     esac
-    printf '{"tag_name":"%s","draft":false,"assets":[' "$version"
+    printf '{"tag_name":"%s","draft":false,"assets":[' "$tag"
     printf '{"name":"%s.sig","browser_download_url":"https://github.com/%s/releases/download/%s/%s.sig","state":"uploaded","digest":null},' \
-        "$name" "$repo" "$version" "$name"
+        "$name" "$repo" "$tag" "$name"
     printf '{"name":"%s","browser_download_url":"https://github.com/%s/releases/download/%s/%s","state":"uploaded","digest":%s}]}\n' \
-        "$name" "$repo" "$version" "$name" "$digest"
+        "$name" "$repo" "$tag" "$name" "$digest"
 }
 
 payload=
@@ -96,6 +100,11 @@ case "$url" in
     https://api.github.com/repos/DanConwayDev/ngit-cli/releases/latest)
         github_release DanConwayDev/ngit-cli "ngit-$version-x86_64-unknown-linux-musl.tar.gz" \
             "$dir/ngit-$version-x86_64-unknown-linux-musl.tar.gz"
+        exit 0 ;;
+    # Moonfin tags its releases without a leading v.
+    https://api.github.com/repos/Moonfin-Client/Moonfin-Core/releases/latest)
+        github_release Moonfin-Client/Moonfin-Core "Moonfin_Linux_v$plain.flatpak" \
+            "$dir/Moonfin_Linux_v$plain.flatpak" "$plain"
         exit 0 ;;
     # The sources the upstream installers read their newest version from.
     https://downloads.claude.ai/claude-code-releases/stable)
@@ -118,6 +127,8 @@ case "$url" in
         payload="$dir/nak-$version-linux-amd64" ;;
     https://github.com/DanConwayDev/ngit-cli/releases/download/"$version"/ngit-"$version"-x86_64-unknown-linux-musl.tar.gz)
         payload="$dir/ngit-$version-x86_64-unknown-linux-musl.tar.gz" ;;
+    https://github.com/Moonfin-Client/Moonfin-Core/releases/download/"$plain"/Moonfin_Linux_v"$plain".flatpak)
+        payload="$dir/Moonfin_Linux_v$plain.flatpak" ;;
     https://dl.gitea.com/tea/"$plain"/tea-"$plain"-linux-amd64)
         payload="$dir/tea-$plain-linux-amd64" ;;
     https://dl.gitea.com/tea/"$plain"/tea-"$plain"-linux-amd64.sha256)
@@ -245,6 +256,12 @@ fake_flatpak="$repo_root/tests/gear-lever-apps.py"
 python3 "$fake_flatpak" install-fake-flatpak "$mock_bin" "$fixtures/flatpak-state.json"
 prism_id=org.prismlauncher.PrismLauncher
 prism_ref="https://dl.flathub.org/repo/appstream/$prism_id.flatpakref"
+moonfin_id=org.moonfin.linux
+
+# The release download that Monolith records for Moonfin VERSION.
+moonfin_url() {
+    printf 'https://github.com/Moonfin-Client/Moonfin-Core/releases/download/%s/Moonfin_Linux_v%s.flatpak\n' "$1" "$1"
+}
 
 setup_case() {
     case_root="$test_root/$1"
@@ -389,13 +406,30 @@ assert_flatpak_modelled() {
     fi
 }
 
-# Print Prism Launcher's installations in the model, such as {"user": "11.1.1"}.
-prism_installations() {
+# Print one top-level key of the case's Flatpak model as JSON.
+flatpak_model() {
+    python3 -c '
+import json, sys
+print(json.dumps(json.load(open(sys.argv[1])).get(sys.argv[2]), sort_keys=True))' \
+        "$case_root/flatpak-state.json" "$1"
+}
+
+# Print an app's installations in the model, such as {"user": "11.1.1"}.
+app_installations() {
     python3 -c '
 import json, sys
 state = json.load(open(sys.argv[1]))
 print(json.dumps(state.get("apps", {}).get(sys.argv[2], {}), sort_keys=True))' \
-        "$case_root/flatpak-state.json" "$prism_id"
+        "$case_root/flatpak-state.json" "$1"
+}
+
+prism_installations() {
+    app_installations "$prism_id"
+}
+
+assert_moonfin_installations() {
+    [ "$(app_installations "$moonfin_id")" = "$1" ] ||
+        fail "unexpected Moonfin installations: $(app_installations "$moonfin_id")"
 }
 
 write_prism_marker() {
@@ -403,10 +437,19 @@ write_prism_marker() {
     printf 'version=%s\nsource=%s\n' "$1" "$prism_ref" >"$state_root/prismlauncher.managed"
 }
 
-assert_prism_listed() {
+assert_listed() {
+    local category="$1" name="$2" expected="$3"
     run_monolith list >"$case_root/list.log"
-    grep -Eq "^Gaming +Prism Launcher +$1\$" "$case_root/list.log" ||
-        fail "Prism Launcher is not listed as '$1': $(grep 'Prism Launcher' "$case_root/list.log")"
+    grep -Eq "^$category +$name +$expected\$" "$case_root/list.log" ||
+        fail "$name is not listed as '$expected': $(grep -F "$name" "$case_root/list.log")"
+}
+
+assert_prism_listed() {
+    assert_listed Gaming 'Prism Launcher' "$1"
+}
+
+assert_moonfin_listed() {
+    assert_listed Media Moonfin "$1"
 }
 
 seed_omp_data() {
@@ -1258,6 +1301,159 @@ test_prism_with_broken_flatpak() {
     assert_flatpak_modelled
 }
 
+# Moonfin is the Flatpak bundle of its latest GitHub release, installed for the
+# user only. Flatpak cannot update the bundle, so Monolith does.
+test_moonfin_lifecycle() {
+    local data="$case_home/.var/app/$moonfin_id"
+    seed_user_data "$data/config/settings.json" "$data/data/downloads/episode.mkv"
+    assert_moonfin_listed 'not installed +-'
+    run_monolith install moonfin
+    assert_moonfin_installations '{"user": "1.0.0"}'
+    grep -qx 'version=1.0.0' "$state_root/moonfin.managed" || fail 'Moonfin marker has the wrong version'
+    grep -qx "source=$(moonfin_url 1.0.0)" "$state_root/moonfin.managed" || fail 'Moonfin marker has the wrong source'
+    assert_moonfin_listed 'installed +1\.0\.0'
+
+    # Without a newer release, an update downloads nothing and changes nothing.
+    : >"$case_root/curl.log"
+    forget_flatpak_calls
+    run_monolith update >"$case_root/update.log"
+    grep -Eq '^  Moonfin +Up to date$' "$case_root/update.log" || fail 'current Moonfin was not reported up to date'
+    if grep -Fq '.flatpak' "$case_root/curl.log"; then fail 'updating a current Moonfin downloaded it again'; fi
+    assert_no_flatpak_changes
+
+    # The installed copy decides, not the record: a copy updated by hand is
+    # recorded without a download, and an older copy is updated.
+    release_version=v2.0.0
+    flatpak_state '{"apps": {"org.moonfin.linux": {"user": "2.0.0"}}}'
+    run_monolith update moonfin >"$case_root/update.log"
+    grep -Eq '^  Moonfin +Up to date$' "$case_root/update.log" || fail 'a hand-updated Moonfin was not up to date'
+    grep -qx 'version=2.0.0' "$state_root/moonfin.managed" || fail 'Moonfin marker did not record 2.0.0'
+    if grep -Fq '.flatpak' "$case_root/curl.log"; then fail 'updating a current Moonfin downloaded it again'; fi
+    flatpak_state '{"apps": {"org.moonfin.linux": {"user": "1.0.0"}}}'
+    run_monolith update >"$case_root/update.log"
+    grep -Eq '^  Moonfin +Updated$' "$case_root/update.log" || fail 'an older Moonfin was not updated'
+    assert_moonfin_installations '{"user": "2.0.0"}'
+    grep -qx "source=$(moonfin_url 2.0.0)" "$state_root/moonfin.managed" || fail 'Moonfin marker has the wrong source'
+
+    # Install downloads and installs the newest release again, even when it is installed.
+    : >"$case_root/curl.log"
+    run_monolith install moonfin
+    grep -Fxq "$(moonfin_url 2.0.0)" "$case_root/curl.log" || fail 'install did not download the newest release'
+    assert_moonfin_installations '{"user": "2.0.0"}'
+
+    # Removal uninstalls the app without its data in ~/.var/app.
+    run_monolith remove moonfin >"$case_root/remove.log"
+    grep -Fq 'Servers, sign-ins, settings, and downloads were kept.' "$case_root/remove.log" ||
+        fail 'removal did not say what it kept'
+    assert_absent "$state_root/moonfin.managed"
+    assert_moonfin_installations '{}'
+    assert_moonfin_listed 'not installed +-'
+    assert_user_data_preserved
+    assert_flatpak_modelled
+    assert_no_temp_leaks
+}
+
+# Nothing is installed from a bundle without a matching GitHub digest, and a
+# failed update keeps the installed release and Monolith's record.
+test_moonfin_refuses_unverified_bundles() {
+    local mode
+    for mode in missing wrong; do
+        digest_mode="$mode"
+        expect_failure install moonfin
+        assert_failure_reported Moonfin
+        assert_absent "$state_root/moonfin.managed"
+    done
+    grep -Fq 'failed its SHA256 check' "$case_root/expected-failure.log" || fail 'the checksum failure was not explained'
+    assert_moonfin_installations '{}'
+    assert_no_flatpak_changes
+
+    digest_mode=normal
+    run_monolith install moonfin
+    cp -- "$state_root/moonfin.managed" "$case_root/marker-before"
+    release_version=v2.0.0
+    digest_mode=wrong
+    expect_failure update moonfin
+    assert_failure_reported Moonfin
+    digest_mode=normal
+    flatpak_state '{"faults": {"bundle-install": "fail"}}'
+    expect_failure update moonfin
+    assert_failure_reported Moonfin
+    grep -Fq 'Flatpak kept the installed version' "$case_root/expected-failure.log" ||
+        fail 'the failed update did not say that Flatpak kept the installed version'
+    assert_file_equals "$case_root/marker-before" "$state_root/moonfin.managed"
+    assert_moonfin_installations '{"user": "1.0.0"}'
+    assert_flatpak_modelled
+    assert_no_temp_leaks
+}
+
+# The bundle names its GNOME runtime but no repository for it. Flatpak takes it
+# from the system's Flatpaks, or else from Flathub, which Monolith adds for the
+# user only when no Flathub remote exists.
+test_moonfin_runtime_sources() {
+    flatpak_state '{"runtimes": {"system": []}}'
+    run_monolith install moonfin
+    assert_moonfin_installations '{"user": "1.0.0"}'
+    [ "$(flatpak_model user_remotes)" = '{"flathub": "https://dl.flathub.org/repo/"}' ] ||
+        fail "Flathub was not added for the user: $(flatpak_model user_remotes)"
+    [ "$(flatpak_model runtimes)" = '{"system": [], "user": ["org.gnome.Platform/x86_64/50"]}' ] ||
+        fail "the runtime was not installed for the user: $(flatpak_model runtimes)"
+    run_monolith remove moonfin
+
+    # An existing Flathub remote is left as it is.
+    flatpak_state '{"runtimes": {"system": []}, "user_remotes": {"flathub": "https://dl.flathub.org/repo/"}}'
+    forget_flatpak_calls
+    run_monolith install moonfin
+    assert_moonfin_installations '{"user": "1.0.0"}'
+    flatpak_calls >"$case_root/flatpak-calls.log"
+    if grep -q '^remote-add ' "$case_root/flatpak-calls.log"; then fail 'an existing Flathub remote was added again'; fi
+    run_monolith remove moonfin
+
+    # With the runtime on the system, Flathub is not needed, so failing to add it only warns.
+    flatpak_state '{"runtimes": {"system": ["org.gnome.Platform/x86_64/50"]}, "user_remotes": {}, "faults": {"remote-add": "fail"}}'
+    run_monolith install moonfin >"$case_root/install.log" 2>&1
+    grep -Fq 'Flathub could not be added for your account' "$case_root/install.log" ||
+        fail 'the failure to add Flathub was not reported'
+    assert_moonfin_installations '{"user": "1.0.0"}'
+    assert_flatpak_modelled
+}
+
+# A system-wide Moonfin is left alone, a per-user copy is adopted, and a
+# recorded copy that was uninstalled elsewhere is repaired.
+test_moonfin_existing_copies() {
+    flatpak_state '{"apps": {"org.moonfin.linux": {"system": "0.9.0"}}}'
+    assert_moonfin_listed 'external +0\.9\.0'
+    expect_failure install moonfin
+    assert_failure_reported Moonfin
+    grep -Fq 'already installed system-wide' "$case_root/expected-failure.log" ||
+        fail 'the refusal did not explain the system-wide copy'
+    assert_absent "$state_root/moonfin.managed"
+    mkdir -p "$state_root"
+    printf 'version=0.9.0\nsource=%s\n' "$(moonfin_url 0.9.0)" >"$state_root/moonfin.managed"
+    expect_failure update moonfin
+    assert_failure_reported Moonfin
+    grep -Fq 'Run monolith remove moonfin' "$case_root/expected-failure.log" ||
+        fail 'the refusal did not say how to drop the record'
+    [ ! -s "$case_root/curl.log" ] || fail 'a refused action contacted GitHub'
+    assert_moonfin_installations '{"system": "0.9.0"}'
+    assert_no_flatpak_changes
+    rm -- "$state_root/moonfin.managed"
+
+    flatpak_state '{"apps": {"org.moonfin.linux": {"user": "0.9.0"}}}'
+    assert_moonfin_listed 'external +0\.9\.0'
+    run_monolith install moonfin >"$case_root/install.log"
+    grep -Fq '(1/1) Moonfin — Adopt and update' "$case_root/install.log" || fail 'adoption was not announced'
+    assert_moonfin_installations '{"user": "1.0.0"}'
+    grep -qx 'version=1.0.0' "$state_root/moonfin.managed" || fail 'adopted Moonfin was not recorded'
+
+    flatpak_state '{"apps": {}}'
+    assert_moonfin_listed 'needs repair +recorded 1\.0\.0'
+    run_monolith install moonfin >"$case_root/install.log"
+    grep -Fq '(1/1) Moonfin — Repair' "$case_root/install.log" || fail 'repair was not announced'
+    assert_moonfin_installations '{"user": "1.0.0"}'
+    assert_flatpak_modelled
+    assert_no_temp_leaks
+}
+
 passed=0
 failed=0
 for test in omp_lifecycle omp_unmanaged_launcher omp_replaced_launcher omp_checksum_failure failed_publication \
@@ -1271,7 +1467,8 @@ for test in omp_lifecycle omp_unmanaged_launcher omp_replaced_launcher omp_check
     adoption_refuses_unusable_copies \
     overlapping_mutation_is_locked interrupt_rolls_back_and_cancels_batch terminate_cleans_staging \
     prism_lifecycle prism_adopts_user_copy prism_leaves_system_copy_alone prism_repair_and_failures \
-    prism_with_broken_flatpak; do
+    prism_with_broken_flatpak moonfin_lifecycle moonfin_refuses_unverified_bundles moonfin_runtime_sources \
+    moonfin_existing_copies; do
     # Do not put the subshell in an if condition: that disables Bash errexit
     # throughout the test function and can conceal a failing manager command.
     set +e

@@ -9,6 +9,9 @@ Besides running the suite, this file provides test doubles for other harnesses:
       `info --user|--system APP_ID`,
       `list --app --user|--system --columns=application:f,version:f`,
       `install --user --noninteractive --assumeyes <official flatpakref>`,
+      `install --user --noninteractive --assumeyes [--reinstall] --bundle FILE` of a fixture bundle (a JSON
+      object with "app", "version" and "runtime"), `remotes --user --show-disabled --columns=name,url`,
+      `remote-add --user --if-not-exists NAME <Flathub's flathub.flatpakrepo>`,
       `update|uninstall --user --noninteractive --assumeyes APP_ID` for apps other than Gear Lever and
       `run --user|--system it.mijorus.gearlever ACTION ...` (Gear Lever 4.6.2's CLI, maintaining real
       AppImage, desktop, icon and gearlever.conf files under $HOME). Other calls exit 97 and are logged.
@@ -43,6 +46,9 @@ ROOT = THIS.parents[1]
 HELPER = ROOT / "files/system/usr/libexec/monolith/gear-lever-app"
 APP_ID = "it.mijorus.gearlever"
 PRISM_ID = "org.prismlauncher.PrismLauncher"
+FLATHUB_REPO = "https://dl.flathub.org/repo/flathub.flatpakrepo"
+FLATHUB_URL = "https://dl.flathub.org/repo/"
+GNOME_RUNTIME = "org.gnome.Platform/x86_64/50"
 
 
 def flatpakref(app_id):
@@ -200,11 +206,15 @@ def default_state(installed=None):
     apps: {app ID: {"user"|"system": version}} installations of other Flatpak apps.
     flathub: {app ID: version} what installing an app's official flatpakref for the user, or updating
              the user's copy, delivers.
+    runtimes: {"user"|"system": [runtime ref]} installed runtimes. A bundle installs only when its runtime is
+              installed, or a user remote with Flathub's URL provides it, which installs it for the user.
+    user_remotes: {name: URL} remotes of the user's installation.
     home: GLib home directory Gear Lever sees (default: the caller's $HOME).
     running: {AppImage path or "*": true|false|null} reported in the JSON `running` field.
     faults: {"list": "fail"|"bad-json"|"schema"|"hang", "integrate": "fail"|"partial"|"crash"|"corrupt"|"block",
              "remove": "fail"|"partial", "set-update-source": "fail", "app-install": "fail",
-             "app-update": "fail", "app-uninstall": "fail"|"partial", "flatpak": "broken"}; a
+             "app-update": "fail", "app-uninstall": "fail"|"partial", "bundle-install": "fail",
+             "remote-add": "fail", "flatpak": "broken"}; a
              {"mode": ..., "once": true} value is consumed by its first use. "crash" stops after copying the
              AppImage and icon. A broken flatpak fails every call with exit status 1.
     The AppImage folder is the appimages-default-folder GSettings value in Gear Lever's keyfile
@@ -212,6 +222,7 @@ def default_state(installed=None):
     """
     return {"installed": dict({"system": "4.6.2"} if installed is None else installed),
             "install_version": "4.6.2", "install_fails": False, "apps": {}, "flathub": {PRISM_ID: "11.1.1"},
+            "runtimes": {"system": [GNOME_RUNTIME]}, "user_remotes": {},
             "home": None, "running": {}, "faults": {}, "hang_seconds": 30}
 
 
@@ -607,6 +618,30 @@ def flatpak_app_command(state, arguments):
     return 0, f"Uninstalling app/{app_id}/x86_64/stable\nUninstall complete.\n", ""
 
 
+def flatpak_bundle_install(state, options, path):
+    """Install a fixture bundle for the user; like Flatpak, reinstalling the installed commit needs --reinstall."""
+    try:
+        bundle = json.loads(Path(path).read_text())
+        app_id, version, runtime = bundle["app"], bundle["version"], bundle["runtime"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return 1, "", f"error: {path} is not a Flatpak bundle\n"
+    # Each modelled version is its own commit.
+    if state.get("apps", {}).get(app_id, {}).get("user") == version and "--reinstall" not in options:
+        return 1, "", f"Error: Failed to install bundle {app_id}: {app_id} already installed\n"
+    if take_fault(state, "bundle-install") == "fail":
+        return 1, "", f"Error: Failed to install bundle {app_id}: No space left on device\n"
+    runtimes = state.setdefault("runtimes", {})
+    out = ""
+    if not any(runtime in runtimes.get(scope, []) for scope in ("user", "system")):
+        if FLATHUB_URL not in state.get("user_remotes", {}).values():
+            return 1, "", (f"error: The application {app_id}/x86_64/master requires the runtime {runtime} "
+                           "which was not found\n")
+        runtimes.setdefault("user", []).append(runtime)
+        out = f"Installing runtime/{runtime}\n"
+    state.setdefault("apps", {}).setdefault(app_id, {})["user"] = version
+    return 0, out + f"Installing app/{app_id}/x86_64/master\n", ""
+
+
 def flatpak_command(state, arguments, sync_dir):
     scopes = ("--user", "--system")
     if take_fault(state, "flatpak") == "broken":
@@ -649,6 +684,17 @@ def flatpak_command(state, arguments, sync_dir):
     if (len(arguments) == 5 and arguments[0] in ("install", "update", "uninstall")
             and arguments[1:4] == ["--user", "--noninteractive", "--assumeyes"]):
         return flatpak_app_command(state, arguments)
+    if (len(arguments) >= 6 and arguments[:4] == ["install", "--user", "--noninteractive", "--assumeyes"]
+            and arguments[-2] == "--bundle" and set(arguments[4:-2]) <= {"--reinstall"}):
+        return flatpak_bundle_install(state, arguments[4:-2], arguments[-1])
+    if arguments == ["remotes", "--user", "--show-disabled", "--columns=name,url"]:
+        return 0, "".join(f"{name}\t{url}\n" for name, url in state.get("user_remotes", {}).items()), ""
+    if (len(arguments) == 5 and arguments[:3] == ["remote-add", "--user", "--if-not-exists"]
+            and arguments[4] == FLATHUB_REPO):
+        if take_fault(state, "remote-add") == "fail":
+            return 1, "", f"error: Can't load uri {FLATHUB_REPO}: Could not connect\n"
+        state.setdefault("user_remotes", {}).setdefault(arguments[3], FLATHUB_URL)
+        return 0, "", ""
     return None
 
 
