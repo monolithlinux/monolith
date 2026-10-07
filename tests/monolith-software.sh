@@ -1335,10 +1335,14 @@ test_moonfin_lifecycle() {
     assert_moonfin_installations '{"user": "2.0.0"}'
     grep -qx "source=$(moonfin_url 2.0.0)" "$state_root/moonfin.managed" || fail 'Moonfin marker has the wrong source'
 
-    # Install downloads and installs the newest release again, even when it is installed.
+    # Installing again leaves the newest release alone: reinstalling the commit
+    # Flatpak has while Moonfin runs would leave Flatpak unable to remove it.
     : >"$case_root/curl.log"
-    run_monolith install moonfin
-    grep -Fxq "$(moonfin_url 2.0.0)" "$case_root/curl.log" || fail 'install did not download the newest release'
+    forget_flatpak_calls
+    run_monolith install moonfin >"$case_root/install.log"
+    grep -Eq '^  Moonfin +Up to date$' "$case_root/install.log" || fail 'installing a current Moonfin was not up to date'
+    if grep -Fq '.flatpak' "$case_root/curl.log"; then fail 'installing a current Moonfin downloaded it again'; fi
+    assert_no_flatpak_changes
     assert_moonfin_installations '{"user": "2.0.0"}'
 
     # Removal uninstalls the app without its data in ~/.var/app.

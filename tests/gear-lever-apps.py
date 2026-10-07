@@ -9,7 +9,7 @@ Besides running the suite, this file provides test doubles for other harnesses:
       `info --user|--system APP_ID`,
       `list --app --user|--system --columns=application:f,version:f`,
       `install --user --noninteractive --assumeyes <official flatpakref>`,
-      `install --user --noninteractive --assumeyes [--reinstall] --bundle FILE` of a fixture bundle (a JSON
+      `install --user --noninteractive --assumeyes --bundle FILE` of a fixture bundle (a JSON
       object with "app", "version" and "runtime"), `remotes --user --show-disabled --columns=name,url`,
       `remote-add --user --if-not-exists NAME <Flathub's flathub.flatpakrepo>`,
       `update|uninstall --user --noninteractive --assumeyes APP_ID` for apps other than Gear Lever and
@@ -618,15 +618,15 @@ def flatpak_app_command(state, arguments):
     return 0, f"Uninstalling app/{app_id}/x86_64/stable\nUninstall complete.\n", ""
 
 
-def flatpak_bundle_install(state, options, path):
-    """Install a fixture bundle for the user; like Flatpak, reinstalling the installed commit needs --reinstall."""
+def flatpak_bundle_install(state, path):
+    """Install a fixture bundle for the user; like Flatpak, refuse the commit that is already installed."""
     try:
         bundle = json.loads(Path(path).read_text())
         app_id, version, runtime = bundle["app"], bundle["version"], bundle["runtime"]
     except (OSError, ValueError, KeyError, TypeError):
         return 1, "", f"error: {path} is not a Flatpak bundle\n"
     # Each modelled version is its own commit.
-    if state.get("apps", {}).get(app_id, {}).get("user") == version and "--reinstall" not in options:
+    if state.get("apps", {}).get(app_id, {}).get("user") == version:
         return 1, "", f"Error: Failed to install bundle {app_id}: {app_id} already installed\n"
     if take_fault(state, "bundle-install") == "fail":
         return 1, "", f"Error: Failed to install bundle {app_id}: No space left on device\n"
@@ -684,9 +684,8 @@ def flatpak_command(state, arguments, sync_dir):
     if (len(arguments) == 5 and arguments[0] in ("install", "update", "uninstall")
             and arguments[1:4] == ["--user", "--noninteractive", "--assumeyes"]):
         return flatpak_app_command(state, arguments)
-    if (len(arguments) >= 6 and arguments[:4] == ["install", "--user", "--noninteractive", "--assumeyes"]
-            and arguments[-2] == "--bundle" and set(arguments[4:-2]) <= {"--reinstall"}):
-        return flatpak_bundle_install(state, arguments[4:-2], arguments[-1])
+    if arguments[:5] == ["install", "--user", "--noninteractive", "--assumeyes", "--bundle"] and len(arguments) == 6:
+        return flatpak_bundle_install(state, arguments[5])
     if arguments == ["remotes", "--user", "--show-disabled", "--columns=name,url"]:
         return 0, "".join(f"{name}\t{url}\n" for name, url in state.get("user_remotes", {}).items()), ""
     if (len(arguments) == 5 and arguments[:3] == ["remote-add", "--user", "--if-not-exists"]
