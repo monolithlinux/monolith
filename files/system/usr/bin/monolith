@@ -16,6 +16,7 @@ GEAR_LEVER_APP_HELPER="$(dirname -- "$SELF")/../libexec/monolith/gear-lever-app"
 GEAR_LEVER_ID=it.mijorus.gearlever
 GEAR_LEVER_REF=https://dl.flathub.org/repo/appstream/it.mijorus.gearlever.flatpakref
 GEAR_LEVER_MIN_VERSION=4.6.2
+FLATHUB_REPO=https://dl.flathub.org/repo/flathub.flatpakrepo
 QUIT_TOKEN=__monolith_quit__
 # The Python helpers' update action exits with this when it changed nothing.
 HELPER_UP_TO_DATE=3
@@ -31,12 +32,13 @@ ONLY_IF_OUTDATED=0
 UP_TO_DATE=0
 
 readonly SELF BIN_DIR DATA_HOME STATE_HOME MANAGED_ROOT STATE_ROOT GHOSTTY_THEMES_HELPER GEAR_LEVER_APP_HELPER
-readonly GEAR_LEVER_ID GEAR_LEVER_REF GEAR_LEVER_MIN_VERSION QUIT_TOKEN HELPER_UP_TO_DATE
+readonly GEAR_LEVER_ID GEAR_LEVER_REF GEAR_LEVER_MIN_VERSION FLATHUB_REPO QUIT_TOKEN HELPER_UP_TO_DATE
 
-ALL_TOOLS=(tea superfile nak ngit claude codex opencode omp herdr wowup-cf r2modman prismlauncher ghostty-themes)
+ALL_TOOLS=(tea superfile nak ngit claude codex opencode omp herdr wowup-cf r2modman prismlauncher moonfin ghostty-themes)
 CLI_TOOLS=(tea superfile nak ngit)
 AI_TOOLS=(claude codex opencode omp herdr)
 GAMING_TOOLS=(wowup-cf r2modman prismlauncher)
+MEDIA_TOOLS=(moonfin)
 APPEARANCE_TOOLS=(ghostty-themes)
 
 # Per-render state; menus and list compute each row once. Gear Lever apps
@@ -108,6 +110,7 @@ tool_name() {
         wowup-cf)  echo "WowUp-CF" ;;
         r2modman)  echo "r2modman" ;;
         prismlauncher) echo "Prism Launcher" ;;
+        moonfin)   echo "Moonfin" ;;
         ghostty-themes) echo "Ghostty Themes" ;;
         *)         return 1 ;;
     esac
@@ -127,6 +130,7 @@ tool_description() {
         wowup-cf)  echo "World of Warcraft addon manager with CurseForge and WoW Forever support" ;;
         r2modman)  echo "Thunderstore mod manager for Lethal Company, Risk of Rain 2, Valheim, and more" ;;
         prismlauncher) echo "Minecraft launcher for multiple instances, mods, and modpacks" ;;
+        moonfin)   echo "media client for Jellyfin and Emby servers" ;;
         ghostty-themes) echo "official Ghostty theme collection" ;;
         *)         return 1 ;;
     esac
@@ -137,6 +141,7 @@ tool_category() {
         tea|superfile|nak|ngit) echo "Developer CLIs" ;;
         claude|codex|opencode|omp|herdr) echo "AI coding" ;;
         wowup-cf|r2modman|prismlauncher) echo "Gaming" ;;
+        moonfin) echo "Media" ;;
         ghostty-themes) echo "Appearance" ;;
         *) return 1 ;;
     esac
@@ -153,7 +158,7 @@ tool_commands() {
         opencode)  echo "opencode" ;;
         omp)       echo "omp" ;;
         herdr)     echo "herdr" ;;
-        wowup-cf|r2modman|prismlauncher|ghostty-themes) return 0 ;;
+        wowup-cf|r2modman|prismlauncher|moonfin|ghostty-themes) return 0 ;;
         *)         return 1 ;;
     esac
 }
@@ -226,10 +231,11 @@ is_gear_lever_app() {
     esac
 }
 
-# Flathub apps that Monolith installs for the user with Flatpak.
+# Flatpak apps that Monolith installs for the user: from Flathub, or from the
+# Flatpak bundle of a GitHub release (see flatpak_bundle_release).
 is_flatpak_app() {
     case "$1" in
-        prismlauncher) return 0 ;;
+        prismlauncher|moonfin) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -237,12 +243,22 @@ is_flatpak_app() {
 flatpak_app_id() {
     case "$1" in
         prismlauncher) echo "org.prismlauncher.PrismLauncher" ;;
+        moonfin) echo "org.moonfin.linux" ;;
         *) return 1 ;;
     esac
 }
 
 flatpak_app_ref() {
     printf 'https://dl.flathub.org/repo/appstream/%s.flatpakref\n' "$(flatpak_app_id "$1")"
+}
+
+# For a Flatpak app that is not on Flathub, print "repository<TAB>asset" for
+# the Flatpak bundle of its latest GitHub release; {tag} stands for the tag.
+flatpak_bundle_release() {
+    case "$1" in
+        moonfin) printf '%s\t%s\n' Moonfin-Client/Moonfin-Core 'Moonfin_Linux_v{tag}.flatpak' ;;
+        *) return 1 ;;
+    esac
 }
 
 is_managed() {
@@ -1082,6 +1098,8 @@ install_tool() {
         fi
     elif is_gear_lever_app "$tool"; then
         install_gear_lever_app "$tool"
+    elif flatpak_bundle_release "$tool" >/dev/null; then
+        install_flatpak_bundle "$tool"
     elif is_flatpak_app "$tool"; then
         install_flatpak_app "$tool"
     else
@@ -1141,6 +1159,7 @@ kept_data() {
         wowup-cf) echo "settings, game installations, and addons" ;;
         r2modman) echo "profiles, mods, and settings" ;;
         prismlauncher) echo "instances, worlds, accounts, and settings" ;;
+        moonfin) echo "servers, sign-ins, settings, and downloads" ;;
         *) echo "settings, authentication, sessions, and project files" ;;
     esac
 }
@@ -1276,6 +1295,76 @@ install_flatpak_app() {
     flatpak_installed user "$id" || die "Flatpak does not list $name for your account; Monolith recorded nothing"
     version="$(flatpak_version user "$id")"
     write_marker "$tool" "${version:-unknown}" "$ref"
+}
+
+# Give the user's Flatpak installation a Flathub remote, as Flathub
+# flatpakrefs do, unless it has one. remote-add --if-not-exists would also
+# clear the filter of an existing remote, so it runs only when none exists.
+ensure_user_flathub() {
+    local listing
+    listing="$(flatpak remotes --user --show-disabled --columns=name,url 2>/dev/null)" || listing=""
+    if ! awk -F '\t' '$1 == "flathub" || $2 == "https://dl.flathub.org/repo/" { found = 1 }
+        END { exit !found }' <<<"$listing"; then
+        flatpak remote-add --user --if-not-exists flathub "$FLATHUB_REPO" 9>&-
+    fi
+}
+
+# Install TOOL from the Flatpak bundle of its latest GitHub release for the
+# user, or update the user's copy, which also adopts one installed outside
+# Monolith. The bundle must match the SHA256 digest GitHub publishes. Its
+# origin remote has no URL, so Flatpak itself never updates it. As for
+# Flathub apps, a system-wide copy is left alone.
+install_flatpak_bundle() {
+    local tool="$1" name id release repo template asset tag url sha256 bundle version
+    local had_copy=0 installed=""
+    name="$(tool_name "$tool")"
+    id="$(flatpak_app_id "$tool")"
+    release="$(flatpak_bundle_release "$tool")"
+    IFS=$'\t' read -r repo template <<<"$release"
+    require_amd64 "$name"
+    require_flatpak "$tool"
+    if flatpak_installed user "$id"; then
+        had_copy=1
+        installed="$(flatpak_version user "$id")"
+    elif flatpak_installed system "$id"; then
+        if has_marker "$tool"; then
+            die "$name is no longer installed for your account; only a system-wide copy remains, which Monolith does not manage, so nothing was changed. Run monolith remove $tool to drop Monolith's record and keep the system copy"
+        fi
+        die "$name is already installed system-wide, outside Monolith, so Monolith left it alone instead of adding a second copy. To have Monolith install and update $name for your account, uninstall the system copy first; your $(kept_data "$tool") in ~/.var/app/$id are kept"
+    fi
+    asset="$(github_release_asset "$repo" "$template")"
+    IFS=$'\t' read -r tag url sha256 <<<"$asset"
+    # The installed copy decides, even when another bundle replaced it by hand.
+    if updating "$tool" && [ "$installed" = "$tag" ]; then
+        [ "$(marker_version "$tool")" = "$tag" ] || write_marker "$tool" "$tag" "$url"
+        report_up_to_date "$tool" "$tag"
+        return 0
+    fi
+    if [ "$had_copy" -eq 1 ] && ! has_marker "$tool"; then
+        note "Adopting the existing per-user $name Flatpak"
+    fi
+    note "Downloading $name $tag from GitHub"
+    new_temp_dir
+    bundle="$ACTIVE_TEMP/${url##*/}"
+    curl_fetch download "$url" "$bundle"
+    verify_sha256 "$bundle" "$sha256"
+    # The bundle names its runtime but no repository for it. Flatpak takes the
+    # runtime from the system installation when it is there, and otherwise
+    # needs Flathub among the user's remotes.
+    ensure_user_flathub ||
+        warn "Flathub could not be added for your account; the installation fails if $name's runtime is missing"
+    note "Installing $name $tag for your account"
+    # --reinstall lets Flatpak accept the bundle of the installed commit; a
+    # different release still updates the installed copy in place.
+    if ! flatpak install --user --noninteractive --assumeyes --reinstall --bundle "$bundle" 9>&-; then
+        if [ "$had_copy" -eq 1 ] && flatpak_installed user "$id"; then
+            die "$name $tag could not be installed; Flatpak kept the installed version"
+        fi
+        die "$name $tag could not be installed"
+    fi
+    flatpak_installed user "$id" || die "Flatpak does not list $name for your account; Monolith recorded nothing"
+    version="$(flatpak_version user "$id")"
+    write_marker "$tool" "${version:-$tag}" "$url"
 }
 
 # Uninstall the user's copy of TOOL. Its data in ~/.var/app stays, and a
@@ -1929,7 +2018,7 @@ show_gear_lever_app_details() {
 }
 
 show_flatpak_app_details() {
-    local tool="$1" name id version="${ROW_VERSION[$1]}"
+    local tool="$1" name id release="" version="${ROW_VERSION[$1]}"
     name="$(tool_name "$tool")"
     id="$(flatpak_app_id "$tool")"
     case "$version" in
@@ -1937,7 +2026,12 @@ show_flatpak_app_details() {
         recorded\ *) printf 'Last recorded version: %s\n' "${version#recorded }" ;;
         *) printf 'Version:  %s\n' "$version" ;;
     esac
-    printf 'Source:   Flathub (%s)\n' "$id"
+    if release="$(flatpak_bundle_release "$tool")"; then
+        printf 'Source:   GitHub, %s (SHA256-verified bundle)\n' "${release%%$'\t'*}"
+        printf 'Updates:  only through Monolith, such as monolith update or mjust update\n'
+    else
+        printf 'Source:   Flathub (%s)\n' "$id"
+    fi
     case "${FLATPAK_SCOPE[$tool]}" in
         user) printf 'Scope:    your account (per-user Flatpak)\n' ;;
         system) printf 'Scope:    every account (system-wide Flatpak, not managed by Monolith)\n' ;;
@@ -1953,15 +2047,28 @@ show_flatpak_app_details() {
             printf 'Remove drops Monolith'\''s record. Your data is kept either way.\n'
             ;;
         external:system)
-            printf '\n%s is installed system-wide and updates with the system'\''s Flatpaks,\n' "$name"
-            printf 'so Monolith leaves it alone instead of installing a second copy. To have\n'
-            printf 'Monolith manage a per-user copy, first uninstall the system-wide one; your data\n'
-            printf 'is kept.\n'
+            if [ -n "$release" ]; then
+                printf '\n%s is installed system-wide, outside Monolith, so Monolith leaves it alone\n' "$name"
+                printf 'instead of installing a second copy. To have Monolith install and update it\n'
+                printf 'for your account, first uninstall the system-wide one; your data is kept.\n'
+            else
+                printf '\n%s is installed system-wide and updates with the system'\''s Flatpaks,\n' "$name"
+                printf 'so Monolith leaves it alone instead of installing a second copy. To have\n'
+                printf 'Monolith manage a per-user copy, first uninstall the system-wide one; your data\n'
+                printf 'is kept.\n'
+            fi
             ;;
         external:user|"not installed:"*)
-            printf '\nMonolith installs %s from Flathub for your account; no\n' "$name"
-            printf 'administrator password is needed. Bazaar, flatpak update, topgrade, and\n'
-            printf 'automatic Flatpak updates keep it current as well.\n'
+            if [ -n "$release" ]; then
+                printf '\nMonolith installs the newest %s release for your account after checking\n' "$name"
+                printf 'it against the SHA256 digest GitHub publishes; no administrator password is\n'
+                printf 'needed. Bazaar, flatpak update, and automatic Flatpak updates cannot update\n'
+                printf 'this bundle, so Monolith installs newer releases instead.\n'
+            else
+                printf '\nMonolith installs %s from Flathub for your account; no\n' "$name"
+                printf 'administrator password is needed. Bazaar, flatpak update, topgrade, and\n'
+                printf 'automatic Flatpak updates keep it current as well.\n'
+            fi
             printf 'Removal keeps your %s.\n' "$(kept_data "$tool")"
             ;;
     esac
@@ -2144,6 +2251,7 @@ interactive_menu() {
             "$(category_label "Developer CLIs" "${CLI_TOOLS[@]}")"$'\t'"cli"
             "$(category_label "AI coding" "${AI_TOOLS[@]}")"$'\t'"ai"
             "$(category_label "Gaming" "${GAMING_TOOLS[@]}")"$'\t'"gaming"
+            "$(category_label "Media" "${MEDIA_TOOLS[@]}")"$'\t'"media"
             "$(category_label "Appearance" "${APPEARANCE_TOOLS[@]}")"$'\t'"appearance"
             "All applications"$'\t'"all"
             "Update installed ($marked managed)"$'\t'"update"
@@ -2155,6 +2263,7 @@ interactive_menu() {
             cli) manage_category "Developer CLIs" "${CLI_TOOLS[@]}" ;;
             ai) manage_category "AI coding" "${AI_TOOLS[@]}" ;;
             gaming) manage_category "Gaming" "${GAMING_TOOLS[@]}" ;;
+            media) manage_category "Media" "${MEDIA_TOOLS[@]}" ;;
             appearance) manage_category "Appearance" "${APPEARANCE_TOOLS[@]}" ;;
             all) manage_category "All applications" "${ALL_TOOLS[@]}" ;;
             update) menu_update "${ALL_TOOLS[@]}" ;;
@@ -2181,6 +2290,7 @@ Tool IDs:
   Developer CLIs   tea superfile nak ngit
   AI coding        claude codex opencode omp herdr
   Gaming           wowup-cf r2modman prismlauncher
+  Media            moonfin
   Appearance       ghostty-themes
 EOF
 }
