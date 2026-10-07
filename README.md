@@ -20,6 +20,14 @@ at 12 points. First launch creates defaults in `~/.config/ghostty/` when no
 Ghostty configuration exists. Existing shell settings and user-installed tools
 continue to work, and existing Ghostty configurations are preserved.
 
+Konsole is not included. To use it anyway, install
+[Konsole from Flathub](https://flathub.org/apps/org.kde.konsole) through Bazaar.
+If you chose Konsole as your default terminal, install it that way or pick
+Ghostty under System Settings → Default Applications. Dolphin's terminal panel
+(F4) and Kate's terminal panel keep working. KDE's crash report window,
+DrKonqi, is left out as well, because Fedora's package for it requires Konsole;
+`coredumpctl list` still shows programs that crashed.
+
 The image includes 554 themes: the full Tinted Terminal Ghostty catalog, including
 19 Gruvbox variants, plus the four official Catppuccin themes. Browse and preview
 them with `ghostty +list-themes`, then set, for example,

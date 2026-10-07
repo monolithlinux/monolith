@@ -33,6 +33,10 @@ modules:
       packages:
         # Ghostty replaces the shared terminal in the KDE editions.
         - ptyxis
+        # Ghostty also replaces Konsole. dnf removes plasma-drkonqi (KDE's crash
+        # dialog) with it, because that package requires Konsole. konsole-part
+        # stays for the terminal panels in Dolphin and Kate.
+        - konsole
         # Bazaar replaces Discover.
         - plasma-discover
         # Plasma 6.7.2's first-run wizard crashes during initialization.
@@ -107,14 +111,10 @@ modules:
           -e 's/^DBusActivatable=true$/DBusActivatable=false/' \
           -e '/^Exec=/s/--gtk-single-instance=true/--gtk-single-instance=false/g' \
           "$desktop"
-        # Ghostty owns the default Ctrl+Alt+T shortcut for new profiles.
-        # Existing user shortcut assignments, including Super+T, take priority.
-        for entry in /usr/share/applications/org.kde.konsole.desktop \
-          /usr/share/kglobalaccel/org.kde.konsole.desktop; do
-          if [ -f "$entry" ]; then
-            sed -i '/^X-KDE-Shortcuts=/d' "$entry"
-          fi
-        done
+        # Konsole is removed above, but its KPart must stay for the terminal
+        # panels in Dolphin and Kate.
+        if rpm -q konsole; then exit 1; fi
+        rpm -q konsole-part
         test -x /usr/bin/fish
         test -f /usr/share/fish/vendor_functions.d/fish_prompt.fish
         test -f /usr/share/fish/vendor_conf.d/pure.fish

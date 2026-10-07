@@ -28,6 +28,30 @@
 #   files/kde/usr/bin/monolith-news --preview news/announcements.toml
 
 [[announcements]]
+id = "2026-10-07-konsole-removed"
+date = 2026-10-07
+title = "Konsole is no longer included"
+category = "Monolith"
+body = """
+Ghostty is Monolith's terminal, so the next update removes Konsole, KDE's own
+terminal app.
+
+- **Want Konsole anyway?** Install it from Flathub through Bazaar.
+- **Default terminal:** If you chose Konsole as your default terminal, install
+  it from Flathub or pick Ghostty under System Settings → Default Applications.
+- **Still working:** Dolphin's terminal panel (F4) and Kate's terminal panel.
+- **Crash reports:** KDE's crash report window (DrKonqi) goes too, because
+  Fedora's package for it requires Konsole. `coredumpctl list` still shows
+  programs that crashed.
+
+The change takes effect after you update Monolith and reboot.
+"""
+links = [
+  { label = "Konsole on Flathub", url = "https://flathub.org/apps/org.kde.konsole" },
+  { label = "Report a problem", url = "https://github.com/monolithlinux/monolith/issues" },
+]
+
+[[announcements]]
 id = "2026-10-07-plezy"
 date = 2026-10-07
 title = "Plezy joins Monolith Software"
