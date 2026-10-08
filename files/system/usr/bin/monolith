@@ -34,11 +34,12 @@ UP_TO_DATE=0
 readonly SELF BIN_DIR DATA_HOME STATE_HOME MANAGED_ROOT STATE_ROOT GHOSTTY_THEMES_HELPER GEAR_LEVER_APP_HELPER
 readonly GEAR_LEVER_ID GEAR_LEVER_REF GEAR_LEVER_MIN_VERSION FLATHUB_REPO QUIT_TOKEN HELPER_UP_TO_DATE
 
-ALL_TOOLS=(tea superfile nak ngit claude codex opencode omp herdr wowup-cf r2modman prismlauncher moonfin plezy ghostty-themes)
+ALL_TOOLS=(tea superfile nak ngit claude codex opencode omp herdr wowup-cf r2modman prismlauncher moonfin plezy fluxer fluxer-canary ghostty-themes)
 CLI_TOOLS=(tea superfile nak ngit)
 AI_TOOLS=(claude codex opencode omp herdr)
 GAMING_TOOLS=(wowup-cf r2modman prismlauncher)
 MEDIA_TOOLS=(moonfin plezy)
+COMMUNICATION_TOOLS=(fluxer fluxer-canary)
 APPEARANCE_TOOLS=(ghostty-themes)
 
 # Per-render state; menus and list compute each row once. Gear Lever apps
@@ -112,6 +113,8 @@ tool_name() {
         prismlauncher) echo "Prism Launcher" ;;
         moonfin)   echo "Moonfin" ;;
         plezy)     echo "Plezy" ;;
+        fluxer)    echo "Fluxer" ;;
+        fluxer-canary) echo "Fluxer Canary" ;;
         ghostty-themes) echo "Ghostty Themes" ;;
         *)         return 1 ;;
     esac
@@ -133,6 +136,8 @@ tool_description() {
         prismlauncher) echo "Minecraft launcher for multiple instances, mods, and modpacks" ;;
         moonfin)   echo "media client for Jellyfin and Emby servers" ;;
         plezy)     echo "media client for Plex, Jellyfin, and Emby servers" ;;
+        fluxer)    echo "open-source chat with voice calls for friends and communities" ;;
+        fluxer-canary) echo "Fluxer's early-access channel with the newest features" ;;
         ghostty-themes) echo "official Ghostty theme collection" ;;
         *)         return 1 ;;
     esac
@@ -144,6 +149,7 @@ tool_category() {
         claude|codex|opencode|omp|herdr) echo "AI coding" ;;
         wowup-cf|r2modman|prismlauncher) echo "Gaming" ;;
         moonfin|plezy) echo "Media" ;;
+        fluxer|fluxer-canary) echo "Communication" ;;
         ghostty-themes) echo "Appearance" ;;
         *) return 1 ;;
     esac
@@ -160,7 +166,7 @@ tool_commands() {
         opencode)  echo "opencode" ;;
         omp)       echo "omp" ;;
         herdr)     echo "herdr" ;;
-        wowup-cf|r2modman|prismlauncher|moonfin|plezy|ghostty-themes) return 0 ;;
+        wowup-cf|r2modman|prismlauncher|moonfin|plezy|fluxer|fluxer-canary|ghostty-themes) return 0 ;;
         *)         return 1 ;;
     esac
 }
@@ -233,11 +239,12 @@ is_gear_lever_app() {
     esac
 }
 
-# Flatpak apps that Monolith installs for the user: from Flathub, or from the
-# Flatpak bundle of a GitHub release (see flatpak_bundle_release).
+# Flatpak apps that Monolith installs for the user: from an official flatpakref
+# (see flatpak_app_ref), or from the Flatpak bundle of a GitHub release (see
+# flatpak_bundle_release).
 is_flatpak_app() {
     case "$1" in
-        prismlauncher|moonfin|plezy) return 0 ;;
+        prismlauncher|moonfin|plezy|fluxer|fluxer-canary) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -247,12 +254,27 @@ flatpak_app_id() {
         prismlauncher) echo "org.prismlauncher.PrismLauncher" ;;
         moonfin) echo "org.moonfin.linux" ;;
         plezy) echo "com.edde746.plezy" ;;
+        fluxer) echo "app.fluxer.Fluxer" ;;
+        fluxer-canary) echo "app.fluxer.FluxerCanary" ;;
         *) return 1 ;;
     esac
 }
 
+# The official flatpakref of a Flatpak app: Flathub's, or the developer's own
+# for an app or channel that Flathub does not carry.
 flatpak_app_ref() {
-    printf 'https://dl.flathub.org/repo/appstream/%s.flatpakref\n' "$(flatpak_app_id "$1")"
+    case "$1" in
+        fluxer-canary) echo "https://pkgs.fluxer.com/flatpak/fluxer-canary.flatpakref" ;;
+        *) printf 'https://dl.flathub.org/repo/appstream/%s.flatpakref\n' "$(flatpak_app_id "$1")" ;;
+    esac
+}
+
+# Where flatpak_app_ref installs a Flatpak app from, for messages.
+flatpak_app_source() {
+    case "$1" in
+        fluxer-canary) echo "Fluxer's Flatpak repository" ;;
+        *) echo "Flathub" ;;
+    esac
 }
 
 # For a Flatpak app that is not on Flathub, print "repository<TAB>asset" for
@@ -1164,6 +1186,7 @@ kept_data() {
         r2modman) echo "profiles, mods, and settings" ;;
         prismlauncher) echo "instances, worlds, accounts, and settings" ;;
         moonfin|plezy) echo "servers, sign-ins, settings, and downloads" ;;
+        fluxer|fluxer-canary) echo "sign-ins and settings" ;;
         *) echo "settings, authentication, sessions, and project files" ;;
     esac
 }
@@ -1257,9 +1280,10 @@ flatpak_commit() {
     flatpak info --user --show-commit "$1" 2>/dev/null || true
 }
 
-# Install TOOL from Flathub for the user, or update the user's copy, which also
-# adopts one installed outside Monolith. A system-wide copy updates with the
-# system's Flatpaks, so Monolith leaves it alone rather than adding a second.
+# Install TOOL from its official flatpakref for the user, or update the user's
+# copy, which also adopts one installed outside Monolith. A system-wide copy
+# updates with the system's Flatpaks, so Monolith leaves it alone rather than
+# adding a second.
 install_flatpak_app() {
     local tool="$1" name id ref version commit=""
     name="$(tool_name "$tool")"
@@ -1268,7 +1292,7 @@ install_flatpak_app() {
     require_flatpak "$tool"
     if flatpak_installed user "$id"; then
         if has_marker "$tool"; then
-            note "Updating $name from Flathub"
+            note "Updating $name from $(flatpak_app_source "$tool")"
         else
             note "Adopting the existing per-user $name Flatpak"
         fi
@@ -1290,11 +1314,11 @@ install_flatpak_app() {
         if has_marker "$tool"; then
             die "$name is no longer installed for your account; only a system-wide copy remains, which updates with the system's Flatpaks. Monolith manages only per-user copies, so nothing was changed. Run monolith remove $tool to drop Monolith's record and keep the system copy"
         fi
-        die "$name is already installed system-wide and updates with the system's Flatpaks, so Monolith left it alone. To have Monolith manage a per-user copy instead, uninstall the system copy first; your instances in ~/.var/app/$id are kept"
+        die "$name is already installed system-wide and updates with the system's Flatpaks, so Monolith left it alone. To have Monolith manage a per-user copy instead, uninstall the system copy first; your $(kept_data "$tool") in ~/.var/app/$id are kept"
     else
-        note "Installing $name from Flathub for your account"
+        note "Installing $name from $(flatpak_app_source "$tool") for your account"
         flatpak install --user --noninteractive --assumeyes "$ref" 9>&- ||
-            die "$name could not be installed from Flathub"
+            die "$name could not be installed from $(flatpak_app_source "$tool")"
     fi
     flatpak_installed user "$id" || die "Flatpak does not list $name for your account; Monolith recorded nothing"
     version="$(flatpak_version user "$id")"
@@ -2038,7 +2062,7 @@ show_flatpak_app_details() {
         printf 'Source:   GitHub, %s (SHA256-verified bundle)\n' "${release%%$'\t'*}"
         printf 'Updates:  only through Monolith, such as monolith update or mjust update\n'
     else
-        printf 'Source:   Flathub (%s)\n' "$id"
+        printf 'Source:   %s (%s)\n' "$(flatpak_app_source "$tool")" "$id"
     fi
     case "${FLATPAK_SCOPE[$tool]}" in
         user) printf 'Scope:    your account (per-user Flatpak)\n' ;;
@@ -2073,9 +2097,12 @@ show_flatpak_app_details() {
                 printf 'needed. Bazaar, flatpak update, and automatic Flatpak updates cannot update\n'
                 printf 'this bundle, so Monolith installs newer releases instead.\n'
             else
-                printf '\nMonolith installs %s from Flathub for your account; no\n' "$name"
-                printf 'administrator password is needed. Bazaar, flatpak update, topgrade, and\n'
-                printf 'automatic Flatpak updates keep it current as well.\n'
+                printf '\nMonolith installs %s from %s\n' "$name" "$(flatpak_app_source "$tool")"
+                printf 'for your account; no administrator password is needed. Bazaar, flatpak update,\n'
+                printf 'topgrade, and automatic Flatpak updates keep it current as well.\n'
+                if [ "$(flatpak_app_source "$tool")" != Flathub ]; then
+                    printf 'This also adds %s to your account'\''s Flatpak sources.\n' "$(flatpak_app_source "$tool")"
+                fi
             fi
             printf 'Removal keeps your %s.\n' "$(kept_data "$tool")"
             ;;
@@ -2260,6 +2287,7 @@ interactive_menu() {
             "$(category_label "AI coding" "${AI_TOOLS[@]}")"$'\t'"ai"
             "$(category_label "Gaming" "${GAMING_TOOLS[@]}")"$'\t'"gaming"
             "$(category_label "Media" "${MEDIA_TOOLS[@]}")"$'\t'"media"
+            "$(category_label "Communication" "${COMMUNICATION_TOOLS[@]}")"$'\t'"communication"
             "$(category_label "Appearance" "${APPEARANCE_TOOLS[@]}")"$'\t'"appearance"
             "All applications"$'\t'"all"
             "Update installed ($marked managed)"$'\t'"update"
@@ -2272,6 +2300,7 @@ interactive_menu() {
             ai) manage_category "AI coding" "${AI_TOOLS[@]}" ;;
             gaming) manage_category "Gaming" "${GAMING_TOOLS[@]}" ;;
             media) manage_category "Media" "${MEDIA_TOOLS[@]}" ;;
+            communication) manage_category "Communication" "${COMMUNICATION_TOOLS[@]}" ;;
             appearance) manage_category "Appearance" "${APPEARANCE_TOOLS[@]}" ;;
             all) manage_category "All applications" "${ALL_TOOLS[@]}" ;;
             update) menu_update "${ALL_TOOLS[@]}" ;;
@@ -2299,6 +2328,7 @@ Tool IDs:
   AI coding        claude codex opencode omp herdr
   Gaming           wowup-cf r2modman prismlauncher
   Media            moonfin plezy
+  Communication    fluxer fluxer-canary
   Appearance       ghostty-themes
 EOF
 }

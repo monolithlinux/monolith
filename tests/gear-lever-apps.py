@@ -49,10 +49,12 @@ PRISM_ID = "org.prismlauncher.PrismLauncher"
 FLATHUB_REPO = "https://dl.flathub.org/repo/flathub.flatpakrepo"
 FLATHUB_URL = "https://dl.flathub.org/repo/"
 GNOME_RUNTIME = "org.gnome.Platform/x86_64/50"
+# Apps whose official flatpakref is the developer's own because Flathub does not carry them.
+FIRST_PARTY_FLATPAKREFS = {"app.fluxer.FluxerCanary": "https://pkgs.fluxer.com/flatpak/fluxer-canary.flatpakref"}
 
 
 def flatpakref(app_id):
-    return f"https://dl.flathub.org/repo/appstream/{app_id}.flatpakref"
+    return FIRST_PARTY_FLATPAKREFS.get(app_id, f"https://dl.flathub.org/repo/appstream/{app_id}.flatpakref")
 
 
 FLATPAKREF = flatpakref(APP_ID)
@@ -204,8 +206,8 @@ def default_state(installed=None):
     installed: {"user"|"system": "4.6.2"} Gear Lever installations by scope.
     install_version / install_fails: result of the official flatpakref user installation.
     apps: {app ID: {"user"|"system": version}} installations of other Flatpak apps.
-    flathub: {app ID: version} what installing an app's official flatpakref for the user, or updating
-             the user's copy, delivers.
+    flathub: {app ID: version} what installing an app's official flatpakref (Flathub's, or the developer's
+             own; see FIRST_PARTY_FLATPAKREFS) for the user, or updating the user's copy, delivers.
     runtimes: {"user"|"system": [runtime ref]} installed runtimes. A bundle installs only when its runtime is
               installed, or a user remote with Flathub's URL provides it, which installs it for the user.
     user_remotes: {name: URL} remotes of the user's installation.

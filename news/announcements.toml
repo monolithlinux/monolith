@@ -28,6 +28,36 @@
 #   files/kde/usr/bin/monolith-news --preview news/announcements.toml
 
 [[announcements]]
+id = "2026-10-07-fluxer"
+date = 2026-10-07
+title = "Fluxer and Fluxer Canary join Monolith Software"
+category = "Communication"
+install_path = ["monolith", "Communication"]
+body = """
+Fluxer is an open-source chat app with voice calls. To install it, run
+`monolith`, open **Communication**, and select **Fluxer** or **Fluxer Canary**.
+
+- **Two channels:** Fluxer is the stable release from Flathub. Fluxer Canary
+  gets new features first; for example, it can already sign in to self-hosted
+  Fluxer servers. You can install both, and each keeps its own data.
+- **Canary's source:** Flathub has only the stable channel, so Monolith installs
+  Canary from Fluxer's own signed Flatpak repository and adds that repository to
+  your account's software sources.
+- **Updates:** Both update like any other Flatpak, including the daily automatic
+  update, Bazaar, topgrade, and `monolith update`.
+- **Already installed?** Monolith takes over a copy installed for your account.
+  A system-wide copy, such as Fluxer from Bazaar, is left alone.
+- **Your data stays:** Removing either keeps your sign-ins and settings.
+
+No Communication category in `monolith` yet? Update Monolith and reboot first.
+"""
+links = [
+  { label = "Fluxer", url = "https://fluxer.app" },
+  { label = "Fluxer on Flathub", url = "https://flathub.org/apps/app.fluxer.Fluxer" },
+  { label = "Monolith software guide", url = "https://github.com/monolithlinux/monolith#fluxer" },
+]
+
+[[announcements]]
 id = "2026-10-07-konsole-removed"
 date = 2026-10-07
 title = "Konsole is no longer included"
