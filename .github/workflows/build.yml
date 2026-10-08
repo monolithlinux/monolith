@@ -1,8 +1,11 @@
 name: bluebuild
 on:
   schedule:
-    - cron:
-        "00 06 * * *" # daily, after Fedora publishes its Kinoite image
+    # Daily at 1:11 am Central, hours after Fedora updates its Kinoite image
+    # (usually 8-10 pm Central). Off the hour, because GitHub delays scheduled
+    # runs most at the start of each hour.
+    - cron: "11 1 * * *"
+      timezone: "America/Chicago"
   push:
     branches: [main]
     paths-ignore:
