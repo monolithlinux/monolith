@@ -283,7 +283,6 @@ modules:
           - com.vysp3r.ProtonPlus
           - com.github.zocker_160.SyncThingy
           - com.saivert.pwvucontrol
-          - org.jellyfin.JellyfinDesktop
           - io.github.getnf.embellish
           - org.cryptomator.Cryptomator
           - io.github.wivrn.wivrn
