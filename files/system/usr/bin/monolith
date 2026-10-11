@@ -34,11 +34,12 @@ UP_TO_DATE=0
 readonly SELF BIN_DIR DATA_HOME STATE_HOME MANAGED_ROOT STATE_ROOT GHOSTTY_THEMES_HELPER GEAR_LEVER_APP_HELPER
 readonly GEAR_LEVER_ID GEAR_LEVER_REF GEAR_LEVER_MIN_VERSION FLATHUB_REPO QUIT_TOKEN HELPER_UP_TO_DATE
 
-ALL_TOOLS=(tea superfile nak ngit claude codex opencode omp herdr wowup-cf r2modman prismlauncher moonfin plezy fluxer fluxer-canary ghostty-themes)
+ALL_TOOLS=(tea superfile nak ngit claude codex opencode omp herdr wowup-cf r2modman prismlauncher moonfin plezy photocraft vectorcraft filmcraft lightcraft pdfcraft effectcraft designcraft fluxer fluxer-canary ghostty-themes)
 CLI_TOOLS=(tea superfile nak ngit)
 AI_TOOLS=(claude codex opencode omp herdr)
 GAMING_TOOLS=(wowup-cf r2modman prismlauncher)
 MEDIA_TOOLS=(moonfin plezy)
+CREATIVE_TOOLS=(photocraft vectorcraft filmcraft lightcraft pdfcraft effectcraft designcraft)
 COMMUNICATION_TOOLS=(fluxer fluxer-canary)
 APPEARANCE_TOOLS=(ghostty-themes)
 
@@ -113,6 +114,13 @@ tool_name() {
         prismlauncher) echo "Prism Launcher" ;;
         moonfin)   echo "Moonfin" ;;
         plezy)     echo "Plezy" ;;
+        photocraft) echo "PhotoCraft" ;;
+        vectorcraft) echo "VectorCraft" ;;
+        filmcraft) echo "FilmCraft" ;;
+        lightcraft) echo "LightCraft" ;;
+        pdfcraft)  echo "PdfCraft" ;;
+        effectcraft) echo "EffectCraft" ;;
+        designcraft) echo "DesignCraft" ;;
         fluxer)    echo "Fluxer" ;;
         fluxer-canary) echo "Fluxer Canary" ;;
         ghostty-themes) echo "Ghostty Themes" ;;
@@ -136,6 +144,13 @@ tool_description() {
         prismlauncher) echo "Minecraft launcher for multiple instances, mods, and modpacks" ;;
         moonfin)   echo "media client for Jellyfin and Emby servers" ;;
         plezy)     echo "media client for Plex, Jellyfin, and Emby servers" ;;
+        photocraft) echo "image editor for photos and layered PSD documents" ;;
+        vectorcraft) echo "vector illustration editor for SVG and PDF artwork" ;;
+        filmcraft) echo "video editor with color and sound tools" ;;
+        lightcraft) echo "photo library and non-destructive raw developer" ;;
+        pdfcraft)  echo "PDF workbench to read, organize, combine, split, and secure PDFs" ;;
+        effectcraft) echo "motion graphics and visual effects compositor" ;;
+        designcraft) echo "page layout for magazines, books, and print documents" ;;
         fluxer)    echo "open-source chat with voice calls for friends and communities" ;;
         fluxer-canary) echo "Fluxer's early-access channel with the newest features" ;;
         ghostty-themes) echo "official Ghostty theme collection" ;;
@@ -149,6 +164,7 @@ tool_category() {
         claude|codex|opencode|omp|herdr) echo "AI coding" ;;
         wowup-cf|r2modman|prismlauncher) echo "Gaming" ;;
         moonfin|plezy) echo "Media" ;;
+        photocraft|vectorcraft|filmcraft|lightcraft|pdfcraft|effectcraft|designcraft) echo "Creative" ;;
         fluxer|fluxer-canary) echo "Communication" ;;
         ghostty-themes) echo "Appearance" ;;
         *) return 1 ;;
@@ -167,6 +183,7 @@ tool_commands() {
         omp)       echo "omp" ;;
         herdr)     echo "herdr" ;;
         wowup-cf|r2modman|prismlauncher|moonfin|plezy|fluxer|fluxer-canary|ghostty-themes) return 0 ;;
+        photocraft|vectorcraft|filmcraft|lightcraft|pdfcraft|effectcraft|designcraft) return 0 ;;
         *)         return 1 ;;
     esac
 }
@@ -245,6 +262,7 @@ is_gear_lever_app() {
 is_flatpak_app() {
     case "$1" in
         prismlauncher|moonfin|plezy|fluxer|fluxer-canary) return 0 ;;
+        photocraft|vectorcraft|filmcraft|lightcraft|pdfcraft|effectcraft|designcraft) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -256,6 +274,7 @@ flatpak_app_id() {
         plezy) echo "com.edde746.plezy" ;;
         fluxer) echo "app.fluxer.Fluxer" ;;
         fluxer-canary) echo "app.fluxer.FluxerCanary" ;;
+        photocraft|vectorcraft|filmcraft|lightcraft|pdfcraft|effectcraft|designcraft) echo "ai.storyteller.$1" ;;
         *) return 1 ;;
     esac
 }
@@ -278,11 +297,14 @@ flatpak_app_source() {
 }
 
 # For a Flatpak app that is not on Flathub, print "repository<TAB>asset" for
-# the Flatpak bundle of its latest GitHub release; {tag} stands for the tag.
+# the Flatpak bundle of its latest GitHub release; {tag} stands for the tag
+# and {version} for the tag without a leading v.
 flatpak_bundle_release() {
     case "$1" in
         moonfin) printf '%s\t%s\n' Moonfin-Client/Moonfin-Core 'Moonfin_Linux_v{tag}.flatpak' ;;
         plezy) printf '%s\t%s\n' edde746/plezy plezy-linux-x64.flatpak ;;
+        photocraft|vectorcraft|filmcraft|lightcraft|pdfcraft|effectcraft|designcraft)
+            printf '%s\t%s\n' "storytold/$1" "$1-{version}-linux-x86_64.flatpak" ;;
         *) return 1 ;;
     esac
 }
@@ -539,7 +561,8 @@ latest_github_tag() {
 }
 
 # Print "tag<TAB>url<TAB>sha256" for one exact asset of a repository's latest
-# release. GitHub's uploaded-asset SHA256 digest is required.
+# release; in TEMPLATE, {tag} stands for the tag and {version} for the tag
+# without a leading v. GitHub's uploaded-asset SHA256 digest is required.
 github_release_asset() {
     local repo="$1" template="$2" json
     json="$(curl_fetch metadata "https://api.github.com/repos/$repo/releases/latest")"
@@ -561,7 +584,7 @@ if not isinstance(data, dict):
 tag = data.get("tag_name")
 if not isinstance(tag, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", tag):
     fail(f"the latest {repo} release has no valid tag")
-name = template.replace("{tag}", tag)
+name = template.replace("{tag}", tag).replace("{version}", tag.removeprefix("v"))
 assets = data.get("assets")
 if not isinstance(assets, list):
     fail(f"{repo} {tag} lists no assets")
@@ -1186,6 +1209,13 @@ kept_data() {
         r2modman) echo "profiles, mods, and settings" ;;
         prismlauncher) echo "instances, worlds, accounts, and settings" ;;
         moonfin|plezy) echo "servers, sign-ins, settings, and downloads" ;;
+        photocraft) echo "settings, recent files, brush presets, and recovery files" ;;
+        vectorcraft) echo "settings, swatches, libraries, added fonts, and recovery files" ;;
+        filmcraft) echo "settings, presets, auto-saves, and media cache" ;;
+        lightcraft) echo "settings, AI models, and camera profiles" ;;
+        pdfcraft) echo "settings, recent files, signatures, stamps, and trusted certificates" ;;
+        effectcraft) echo "settings, templates, scripts, plug-ins, and models" ;;
+        designcraft) echo "settings, workspaces, shortcuts, and recovery files" ;;
         fluxer|fluxer-canary) echo "sign-ins and settings" ;;
         *) echo "settings, authentication, sessions, and project files" ;;
     esac
@@ -1343,7 +1373,7 @@ ensure_user_flathub() {
 # origin remote has no URL, so Flatpak itself never updates it. As for
 # Flathub apps, a system-wide copy is left alone.
 install_flatpak_bundle() {
-    local tool="$1" name id release repo template asset tag url sha256 bundle version
+    local tool="$1" name id release repo template asset tag url sha256 latest bundle version
     local had_copy=0 installed=""
     name="$(tool_name "$tool")"
     id="$(flatpak_app_id "$tool")"
@@ -1362,6 +1392,8 @@ install_flatpak_bundle() {
     fi
     asset="$(github_release_asset "$repo" "$template")"
     IFS=$'\t' read -r tag url sha256 <<<"$asset"
+    # Flatpak reports the version without the v that some release tags carry.
+    latest="${tag#v}"
     if [ "$had_copy" -eq 1 ] && ! has_marker "$tool"; then
         note "Adopting the existing per-user $name Flatpak"
     fi
@@ -1370,12 +1402,12 @@ install_flatpak_bundle() {
     # when installing or adopting: Flatpak refuses the commit it already has,
     # and forcing it with --reinstall while the app runs leaves Flatpak unable
     # to uninstall or reinstall the app.
-    if [ "$installed" = "$tag" ]; then
-        [ "$(marker_version "$tool")" = "$tag" ] || write_marker "$tool" "$tag" "$url"
-        report_up_to_date "$tool" "$tag"
+    if [ "$installed" = "$latest" ]; then
+        [ "$(marker_version "$tool")" = "$latest" ] || write_marker "$tool" "$latest" "$url"
+        report_up_to_date "$tool" "$latest"
         return 0
     fi
-    note "Downloading $name $tag from GitHub"
+    note "Downloading $name $latest from GitHub"
     new_temp_dir
     bundle="$ACTIVE_TEMP/${url##*/}"
     curl_fetch download "$url" "$bundle"
@@ -1385,18 +1417,18 @@ install_flatpak_bundle() {
     # needs Flathub among the user's remotes.
     ensure_user_flathub ||
         warn "Flathub could not be added for your account; the installation fails if $name's runtime is missing"
-    note "Installing $name $tag for your account"
+    note "Installing $name $latest for your account"
     # Over an installed copy, Flatpak deploys the new release in place and keeps
     # the old files while an instance still runs from them.
     if ! flatpak install --user --noninteractive --assumeyes --bundle "$bundle" 9>&-; then
         if [ "$had_copy" -eq 1 ] && flatpak_installed user "$id"; then
-            die "$name $tag could not be installed; Flatpak kept the installed version"
+            die "$name $latest could not be installed; Flatpak kept the installed version"
         fi
-        die "$name $tag could not be installed"
+        die "$name $latest could not be installed"
     fi
     flatpak_installed user "$id" || die "Flatpak does not list $name for your account; Monolith recorded nothing"
     version="$(flatpak_version user "$id")"
-    write_marker "$tool" "${version:-$tag}" "$url"
+    write_marker "$tool" "${version:-$latest}" "$url"
 }
 
 # Uninstall the user's copy of TOOL. Its data in ~/.var/app stays, and a
@@ -2287,6 +2319,7 @@ interactive_menu() {
             "$(category_label "AI coding" "${AI_TOOLS[@]}")"$'\t'"ai"
             "$(category_label "Gaming" "${GAMING_TOOLS[@]}")"$'\t'"gaming"
             "$(category_label "Media" "${MEDIA_TOOLS[@]}")"$'\t'"media"
+            "$(category_label "Creative" "${CREATIVE_TOOLS[@]}")"$'\t'"creative"
             "$(category_label "Communication" "${COMMUNICATION_TOOLS[@]}")"$'\t'"communication"
             "$(category_label "Appearance" "${APPEARANCE_TOOLS[@]}")"$'\t'"appearance"
             "All applications"$'\t'"all"
@@ -2300,6 +2333,7 @@ interactive_menu() {
             ai) manage_category "AI coding" "${AI_TOOLS[@]}" ;;
             gaming) manage_category "Gaming" "${GAMING_TOOLS[@]}" ;;
             media) manage_category "Media" "${MEDIA_TOOLS[@]}" ;;
+            creative) manage_category "Creative" "${CREATIVE_TOOLS[@]}" ;;
             communication) manage_category "Communication" "${COMMUNICATION_TOOLS[@]}" ;;
             appearance) manage_category "Appearance" "${APPEARANCE_TOOLS[@]}" ;;
             all) manage_category "All applications" "${ALL_TOOLS[@]}" ;;
@@ -2328,6 +2362,8 @@ Tool IDs:
   AI coding        claude codex opencode omp herdr
   Gaming           wowup-cf r2modman prismlauncher
   Media            moonfin plezy
+  Creative         photocraft vectorcraft filmcraft lightcraft pdfcraft
+                   effectcraft designcraft
   Communication    fluxer fluxer-canary
   Appearance       ghostty-themes
 EOF

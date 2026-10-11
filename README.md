@@ -104,7 +104,7 @@ monolith
 ```
 
 The dashboard groups software into Developer CLIs, AI coding, Gaming, Media,
-Communication, and Appearance, and shows each item's status and version. Type to filter, press
+Creative, Communication, and Appearance, and shows each item's status and version. Type to filter, press
 Enter to open an item, then choose an explicit action: Install, Update, Repair,
 Adopt and update (for a supported copy installed outside Monolith), or Remove.
 Removal asks first and keeps settings, logins, sessions, game addons and mods,
@@ -281,6 +281,49 @@ As with Moonfin, only Monolith updates Plezy: use **Update** in the dashboard,
 installed, updating or installing again downloads nothing. Plezy can stay open
 while it updates. Removal keeps your servers, sign-ins, settings, and downloads
 in `~/.var/app/com.edde746.plezy`.
+
+### Crafting Apps
+
+**Creative** offers the seven [Crafting Apps](https://getartcraft.com/apps),
+open-source creative apps from the ArtCraft team:
+
+| Item | For |
+| --- | --- |
+| **PhotoCraft** | photos and layered PSD documents |
+| **VectorCraft** | vector illustration, SVG, and PDF artwork |
+| **FilmCraft** | video editing, color, and sound |
+| **LightCraft** | a photo library and non-destructive raw development |
+| **PdfCraft** | reading, organizing, combining, splitting, and securing PDFs |
+| **EffectCraft** | motion graphics and visual effects |
+| **DesignCraft** | page layout for magazines, books, and print documents |
+
+The apps are young: their developers describe them as early alpha or in
+development, and new releases come out often. Expect missing features and
+rough edges, and keep copies of important files.
+
+Each app is a separate item, so install only the ones you want, for example
+`monolith install photocraft pdfcraft`. The apps are not on Flathub, so they
+work like Moonfin: Monolith downloads the Flatpak bundle of an app's newest
+release from its GitHub project, such as
+[PhotoCraft's releases](https://github.com/storytold/photocraft/releases),
+checks it against the SHA256 digest GitHub publishes, and installs it for your
+account only. They use the freedesktop runtime, which Flatpak takes from the
+system's Flatpaks or downloads from Flathub. A copy already installed for your
+account is adopted. A system-wide copy is left alone; to have Monolith manage
+the app instead, uninstall it first, for example with
+`flatpak uninstall --system ai.storyteller.photocraft`.
+
+Only Monolith updates them: use **Update** in the dashboard, `monolith update`,
+or `mjust update`. Each update downloads the app's whole bundle again, about 40
+to 75 MB; when the newest release is already installed, nothing is downloaded.
+The apps can stay open while they update. Removal keeps each app's settings
+and other data in `~/.var/app/ai.storyteller.<app>`, for example
+`~/.var/app/ai.storyteller.photocraft`. Your own files stay where you saved
+them, including LightCraft's photo library in `~/Pictures/LightCraft Library`.
+
+You do not need the ArtCraft Launcher that the Crafting Apps site recommends.
+If you use it anyway, set **Install new apps as** to Flatpak in its settings:
+its default, system packages, cannot be installed on Monolith.
 
 ### Fluxer
 

@@ -28,6 +28,42 @@
 #   files/kde/usr/bin/monolith-news --preview news/announcements.toml
 
 [[announcements]]
+id = "2026-10-11-crafting-apps"
+date = 2026-10-11
+title = "Seven Crafting Apps join Monolith Software"
+category = "Creative"
+install_path = ["monolith", "Creative"]
+body = """
+The Crafting Apps are open-source creative apps from the ArtCraft team:
+PhotoCraft for photos, VectorCraft for vector illustration, FilmCraft for video,
+LightCraft for a photo library and raw files, PdfCraft for PDFs, EffectCraft for
+motion graphics, and DesignCraft for page layout. To install one, run
+`monolith`, open **Creative**, and select it.
+
+- **Early versions:** Their developers call them early alpha or in
+  development, and new releases come out often. Expect rough edges and keep
+  copies of important files.
+- **Checked first:** The apps are not on Flathub, so Monolith downloads each
+  one's Flatpak from its GitHub releases and installs it only if it matches the
+  SHA256 digest GitHub publishes. They are installed for your account, so no
+  administrator password is needed.
+- **Updates:** Bazaar and the daily automatic Flatpak update cannot update
+  these Flatpaks. Monolith does, through `mjust update`, topgrade, or
+  `monolith update`, and downloads only newer releases, 40 to 75 MB each.
+- **No launcher needed:** Skip the ArtCraft Launcher. Its default way of
+  installing apps does not work on Monolith.
+- **Your data stays:** Removing an app keeps its settings, and your own files
+  stay where you saved them.
+
+No Creative category in `monolith` yet? Update Monolith and reboot first.
+"""
+links = [
+  { label = "Crafting Apps", url = "https://getartcraft.com/apps" },
+  { label = "Crafting Apps on GitHub", url = "https://github.com/storytold" },
+  { label = "Monolith software guide", url = "https://github.com/monolithlinux/monolith#crafting-apps" },
+]
+
+[[announcements]]
 id = "2026-10-07-fluxer"
 date = 2026-10-07
 title = "Fluxer and Fluxer Canary join Monolith Software"
