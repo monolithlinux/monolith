@@ -76,20 +76,6 @@ modules:
         set -euxo pipefail
         dnf5 -y config-manager setopt fedora-multimedia.priority=90 "fedora-multimedia.exclude=mesa-*"
 
-  - type: script
-    snippets:
-      - |
-        # Steam pulls in glib2.i686, which must match the base image's glib2.
-        # The Kinoite base image can ship a glib2 build that Fedora's stable
-        # mirrors do not have yet. dnf then downgrades glib2 in the middle of
-        # the Steam transaction, and dconf.i686's %posttrans fails without
-        # libglib-2.0.so.0. Install the i686 build of exactly the base image's
-        # glib2 first, taking only glib2 from updates-testing when stable lacks it.
-        set -euxo pipefail
-        glib2="$(rpm -q --qf '%{EVR}' glib2.x86_64)"
-        dnf5 -y --enable-repo=updates-testing --setopt=updates-testing.includepkgs=glib2 \
-          install "glib2-$glib2.i686"
-
   - type: dnf
     repos:
       copr:
