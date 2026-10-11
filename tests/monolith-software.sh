@@ -44,6 +44,10 @@ for version in v1.0.0 v2.0.0 v9.9.9; do
     # A Flatpak bundle that the fake flatpak installs; see tests/gear-lever-apps.py.
     printf '{"app": "org.moonfin.linux", "version": "%s", "runtime": "org.gnome.Platform/x86_64/50"}\n' \
         "$plain" >"$dir/Moonfin_Linux_v$plain.flatpak"
+    # The Crafting Apps tag vX.Y.Z but name their bundles X.Y.Z, the version
+    # Flatpak reports.
+    printf '{"app": "ai.storyteller.photocraft", "version": "%s", "runtime": "org.freedesktop.Platform/x86_64/26.08"}\n' \
+        "$plain" >"$dir/photocraft-$plain-linux-x86_64.flatpak"
 done
 # A correctly checksummed Superfile archive without the expected program.
 mkdir -p "$fixtures/bad-archive/dist/elsewhere"
@@ -106,6 +110,10 @@ case "$url" in
         github_release Moonfin-Client/Moonfin-Core "Moonfin_Linux_v$plain.flatpak" \
             "$dir/Moonfin_Linux_v$plain.flatpak" "$plain"
         exit 0 ;;
+    https://api.github.com/repos/storytold/photocraft/releases/latest)
+        github_release storytold/photocraft "photocraft-$plain-linux-x86_64.flatpak" \
+            "$dir/photocraft-$plain-linux-x86_64.flatpak"
+        exit 0 ;;
     # The sources the upstream installers read their newest version from.
     https://downloads.claude.ai/claude-code-releases/stable)
         printf '%s\n' "$plain"
@@ -129,6 +137,8 @@ case "$url" in
         payload="$dir/ngit-$version-x86_64-unknown-linux-musl.tar.gz" ;;
     https://github.com/Moonfin-Client/Moonfin-Core/releases/download/"$plain"/Moonfin_Linux_v"$plain".flatpak)
         payload="$dir/Moonfin_Linux_v$plain.flatpak" ;;
+    https://github.com/storytold/photocraft/releases/download/"$version"/photocraft-"$plain"-linux-x86_64.flatpak)
+        payload="$dir/photocraft-$plain-linux-x86_64.flatpak" ;;
     https://dl.gitea.com/tea/"$plain"/tea-"$plain"-linux-amd64)
         payload="$dir/tea-$plain-linux-amd64" ;;
     https://dl.gitea.com/tea/"$plain"/tea-"$plain"-linux-amd64.sha256)
@@ -1458,6 +1468,37 @@ test_moonfin_existing_copies() {
     assert_no_temp_leaks
 }
 
+# The Crafting Apps tag their releases v1.0.0, but their bundles and the
+# version Flatpak reports say 1.0.0. A current copy must count as up to date:
+# Flatpak refuses to install the commit it already has.
+test_photocraft_lifecycle() {
+    local id=ai.storyteller.photocraft
+    local release=https://github.com/storytold/photocraft/releases/download
+    run_monolith install photocraft
+    [ "$(app_installations "$id")" = '{"user": "1.0.0"}' ] ||
+        fail "unexpected PhotoCraft installations: $(app_installations "$id")"
+    grep -qx 'version=1.0.0' "$state_root/photocraft.managed" || fail 'PhotoCraft marker has the wrong version'
+    grep -qx "source=$release/v1.0.0/photocraft-1.0.0-linux-x86_64.flatpak" "$state_root/photocraft.managed" ||
+        fail 'PhotoCraft marker has the wrong source'
+    assert_listed Creative PhotoCraft 'installed +1\.0\.0'
+
+    : >"$case_root/curl.log"
+    forget_flatpak_calls
+    run_monolith update photocraft >"$case_root/update.log"
+    grep -Eq '^  PhotoCraft +Up to date$' "$case_root/update.log" || fail 'current PhotoCraft was not reported up to date'
+    if grep -Fq '.flatpak' "$case_root/curl.log"; then fail 'updating a current PhotoCraft downloaded it again'; fi
+    assert_no_flatpak_changes
+
+    release_version=v2.0.0
+    run_monolith update photocraft >"$case_root/update.log"
+    grep -Eq '^  PhotoCraft +Updated$' "$case_root/update.log" || fail 'an older PhotoCraft was not updated'
+    [ "$(app_installations "$id")" = '{"user": "2.0.0"}' ] ||
+        fail "PhotoCraft was not updated: $(app_installations "$id")"
+    grep -qx 'version=2.0.0' "$state_root/photocraft.managed" || fail 'PhotoCraft marker did not record 2.0.0'
+    assert_flatpak_modelled
+    assert_no_temp_leaks
+}
+
 # Flathub carries only Fluxer's stable channel, so Fluxer Canary installs from
 # Fluxer's own repository. The two channels are separate apps side by side.
 test_fluxer_channels() {
@@ -1494,7 +1535,7 @@ for test in omp_lifecycle omp_unmanaged_launcher omp_replaced_launcher omp_check
     overlapping_mutation_is_locked interrupt_rolls_back_and_cancels_batch terminate_cleans_staging \
     prism_lifecycle prism_adopts_user_copy prism_leaves_system_copy_alone prism_repair_and_failures \
     prism_with_broken_flatpak moonfin_lifecycle moonfin_refuses_unverified_bundles moonfin_runtime_sources \
-    moonfin_existing_copies fluxer_channels; do
+    moonfin_existing_copies photocraft_lifecycle fluxer_channels; do
     # Do not put the subshell in an if condition: that disables Bash errexit
     # throughout the test function and can conceal a failing manager command.
     set +e
