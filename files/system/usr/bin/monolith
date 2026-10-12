@@ -34,12 +34,12 @@ UP_TO_DATE=0
 readonly SELF BIN_DIR DATA_HOME STATE_HOME MANAGED_ROOT STATE_ROOT GHOSTTY_THEMES_HELPER GEAR_LEVER_APP_HELPER
 readonly GEAR_LEVER_ID GEAR_LEVER_REF GEAR_LEVER_MIN_VERSION FLATHUB_REPO QUIT_TOKEN HELPER_UP_TO_DATE
 
-ALL_TOOLS=(tea superfile nak ngit claude codex opencode omp herdr wowup-cf r2modman prismlauncher moonfin plezy photocraft vectorcraft filmcraft lightcraft pdfcraft effectcraft designcraft fluxer fluxer-canary ghostty-themes)
+ALL_TOOLS=(tea superfile nak ngit claude codex opencode omp herdr wowup-cf r2modman prismlauncher moonfin plezy photocraft vectorcraft filmcraft lightcraft pdfcraft effectcraft designcraft wordcraft soundcraft deckcraft cadcraft gridcraft fluxer fluxer-canary ghostty-themes)
 CLI_TOOLS=(tea superfile nak ngit)
 AI_TOOLS=(claude codex opencode omp herdr)
 GAMING_TOOLS=(wowup-cf r2modman prismlauncher)
 MEDIA_TOOLS=(moonfin plezy)
-CREATIVE_TOOLS=(photocraft vectorcraft filmcraft lightcraft pdfcraft effectcraft designcraft)
+CRAFTING_TOOLS=(photocraft vectorcraft filmcraft lightcraft pdfcraft effectcraft designcraft wordcraft soundcraft deckcraft cadcraft gridcraft)
 COMMUNICATION_TOOLS=(fluxer fluxer-canary)
 APPEARANCE_TOOLS=(ghostty-themes)
 
@@ -121,6 +121,11 @@ tool_name() {
         pdfcraft)  echo "PdfCraft" ;;
         effectcraft) echo "EffectCraft" ;;
         designcraft) echo "DesignCraft" ;;
+        wordcraft) echo "WordCraft" ;;
+        soundcraft) echo "SoundCraft" ;;
+        deckcraft) echo "DeckCraft" ;;
+        cadcraft)  echo "CADCraft" ;;
+        gridcraft) echo "GridCraft" ;;
         fluxer)    echo "Fluxer" ;;
         fluxer-canary) echo "Fluxer Canary" ;;
         ghostty-themes) echo "Ghostty Themes" ;;
@@ -151,6 +156,11 @@ tool_description() {
         pdfcraft)  echo "PDF workbench to read, organize, combine, split, and secure PDFs" ;;
         effectcraft) echo "motion graphics and visual effects compositor" ;;
         designcraft) echo "page layout for magazines, books, and print documents" ;;
+        wordcraft) echo "word processor that opens and saves Word documents" ;;
+        soundcraft) echo "audio workstation to record, edit, and mix audio and MIDI" ;;
+        deckcraft) echo "presentation app to create and present slide decks" ;;
+        cadcraft)  echo "2D drafting, dimensioning, and plotting; opens DXF and DWG files" ;;
+        gridcraft) echo "spreadsheet to calculate, analyze, and chart data in workbooks" ;;
         fluxer)    echo "open-source chat with voice calls for friends and communities" ;;
         fluxer-canary) echo "Fluxer's early-access channel with the newest features" ;;
         ghostty-themes) echo "official Ghostty theme collection" ;;
@@ -164,10 +174,12 @@ tool_category() {
         claude|codex|opencode|omp|herdr) echo "AI coding" ;;
         wowup-cf|r2modman|prismlauncher) echo "Gaming" ;;
         moonfin|plezy) echo "Media" ;;
-        photocraft|vectorcraft|filmcraft|lightcraft|pdfcraft|effectcraft|designcraft) echo "Creative" ;;
         fluxer|fluxer-canary) echo "Communication" ;;
         ghostty-themes) echo "Appearance" ;;
-        *) return 1 ;;
+        *)
+            is_crafting_app "$1" || return 1
+            echo "Crafting Apps"
+            ;;
     esac
 }
 
@@ -183,8 +195,7 @@ tool_commands() {
         omp)       echo "omp" ;;
         herdr)     echo "herdr" ;;
         wowup-cf|r2modman|prismlauncher|moonfin|plezy|fluxer|fluxer-canary|ghostty-themes) return 0 ;;
-        photocraft|vectorcraft|filmcraft|lightcraft|pdfcraft|effectcraft|designcraft) return 0 ;;
-        *)         return 1 ;;
+        *)         is_crafting_app "$1" ;;
     esac
 }
 
@@ -207,6 +218,16 @@ state_file() {
 is_known_tool() {
     local candidate="$1" tool
     for tool in "${ALL_TOOLS[@]}"; do
+        [ "$candidate" = "$tool" ] && return 0
+    done
+    return 1
+}
+
+# The Crafting Apps share one release layout: storytold/<id> publishes the
+# Flatpak ai.storyteller.<id> as <id>-<version>-linux-x86_64.flatpak.
+is_crafting_app() {
+    local candidate="$1" tool
+    for tool in "${CRAFTING_TOOLS[@]}"; do
         [ "$candidate" = "$tool" ] && return 0
     done
     return 1
@@ -262,8 +283,7 @@ is_gear_lever_app() {
 is_flatpak_app() {
     case "$1" in
         prismlauncher|moonfin|plezy|fluxer|fluxer-canary) return 0 ;;
-        photocraft|vectorcraft|filmcraft|lightcraft|pdfcraft|effectcraft|designcraft) return 0 ;;
-        *) return 1 ;;
+        *) is_crafting_app "$1" ;;
     esac
 }
 
@@ -274,8 +294,10 @@ flatpak_app_id() {
         plezy) echo "com.edde746.plezy" ;;
         fluxer) echo "app.fluxer.Fluxer" ;;
         fluxer-canary) echo "app.fluxer.FluxerCanary" ;;
-        photocraft|vectorcraft|filmcraft|lightcraft|pdfcraft|effectcraft|designcraft) echo "ai.storyteller.$1" ;;
-        *) return 1 ;;
+        *)
+            is_crafting_app "$1" || return 1
+            echo "ai.storyteller.$1"
+            ;;
     esac
 }
 
@@ -303,9 +325,10 @@ flatpak_bundle_release() {
     case "$1" in
         moonfin) printf '%s\t%s\n' Moonfin-Client/Moonfin-Core 'Moonfin_Linux_v{tag}.flatpak' ;;
         plezy) printf '%s\t%s\n' edde746/plezy plezy-linux-x64.flatpak ;;
-        photocraft|vectorcraft|filmcraft|lightcraft|pdfcraft|effectcraft|designcraft)
-            printf '%s\t%s\n' "storytold/$1" "$1-{version}-linux-x86_64.flatpak" ;;
-        *) return 1 ;;
+        *)
+            is_crafting_app "$1" || return 1
+            printf '%s\t%s\n' "storytold/$1" "$1-{version}-linux-x86_64.flatpak"
+            ;;
     esac
 }
 
@@ -1216,6 +1239,10 @@ kept_data() {
         pdfcraft) echo "settings, recent files, signatures, stamps, and trusted certificates" ;;
         effectcraft) echo "settings, templates, scripts, plug-ins, and models" ;;
         designcraft) echo "settings, workspaces, shortcuts, and recovery files" ;;
+        wordcraft|gridcraft) echo "settings and recent files" ;;
+        soundcraft) echo "settings, session auto-saves, and plug-in presets" ;;
+        deckcraft) echo "settings, recent files, and recovery files" ;;
+        cadcraft) echo "settings" ;;
         fluxer|fluxer-canary) echo "sign-ins and settings" ;;
         *) echo "settings, authentication, sessions, and project files" ;;
     esac
@@ -2319,7 +2346,7 @@ interactive_menu() {
             "$(category_label "AI coding" "${AI_TOOLS[@]}")"$'\t'"ai"
             "$(category_label "Gaming" "${GAMING_TOOLS[@]}")"$'\t'"gaming"
             "$(category_label "Media" "${MEDIA_TOOLS[@]}")"$'\t'"media"
-            "$(category_label "Creative" "${CREATIVE_TOOLS[@]}")"$'\t'"creative"
+            "$(category_label "Crafting Apps" "${CRAFTING_TOOLS[@]}")"$'\t'"crafting"
             "$(category_label "Communication" "${COMMUNICATION_TOOLS[@]}")"$'\t'"communication"
             "$(category_label "Appearance" "${APPEARANCE_TOOLS[@]}")"$'\t'"appearance"
             "All applications"$'\t'"all"
@@ -2333,7 +2360,7 @@ interactive_menu() {
             ai) manage_category "AI coding" "${AI_TOOLS[@]}" ;;
             gaming) manage_category "Gaming" "${GAMING_TOOLS[@]}" ;;
             media) manage_category "Media" "${MEDIA_TOOLS[@]}" ;;
-            creative) manage_category "Creative" "${CREATIVE_TOOLS[@]}" ;;
+            crafting) manage_category "Crafting Apps" "${CRAFTING_TOOLS[@]}" ;;
             communication) manage_category "Communication" "${COMMUNICATION_TOOLS[@]}" ;;
             appearance) manage_category "Appearance" "${APPEARANCE_TOOLS[@]}" ;;
             all) manage_category "All applications" "${ALL_TOOLS[@]}" ;;
@@ -2362,8 +2389,9 @@ Tool IDs:
   AI coding        claude codex opencode omp herdr
   Gaming           wowup-cf r2modman prismlauncher
   Media            moonfin plezy
-  Creative         photocraft vectorcraft filmcraft lightcraft pdfcraft
-                   effectcraft designcraft
+  Crafting Apps    photocraft vectorcraft filmcraft lightcraft pdfcraft
+                   effectcraft designcraft wordcraft soundcraft deckcraft
+                   cadcraft gridcraft
   Communication    fluxer fluxer-canary
   Appearance       ghostty-themes
 EOF
