@@ -1480,7 +1480,7 @@ test_photocraft_lifecycle() {
     grep -qx 'version=1.0.0' "$state_root/photocraft.managed" || fail 'PhotoCraft marker has the wrong version'
     grep -qx "source=$release/v1.0.0/photocraft-1.0.0-linux-x86_64.flatpak" "$state_root/photocraft.managed" ||
         fail 'PhotoCraft marker has the wrong source'
-    assert_listed Creative PhotoCraft 'installed +1\.0\.0'
+    assert_listed 'Crafting Apps' PhotoCraft 'installed +1\.0\.0'
 
     : >"$case_root/curl.log"
     forget_flatpak_calls

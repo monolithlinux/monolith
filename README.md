@@ -104,7 +104,7 @@ monolith
 ```
 
 The dashboard groups software into Developer CLIs, AI coding, Gaming, Media,
-Creative, Communication, and Appearance, and shows each item's status and version. Type to filter, press
+Crafting Apps, Communication, and Appearance, and shows each item's status and version. Type to filter, press
 Enter to open an item, then choose an explicit action: Install, Update, Repair,
 Adopt and update (for a supported copy installed outside Monolith), or Remove.
 Removal asks first and keeps settings, logins, sessions, game addons and mods,
@@ -284,8 +284,9 @@ in `~/.var/app/com.edde746.plezy`.
 
 ### Crafting Apps
 
-**Creative** offers the seven [Crafting Apps](https://getartcraft.com/apps),
-open-source creative apps from the ArtCraft team:
+The **Crafting Apps** category offers all twelve
+[Crafting Apps](https://getartcraft.com/apps), the ArtCraft team's open-source
+desktop apps:
 
 | Item | For |
 | --- | --- |
@@ -296,10 +297,19 @@ open-source creative apps from the ArtCraft team:
 | **PdfCraft** | reading, organizing, combining, splitting, and securing PDFs |
 | **EffectCraft** | motion graphics and visual effects |
 | **DesignCraft** | page layout for magazines, books, and print documents |
+| **WordCraft** | word processing, including Word documents |
+| **SoundCraft** | recording, editing, and mixing audio and MIDI |
+| **DeckCraft** | creating and presenting slide decks |
+| **CADCraft** | 2D drafting, including DXF and DWG drawings |
+| **GridCraft** | spreadsheets: calculating, analyzing, and charting data |
 
-The apps are young: their developers describe them as early alpha or in
+The apps are young: their developers call them pre-alpha, alpha, or in
 development, and new releases come out often. Expect missing features and
 rough edges, and keep copies of important files.
+
+Save SoundCraft sessions in `~/Music`. SoundCraft suggests a folder directly
+in your home folder, which its Flatpak cannot write to, so a session saved
+there is lost when SoundCraft closes.
 
 Each app is a separate item, so install only the ones you want, for example
 `monolith install photocraft pdfcraft`. The apps are not on Flathub, so they
@@ -314,7 +324,7 @@ the app instead, uninstall it first, for example with
 `flatpak uninstall --system ai.storyteller.photocraft`.
 
 Only Monolith updates them: use **Update** in the dashboard, `monolith update`,
-or `mjust update`. Each update downloads the app's whole bundle again, about 40
+or `mjust update`. Each update downloads the app's whole bundle again, about 10
 to 75 MB; when the newest release is already installed, nothing is downloaded.
 The apps can stay open while they update. Removal keeps each app's settings
 and other data in `~/.var/app/ai.storyteller.<app>`, for example
@@ -322,8 +332,10 @@ and other data in `~/.var/app/ai.storyteller.<app>`, for example
 them, including LightCraft's photo library in `~/Pictures/LightCraft Library`.
 
 You do not need the ArtCraft Launcher that the Crafting Apps site recommends.
-If you use it anyway, set **Install new apps as** to Flatpak in its settings:
-its default, system packages, cannot be installed on Monolith.
+If you use it anyway, set **Install new apps as** to Flatpak in its settings.
+Monolith then finds the apps it installs as per-user Flatpaks and can adopt
+them. Apps it installs as AppImages are separate copies that Monolith does not
+manage, and its system packages cannot be installed on Monolith.
 
 ### Fluxer
 
