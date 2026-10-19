@@ -28,6 +28,36 @@
 #   files/kde/usr/bin/monolith-news --preview news/announcements.toml
 
 [[announcements]]
+id = "2026-10-19-opendeck-built-in"
+date = 2026-10-19
+title = "OpenDeck is now built into Monolith"
+category = "Monolith"
+body = """
+OpenDeck, the Stream Deck app that runs most plugins made for Elgato's own
+Stream Deck software, now comes with Monolith instead of as a Flatpak from
+Monolith Software. Start it from the application menu.
+
+- **No setup:** Plug in your Stream Deck and start OpenDeck. Monolith includes
+  the device rules it needs, so every Elgato Stream Deck it supports works.
+- **No sandbox:** **Start at login** works, and plugins built on Node.js or
+  only for Windows use the Node.js and Wine that Monolith includes.
+- **Updates:** New OpenDeck releases arrive with Monolith updates. OpenDeck may
+  mention a release before then; turn off **Check for updates** in its settings
+  to stop that.
+- **Installed it from Monolith Software?** At your next login, Monolith copies
+  your profiles, plugins, and settings to the built-in OpenDeck and uninstalls
+  the Flatpak; the Flatpak's copy stays in `~/.var/app/me.amankhanna.opendeck`.
+  An OpenDeck Flatpak you installed another way, such as through Bazaar, stays;
+  uninstall it if you want only one.
+
+The change takes effect after you update Monolith and reboot.
+"""
+links = [
+  { label = "OpenDeck", url = "https://github.com/nekename/OpenDeck" },
+  { label = "Monolith guide", url = "https://github.com/monolithlinux/monolith#opendeck" },
+]
+
+[[announcements]]
 id = "2026-10-19-figcraft"
 date = 2026-10-19
 title = "FigCraft joins the Crafting Apps"
@@ -54,38 +84,6 @@ FigCraft not in your Crafting Apps menu yet? Update Monolith and reboot first.
 links = [
   { label = "FigCraft", url = "https://getartcraft.com/apps/figcraft" },
   { label = "Monolith software guide", url = "https://github.com/monolithlinux/monolith#crafting-apps" },
-]
-
-[[announcements]]
-id = "2026-10-18-opendeck"
-date = 2026-10-18
-title = "OpenDeck joins Monolith Software"
-category = "Devices"
-install_path = ["monolith", "Devices", "OpenDeck"]
-body = """
-OpenDeck is an app for the Elgato Stream Deck that runs most plugins made for
-Elgato's own Stream Deck software. To install it, run `monolith`, open
-**Devices**, and select **OpenDeck**.
-
-- **No setup:** Monolith installs the Flathub Flatpak for your account and
-  includes the device rules OpenDeck asks for, so every Elgato Stream Deck it
-  supports works when you plug it in.
-- **Elgato plugins:** Plugins built on Node.js use the Node.js that Monolith now
-  includes, and plugins built only for Windows use Wine. These plugins run on
-  your system, outside OpenDeck's Flatpak.
-- **One limit:** Switching profiles automatically when you change windows does
-  not work in OpenDeck's Flatpak on KDE.
-- **Updates:** It updates like any other Flatpak, including the daily automatic
-  update, Bazaar, topgrade, and `monolith update`.
-- **Your data stays:** Removing OpenDeck keeps your profiles, installed
-  plugins, and settings.
-
-No Devices category in `monolith` yet? Update Monolith and reboot first.
-"""
-links = [
-  { label = "OpenDeck", url = "https://github.com/nekename/OpenDeck" },
-  { label = "OpenDeck on Flathub", url = "https://flathub.org/apps/me.amankhanna.opendeck" },
-  { label = "Monolith software guide", url = "https://github.com/monolithlinux/monolith#opendeck" },
 ]
 
 [[announcements]]

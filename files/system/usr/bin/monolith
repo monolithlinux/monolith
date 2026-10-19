@@ -34,14 +34,13 @@ UP_TO_DATE=0
 readonly SELF BIN_DIR DATA_HOME STATE_HOME MANAGED_ROOT STATE_ROOT GHOSTTY_THEMES_HELPER GEAR_LEVER_APP_HELPER
 readonly GEAR_LEVER_ID GEAR_LEVER_REF GEAR_LEVER_MIN_VERSION FLATHUB_REPO QUIT_TOKEN HELPER_UP_TO_DATE
 
-ALL_TOOLS=(tea superfile claude codex opencode omp herdr wowup-cf r2modman prismlauncher moonfin plezy photocraft vectorcraft filmcraft lightcraft pdfcraft effectcraft designcraft figcraft wordcraft soundcraft deckcraft cadcraft gridcraft fluxer fluxer-canary opendeck ghostty-themes)
+ALL_TOOLS=(tea superfile claude codex opencode omp herdr wowup-cf r2modman prismlauncher moonfin plezy photocraft vectorcraft filmcraft lightcraft pdfcraft effectcraft designcraft figcraft wordcraft soundcraft deckcraft cadcraft gridcraft fluxer fluxer-canary ghostty-themes)
 CLI_TOOLS=(tea superfile)
 AI_TOOLS=(claude codex opencode omp herdr)
 GAMING_TOOLS=(wowup-cf r2modman prismlauncher)
 MEDIA_TOOLS=(moonfin plezy)
 CRAFTING_TOOLS=(photocraft vectorcraft filmcraft lightcraft pdfcraft effectcraft designcraft figcraft wordcraft soundcraft deckcraft cadcraft gridcraft)
 COMMUNICATION_TOOLS=(fluxer fluxer-canary)
-DEVICES_TOOLS=(opendeck)
 APPEARANCE_TOOLS=(ghostty-themes)
 
 # Per-render state; menus and list compute each row once. Gear Lever apps
@@ -128,7 +127,6 @@ tool_name() {
         gridcraft) echo "GridCraft" ;;
         fluxer)    echo "Fluxer" ;;
         fluxer-canary) echo "Fluxer Canary" ;;
-        opendeck)  echo "OpenDeck" ;;
         ghostty-themes) echo "Ghostty Themes" ;;
         *)         return 1 ;;
     esac
@@ -163,7 +161,6 @@ tool_description() {
         gridcraft) echo "spreadsheet to calculate, analyze, and chart data in workbooks" ;;
         fluxer)    echo "open-source chat with voice calls for friends and communities" ;;
         fluxer-canary) echo "Fluxer's early-access channel with the newest features" ;;
-        opendeck)  echo "Stream Deck app that runs most Elgato Stream Deck plugins" ;;
         ghostty-themes) echo "official Ghostty theme collection" ;;
         *)         return 1 ;;
     esac
@@ -176,7 +173,6 @@ tool_category() {
         wowup-cf|r2modman|prismlauncher) echo "Gaming" ;;
         moonfin|plezy) echo "Media" ;;
         fluxer|fluxer-canary) echo "Communication" ;;
-        opendeck) echo "Devices" ;;
         ghostty-themes) echo "Appearance" ;;
         *)
             is_crafting_app "$1" || return 1
@@ -194,7 +190,7 @@ tool_commands() {
         opencode)  echo "opencode" ;;
         omp)       echo "omp" ;;
         herdr)     echo "herdr" ;;
-        wowup-cf|r2modman|prismlauncher|moonfin|plezy|fluxer|fluxer-canary|opendeck|ghostty-themes) return 0 ;;
+        wowup-cf|r2modman|prismlauncher|moonfin|plezy|fluxer|fluxer-canary|ghostty-themes) return 0 ;;
         *)         is_crafting_app "$1" ;;
     esac
 }
@@ -282,7 +278,7 @@ is_gear_lever_app() {
 # flatpak_bundle_release).
 is_flatpak_app() {
     case "$1" in
-        prismlauncher|moonfin|plezy|fluxer|fluxer-canary|opendeck) return 0 ;;
+        prismlauncher|moonfin|plezy|fluxer|fluxer-canary) return 0 ;;
         *) is_crafting_app "$1" ;;
     esac
 }
@@ -294,7 +290,6 @@ flatpak_app_id() {
         plezy) echo "com.edde746.plezy" ;;
         fluxer) echo "app.fluxer.Fluxer" ;;
         fluxer-canary) echo "app.fluxer.FluxerCanary" ;;
-        opendeck) echo "me.amankhanna.opendeck" ;;
         *)
             is_crafting_app "$1" || return 1
             echo "ai.storyteller.$1"
@@ -1203,7 +1198,6 @@ kept_data() {
         deckcraft) echo "settings, recent files, and recovery files" ;;
         cadcraft) echo "settings" ;;
         fluxer|fluxer-canary) echo "sign-ins and settings" ;;
-        opendeck) echo "profiles, installed plugins, and settings" ;;
         *) echo "settings, authentication, sessions, and project files" ;;
     esac
 }
@@ -2308,7 +2302,6 @@ interactive_menu() {
             "$(category_label "Media" "${MEDIA_TOOLS[@]}")"$'\t'"media"
             "$(category_label "Crafting Apps" "${CRAFTING_TOOLS[@]}")"$'\t'"crafting"
             "$(category_label "Communication" "${COMMUNICATION_TOOLS[@]}")"$'\t'"communication"
-            "$(category_label "Devices" "${DEVICES_TOOLS[@]}")"$'\t'"devices"
             "$(category_label "Appearance" "${APPEARANCE_TOOLS[@]}")"$'\t'"appearance"
             "All applications"$'\t'"all"
             "Update installed ($marked managed)"$'\t'"update"
@@ -2323,7 +2316,6 @@ interactive_menu() {
             media) manage_category "Media" "${MEDIA_TOOLS[@]}" ;;
             crafting) manage_category "Crafting Apps" "${CRAFTING_TOOLS[@]}" ;;
             communication) manage_category "Communication" "${COMMUNICATION_TOOLS[@]}" ;;
-            devices) manage_category "Devices" "${DEVICES_TOOLS[@]}" ;;
             appearance) manage_category "Appearance" "${APPEARANCE_TOOLS[@]}" ;;
             all) manage_category "All applications" "${ALL_TOOLS[@]}" ;;
             update) menu_update "${ALL_TOOLS[@]}" ;;
@@ -2355,7 +2347,6 @@ Tool IDs:
                    effectcraft designcraft figcraft wordcraft soundcraft
                    deckcraft cadcraft gridcraft
   Communication    fluxer fluxer-canary
-  Devices          opendeck
   Appearance       ghostty-themes
 EOF
 }

@@ -1,0 +1,62 @@
+#!/usr/bin/bash
+# Move an OpenDeck Flatpak that Monolith Software installed to the OpenDeck in
+# the image: copy its profiles, plugins, and settings to where the built-in app
+# reads them, then uninstall the Flatpak as `monolith remove` did, keeping its
+# data in ~/.var/app. monolith-opendeck-migration.service runs this at login
+# while Monolith's record of that Flatpak exists; this removes the record.
+set -euo pipefail
+
+app_id=me.amankhanna.opendeck
+config_home="${XDG_CONFIG_HOME:-$HOME/.config}"
+data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
+marker="${XDG_STATE_HOME:-$HOME/.local/state}/monolith/software/opendeck.managed"
+sandbox="$HOME/.var/app/$app_id"
+
+# Only a copy Monolith installed; one installed another way is the user's own.
+[ -f "$marker" ] || exit 0
+
+# A running OpenDeck may be writing these files; try again at the next login.
+if flatpak ps --columns=application 2>/dev/null | grep -qxF "$app_id"; then
+    echo "OpenDeck's Flatpak is running; trying again at the next login."
+    exit 0
+fi
+
+# Copy directory SOURCE to DESTINATION unless DESTINATION exists, so files the
+# built-in OpenDeck already has always win. Sets COPIED. Called as a plain
+# command so a failed copy stops the script and the next login redoes it.
+copy_once() {
+    local source="$1" destination="$2" partial="$2.monolith-partial"
+    COPIED=0
+    if [ ! -d "$source" ] || [ -e "$destination" ] || [ -L "$destination" ]; then
+        return 0
+    fi
+    rm -rf -- "$partial"
+    mkdir -p -- "$(dirname -- "$destination")"
+    cp -a --reflink=auto -- "$source" "$partial"
+    mv -T -- "$partial" "$destination"
+    COPIED=1
+}
+
+copy_once "$sandbox/config/opendeck" "$config_home/opendeck"
+if [ "$COPIED" -eq 1 ]; then
+    echo "Copied OpenDeck's profiles, plugins, and settings to $config_home/opendeck."
+    # The sandbox kept Start at login from working, and OpenDeck writes its
+    # login entry only when its settings change; write the one it would.
+    autostart="$HOME/.config/autostart/OpenDeck.desktop"
+    if [ ! -e "$autostart" ] && python3 -c '
+import json, sys
+sys.exit(json.load(open(sys.argv[1])).get("autolaunch") is not True)
+' "$config_home/opendeck/settings.json" 2>/dev/null; then
+        mkdir -p -- "${autostart%/*}"
+        printf '%s\n' '[Desktop Entry]' 'Type=Application' 'Version=1.0' 'Name=OpenDeck' \
+            'Exec=/usr/bin/opendeck --hide' 'StartupNotify=false' 'Terminal=false' >"$autostart"
+        echo "Kept Start at login on: wrote $autostart."
+    fi
+fi
+copy_once "$sandbox/data/opendeck" "$data_home/opendeck"
+
+if flatpak info --user "$app_id" >/dev/null 2>&1; then
+    flatpak uninstall --user --noninteractive "$app_id"
+fi
+rm -f -- "$marker"
+echo "OpenDeck now runs from the image; the Flatpak's data stays in $sandbox."

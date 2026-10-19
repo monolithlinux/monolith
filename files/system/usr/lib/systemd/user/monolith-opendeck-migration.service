@@ -1,0 +1,12 @@
+[Unit]
+Description=Move Monolith's OpenDeck Flatpak to the built-in OpenDeck
+# Only while Monolith's record of the Flatpak it installed exists; the script
+# removes that record once done.
+ConditionPathExists=%S/monolith/software/opendeck.managed
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/monolith/opendeck-flatpak-migration
+
+[Install]
+WantedBy=default.target

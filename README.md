@@ -104,7 +104,7 @@ monolith
 ```
 
 The dashboard groups software into Developer CLIs, AI coding, Gaming, Media,
-Crafting Apps, Communication, Devices, and Appearance, and shows each item's status and version. Type to filter, press
+Crafting Apps, Communication, and Appearance, and shows each item's status and version. Type to filter, press
 Enter to open an item, then choose an explicit action: Install, Update, Repair,
 Adopt and update (for a supported copy installed outside Monolith), or Remove.
 Removal asks first and keeps settings, logins, sessions, game addons and mods,
@@ -119,7 +119,7 @@ The underlying command also supports scripting and troubleshooting:
 ```bash
 monolith list
 monolith install codex herdr
-monolith install wowup-cf r2modman prismlauncher moonfin plezy fluxer-canary opendeck
+monolith install wowup-cf r2modman prismlauncher moonfin plezy fluxer-canary
 monolith update
 monolith remove codex
 ```
@@ -365,29 +365,32 @@ installed twice. Removal keeps your sign-ins and settings in
 
 ### OpenDeck
 
-**Devices → OpenDeck** installs [OpenDeck](https://github.com/nekename/OpenDeck),
-an app for the Elgato Stream Deck that runs most plugins made for Elgato's own
-Stream Deck software, as the official
-[Flathub Flatpak](https://flathub.org/apps/me.amankhanna.opendeck). Monolith
-installs it for your account only, so no administrator password is needed. A
-copy already installed for your account is adopted; a system-wide copy is left
-alone rather than installed twice.
+Both images include [OpenDeck](https://github.com/nekename/OpenDeck), an app for
+the Elgato Stream Deck that runs most plugins made for Elgato's own Stream Deck
+software. The image build installs OpenDeck's own pinned, checksum-verified RPM
+release, so there is nothing to install, and OpenDeck updates with Monolith.
 
 Plug in your Stream Deck and start OpenDeck; no setup is needed. Monolith
 includes the device rules OpenDeck asks for, so every Elgato Stream Deck model
 it supports works, including the newer MK.2 with scissor keys, the Plus XL, and
-the modules.
+the modules. **Start at login** in OpenDeck's settings works.
 
-Plugins built on Node.js or only for Windows run on your system, outside
-OpenDeck's Flatpak, with your account's access. Node.js plugins use the
-[Node.js](#nodejs) that Monolith includes, and Windows plugins use Wine, which
-Monolith includes as well. Switching profiles automatically when you change
-windows does not work in OpenDeck's Flatpak on KDE.
+Plugins built on Node.js use the [Node.js](#nodejs) that Monolith includes, and
+plugins built only for Windows use Wine, which Monolith includes as well.
+OpenDeck keeps its profiles, plugins, and settings in `~/.config/opendeck` and
+its logs in `~/.local/share/opendeck/logs`.
 
-Like Prism Launcher, OpenDeck stays an ordinary Flatpak: Bazaar,
-`flatpak update`, topgrade, the daily automatic Flatpak update, and
-`monolith update` keep it current. Removal keeps your profiles, installed
-plugins, and settings in `~/.var/app/me.amankhanna.opendeck`.
+New OpenDeck releases reach you with a Monolith update. OpenDeck may tell you
+about a release before then; turn off **Check for updates** in its settings to
+stop the notice.
+
+If you installed OpenDeck from Monolith Software before it was built in,
+Monolith moves you over at your next login: it copies the Flatpak's profiles,
+plugins, and settings to the built-in OpenDeck, keeps **Start at login** on if
+you had turned it on, and uninstalls the Flatpak. The Flatpak's own copy stays
+in `~/.var/app/me.amankhanna.opendeck` until you delete it. An OpenDeck Flatpak
+you installed another way, for example through Bazaar, is left alone; uninstall
+it if you want only one OpenDeck.
 
 ### Node.js
 
