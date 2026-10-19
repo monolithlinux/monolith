@@ -284,7 +284,7 @@ in `~/.var/app/com.edde746.plezy`.
 
 ### Crafting Apps
 
-The **Crafting Apps** category offers all twelve
+The **Crafting Apps** category offers all thirteen
 [Crafting Apps](https://getartcraft.com/apps), the ArtCraft team's open-source
 desktop apps:
 
@@ -297,6 +297,7 @@ desktop apps:
 | **PdfCraft** | reading, organizing, combining, splitting, and securing PDFs |
 | **EffectCraft** | motion graphics and visual effects |
 | **DesignCraft** | page layout for magazines, books, and print documents |
+| **FigCraft** | interface design and prototyping |
 | **WordCraft** | word processing, including Word documents |
 | **SoundCraft** | recording, editing, and mixing audio and MIDI |
 | **DeckCraft** | creating and presenting slide decks |
@@ -311,6 +312,10 @@ Save SoundCraft sessions in `~/Music`. SoundCraft suggests a folder directly
 in your home folder, which its Flatpak cannot write to, so a session saved
 there is lost when SoundCraft closes.
 
+FigCraft's Flatpak has no network access, so sharing a file or joining a live
+session fails until you allow it with
+`flatpak override --user --share=network ai.storyteller.figcraft`.
+
 Each app is a separate item, so install only the ones you want, for example
 `monolith install photocraft pdfcraft`. The apps are not on Flathub, so they
 work like Moonfin: Monolith downloads the Flatpak bundle of an app's newest
@@ -324,8 +329,8 @@ the app instead, uninstall it first, for example with
 `flatpak uninstall --system ai.storyteller.photocraft`.
 
 Only Monolith updates them: use **Update** in the dashboard, `monolith update`,
-or `mjust update`. Each update downloads the app's whole bundle again, about 10
-to 75 MB; when the newest release is already installed, nothing is downloaded.
+or `mjust update`. Each update downloads the app's whole bundle again, up to
+about 100 MB; when the newest release is already installed, nothing is downloaded.
 The apps can stay open while they update. Removal keeps each app's settings
 and other data in `~/.var/app/ai.storyteller.<app>`, for example
 `~/.var/app/ai.storyteller.photocraft`. Your own files stay where you saved
@@ -334,8 +339,8 @@ them, including LightCraft's photo library in `~/Pictures/LightCraft Library`.
 You do not need the ArtCraft Launcher that the Crafting Apps site recommends.
 If you use it anyway, set **Install new apps as** to Flatpak in its settings.
 Monolith then finds the apps it installs as per-user Flatpaks and can adopt
-them. Apps it installs as AppImages are separate copies that Monolith does not
-manage, and its system packages cannot be installed on Monolith.
+them; apps it installs as AppImages are separate copies that Monolith does not
+manage.
 
 ### Fluxer
 

@@ -28,6 +28,35 @@
 #   files/kde/usr/bin/monolith-news --preview news/announcements.toml
 
 [[announcements]]
+id = "2026-10-19-figcraft"
+date = 2026-10-19
+title = "FigCraft joins the Crafting Apps"
+category = "Crafting Apps"
+install_path = ["monolith", "Crafting Apps", "FigCraft"]
+body = """
+FigCraft is the newest Crafting App, for designing and prototyping user
+interfaces. To install it, run `monolith`, open **Crafting Apps**, and select
+**FigCraft**.
+
+- **Early version:** Its developers call it early alpha. Expect rough edges and
+  keep copies of important files.
+- **Sharing needs network access:** FigCraft's Flatpak cannot reach the
+  internet, so sharing a file or joining a live session fails until you run
+  `flatpak override --user --share=network ai.storyteller.figcraft`.
+- **Same as the others:** Monolith checks the download against the SHA256
+  digest GitHub publishes, installs it for your account, and updates it through
+  `mjust update`, topgrade, or `monolith update`.
+- **Your data stays:** Removing FigCraft keeps its settings, recent files,
+  plugins, and recovery files.
+
+FigCraft not in your Crafting Apps menu yet? Update Monolith and reboot first.
+"""
+links = [
+  { label = "FigCraft", url = "https://getartcraft.com/apps/figcraft" },
+  { label = "Monolith software guide", url = "https://github.com/monolithlinux/monolith#crafting-apps" },
+]
+
+[[announcements]]
 id = "2026-10-18-opendeck"
 date = 2026-10-18
 title = "OpenDeck joins Monolith Software"
@@ -101,8 +130,7 @@ install one, run `monolith`, open **Crafting Apps**, and select it.
   folder SoundCraft suggests in your home folder is lost when it closes.
 - **Same as the others:** Monolith checks each download against the SHA256
   digest GitHub publishes, installs it for your account, and updates it
-  through `mjust update`, topgrade, or `monolith update`. The new apps are 11
-  to 66 MB each.
+  through `mjust update`, topgrade, or `monolith update`.
 - **Your data stays:** Removing an app keeps its settings, and your own files
   stay where you saved them.
 
@@ -135,7 +163,7 @@ motion graphics, and DesignCraft for page layout. To install one, run
   administrator password is needed.
 - **Updates:** Bazaar and the daily automatic Flatpak update cannot update
   these Flatpaks. Monolith does, through `mjust update`, topgrade, or
-  `monolith update`, and downloads only newer releases, 40 to 75 MB each.
+  `monolith update`, and downloads only newer releases.
 - **No launcher needed:** Monolith installs and updates the apps itself, so you
   can skip the ArtCraft Launcher.
 - **Your data stays:** Removing an app keeps its settings, and your own files
