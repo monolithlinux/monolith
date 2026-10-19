@@ -152,10 +152,9 @@ managed executable. Your `~/.omp/` settings, authentication, sessions, and proje
 files are preserved.
 
 Tea, Superfile, and Oh My Pi downloads are checked against their published
-SHA256 checksums, and nak and ngit downloads against the SHA256 digests GitHub
-records for their release files. Updates to Tea, Superfile, nak, ngit, Oh My Pi,
-and Herdr keep the previous installation until the new executable, launchers,
-and version record have been published successfully. Claude Code, Codex CLI,
+SHA256 checksums. Updates to Tea, Superfile, Oh My Pi, and Herdr keep the
+previous installation until the new executable, launchers, and version record
+have been published successfully. Claude Code, Codex CLI,
 and OpenCode use their official installers; if an installer or the new
 version's start-up check fails, Monolith restores the previous program files,
 launcher, and version record.

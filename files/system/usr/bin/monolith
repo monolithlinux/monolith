@@ -34,8 +34,8 @@ UP_TO_DATE=0
 readonly SELF BIN_DIR DATA_HOME STATE_HOME MANAGED_ROOT STATE_ROOT GHOSTTY_THEMES_HELPER GEAR_LEVER_APP_HELPER
 readonly GEAR_LEVER_ID GEAR_LEVER_REF GEAR_LEVER_MIN_VERSION FLATHUB_REPO QUIT_TOKEN HELPER_UP_TO_DATE
 
-ALL_TOOLS=(tea superfile nak ngit claude codex opencode omp herdr wowup-cf r2modman prismlauncher moonfin plezy photocraft vectorcraft filmcraft lightcraft pdfcraft effectcraft designcraft figcraft wordcraft soundcraft deckcraft cadcraft gridcraft fluxer fluxer-canary opendeck ghostty-themes)
-CLI_TOOLS=(tea superfile nak ngit)
+ALL_TOOLS=(tea superfile claude codex opencode omp herdr wowup-cf r2modman prismlauncher moonfin plezy photocraft vectorcraft filmcraft lightcraft pdfcraft effectcraft designcraft figcraft wordcraft soundcraft deckcraft cadcraft gridcraft fluxer fluxer-canary opendeck ghostty-themes)
+CLI_TOOLS=(tea superfile)
 AI_TOOLS=(claude codex opencode omp herdr)
 GAMING_TOOLS=(wowup-cf r2modman prismlauncher)
 MEDIA_TOOLS=(moonfin plezy)
@@ -103,8 +103,6 @@ tool_name() {
     case "$1" in
         tea)       echo "Tea" ;;
         superfile) echo "Superfile" ;;
-        nak)       echo "nak" ;;
-        ngit)      echo "ngit" ;;
         claude)    echo "Claude Code" ;;
         codex)     echo "Codex CLI" ;;
         opencode)  echo "OpenCode" ;;
@@ -140,8 +138,6 @@ tool_description() {
     case "$1" in
         tea)       echo "Gitea and Forgejo CLI" ;;
         superfile) echo "terminal file manager (spf)" ;;
-        nak)       echo "Nostr relay and event CLI" ;;
-        ngit)      echo "Git collaboration over Nostr" ;;
         claude)    echo "Anthropic coding agent" ;;
         codex)     echo "OpenAI coding agent" ;;
         opencode)  echo "provider-independent coding agent" ;;
@@ -175,7 +171,7 @@ tool_description() {
 
 tool_category() {
     case "$1" in
-        tea|superfile|nak|ngit) echo "Developer CLIs" ;;
+        tea|superfile) echo "Developer CLIs" ;;
         claude|codex|opencode|omp|herdr) echo "AI coding" ;;
         wowup-cf|r2modman|prismlauncher) echo "Gaming" ;;
         moonfin|plezy) echo "Media" ;;
@@ -193,8 +189,6 @@ tool_commands() {
     case "$1" in
         tea)       echo "tea" ;;
         superfile) echo "spf" ;;
-        nak)       echo "nak" ;;
-        ngit)      echo "ngit git-remote-nostr" ;;
         claude)    echo "claude" ;;
         codex)     echo "codex" ;;
         opencode)  echo "opencode" ;;
@@ -782,49 +776,6 @@ install_superfile() {
     commit_static_install "$tool" "$tmp" "$tag" "$base"
 }
 
-install_nak() {
-    local tool=nak asset tag url sha256 tmp
-    require_amd64 "nak"
-    preflight_install "$tool"
-
-    asset="$(github_release_asset fiatjaf/nak 'nak-{tag}-linux-amd64')"
-    IFS=$'\t' read -r tag url sha256 <<<"$asset"
-    static_up_to_date "$tool" "$tag" && return 0
-    note "Installing nak"
-    new_temp_dir
-    tmp="$ACTIVE_TEMP"
-    mkdir -p "$tmp/bin"
-    curl_fetch download "$url" "$tmp/bin/nak"
-    verify_sha256 "$tmp/bin/nak" "$sha256"
-    chmod 0755 "$tmp/bin/nak"
-    "$tmp/bin/nak" --version </dev/null >/dev/null
-    commit_static_install "$tool" "$tmp" "$tag" "$url"
-}
-
-install_ngit() {
-    local tool=ngit asset tag url sha256 filename tmp
-    require_amd64 "ngit"
-    preflight_install "$tool"
-
-    asset="$(github_release_asset DanConwayDev/ngit-cli 'ngit-{tag}-x86_64-unknown-linux-musl.tar.gz')"
-    IFS=$'\t' read -r tag url sha256 <<<"$asset"
-    static_up_to_date "$tool" "$tag" && return 0
-    note "Installing ngit"
-    filename="${url##*/}"
-    new_temp_dir
-    tmp="$ACTIVE_TEMP"
-    curl_fetch download "$url" "$tmp/$filename"
-    verify_sha256 "$tmp/$filename" "$sha256"
-    mkdir -p "$tmp/extract" "$tmp/bin"
-    tar -xzf "$tmp/$filename" -C "$tmp/extract"
-    install -m0755 "$tmp/extract/ngit" "$tmp/bin/ngit"
-    install -m0755 "$tmp/extract/git-remote-nostr" "$tmp/bin/git-remote-nostr"
-    rm -rf -- "$tmp/extract" "$tmp/$filename"
-    "$tmp/bin/ngit" --version </dev/null >/dev/null
-    "$tmp/bin/git-remote-nostr" --version </dev/null >/dev/null
-    commit_static_install "$tool" "$tmp" "$tag" "$url"
-}
-
 download_installer() {
     local url="$1"
     new_temp_dir
@@ -1087,7 +1038,7 @@ launchers_are_programs() {
 can_adopt() {
     local tool="$1"
     case "$tool" in
-        tea|superfile|nak|ngit|omp|herdr)
+        tea|superfile|omp|herdr)
             [ ! -e "$(tool_root "$tool")" ] && [ ! -L "$(tool_root "$tool")" ] &&
                 launchers_are_programs "$tool"
             ;;
@@ -1111,7 +1062,7 @@ can_adopt() {
 can_adopt_replaced() {
     local tool="$1"
     case "$tool" in
-        tea|superfile|nak|ngit|omp|herdr) ;;
+        tea|superfile|omp|herdr) ;;
         *) return 1 ;;
     esac
     replaced_launcher "$tool" >/dev/null && launchers_are_programs "$tool"
@@ -1132,7 +1083,7 @@ adopt_tool() {
     local tool="$1" command primary output version stage executable
     note "Adopting the existing supported $(tool_name "$tool") installation"
     case "$tool" in
-        tea|superfile|nak|ngit|omp|herdr)
+        tea|superfile|omp|herdr)
             # Validate every program before copying or changing anything.
             for command in $(tool_commands "$tool"); do
                 "$BIN_DIR/$command" --version </dev/null >/dev/null 2>&1 ||
@@ -2396,7 +2347,7 @@ Commands:
   help                  Show this help
 
 Tool IDs:
-  Developer CLIs   tea superfile nak ngit
+  Developer CLIs   tea superfile
   AI coding        claude codex opencode omp herdr
   Gaming           wowup-cf r2modman prismlauncher
   Media            moonfin plezy
