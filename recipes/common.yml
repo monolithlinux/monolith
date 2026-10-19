@@ -191,6 +191,12 @@ modules:
         - nodejs24-npm-bin
         - nodejs24-full-i18n
 
+  # OpenDeck for the Elgato Stream Deck, from upstream's pinned RPM; its
+  # Node.js plugins use the Node.js above. See the script.
+  - type: script
+    scripts:
+      - install-opendeck.sh
+
   - type: script
     scripts:
       - fix-protontricks-icon.sh
@@ -279,6 +285,9 @@ modules:
     user:
       enabled:
         - flatpak-user-update.timer
+        # Moves an OpenDeck Flatpak that Monolith Software installed to the
+        # built-in OpenDeck; does nothing for other accounts.
+        - monolith-opendeck-migration.service
 
   - type: fonts
     fonts:
