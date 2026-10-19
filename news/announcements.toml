@@ -28,6 +28,35 @@
 #   files/kde/usr/bin/monolith-news --preview news/announcements.toml
 
 [[announcements]]
+id = "2026-10-19-sidra"
+date = 2026-10-19
+title = "Sidra joins Monolith Software"
+category = "Media"
+install_path = ["monolith", "Media", "Sidra"]
+body = """
+Sidra is an Apple Music app with media keys, desktop notifications, themes, and
+Last.fm scrobbling. You need an Apple Music subscription. To install it, run
+`monolith`, open **Media**, and select **Sidra**.
+
+- **Verified download:** Monolith downloads the official AppImage, checks it
+  against the checksum GitHub publishes, and adds it to Gear Lever. If Gear
+  Lever is missing, Monolith offers to install it from Flathub for your account.
+- **Already installed?** Monolith reuses a supported copy in Gear Lever rather
+  than adding a second launcher.
+- **Updates:** Monolith installs the newest stable release, and Sidra also
+  updates itself to newer stable releases. Close Sidra before running
+  `monolith update sidra` or topgrade.
+- **Your data stays:** Removing Sidra keeps your Apple Music sign-in and
+  settings.
+
+Not in your Media menu yet? Update Monolith and reboot first.
+"""
+links = [
+  { label = "Sidra", url = "https://github.com/wimpysworld/sidra" },
+  { label = "Monolith software guide", url = "https://github.com/monolithlinux/monolith#sidra" },
+]
+
+[[announcements]]
 id = "2026-10-19-update-reminder"
 date = 2026-10-19
 title = "A reminder when topgrade has not run for a week"

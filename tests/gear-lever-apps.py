@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline tests for Monolith's Gear Lever app helper (WowUp-CF and r2modman) against a file-backed
+"""Offline tests for Monolith's Gear Lever app helper (WowUp-CF, r2modman and Sidra) against a file-backed
 Gear Lever 4.6.2 model.
 
 Besides running the suite, this file provides test doubles for other harnesses:
@@ -92,9 +92,20 @@ def elf(sections):
 
 
 _APPIMAGES = {}
-# Embedded launcher lines that differ from WowUp's, as the official r2modman AppImage ships them.
-COMMENTS = {"r2modman": "A simple and easy to use mod manager for many games using Thunderstore."}
-MIME_TYPES = {"r2modman": "x-scheme-handler/ror2mm;"}
+# Embedded launcher lines that differ from WowUp's, as the official r2modman and Sidra AppImages ship them.
+COMMENTS = {"r2modman": "A simple and easy to use mod manager for many games using Thunderstore.",
+            "Sidra": "An elegant Apple Music desktop client for Linux, macOS and Windows. No frippery, just "
+                     "quality. A better class of Cider 🍎"}
+MIME_TYPES = {"r2modman": "x-scheme-handler/ror2mm;", "Sidra": "x-scheme-handler/itms;"}
+CATEGORIES = {"Sidra": "Audio;"}
+# Sidra's launcher actions control playback over MPRIS with dbus-send: (ID, Name, German Name).
+SIDRA_ACTIONS = (("PlayPause", "Play-Pause", "Abspielen-Pausieren"), ("Next", "Next", "Nächstes"),
+                 ("Previous", "Previous", "Vorheriges"), ("Stop", "Stop", "Stop"))
+MPRIS = "--print-reply --dest=org.mpris.MediaPlayer2.sidra /org/mpris/MediaPlayer2 org.mpris.MediaPlayer2.Player."
+# An application's Actions value and [Desktop Action] groups.
+ACTIONS = {"Sidra": ("".join(f"{action};" for action, _, _ in SIDRA_ACTIONS), "".join(
+    f"\n[Desktop Action {action}]\nName={label}\nName[de]={german}\nExec=dbus-send {MPRIS}{action}\n"
+    for action, label, german in SIDRA_ACTIONS))}
 
 
 def make_appimage(version, *, name="WowUp-CF", update_info=b""):
@@ -102,11 +113,12 @@ def make_appimage(version, *, name="WowUp-CF", update_info=b""):
     key = (version, name, update_info)
     if key not in _APPIMAGES:
         mime_type = f"MimeType={MIME_TYPES[name]}\n" if name in MIME_TYPES else ""
+        listed, groups = ACTIONS.get(name, ("", ""))
         desktop = (f"[Desktop Entry]\nName={name}\nExec=AppRun --no-sandbox %U\nTerminal=false\n"
                    f"Type=Application\nIcon={name.lower()}\nStartupWMClass={name}\n"
-                   f"X-AppImage-Version={version}\n"
+                   f"X-AppImage-Version={version}\n" + (f"Actions={listed}\n" if listed else "") +
                    f"Comment={COMMENTS.get(name, 'World of Warcraft addon updater')}\n"
-                   f"{mime_type}Categories=Game;\n").encode()
+                   f"{mime_type}Categories={CATEGORIES.get(name, 'Game;')}\n{groups}").encode()
         _APPIMAGES[key] = elf([
             (".upd_info", update_info.ljust(1024, b"\0")),
             (".monolith.desktop", desktop),
@@ -185,8 +197,24 @@ BOOLEAN_KEYS = frozenset({"NoDisplay", "Hidden", "DBusActivatable", "Terminal", 
 LIST_KEYS = frozenset({"OnlyShowIn", "NotShowIn", "MimeType", "Categories", "Implements", "Keywords"})
 
 
-def launcher_text(entry):
-    """DesktopEntry.get_text() for an entry without translations or desktop actions."""
+def desktop_actions(text):
+    """The desktop actions an entry lists in Actions, in that order: {ID: [(key, value), ...]}."""
+    groups, group = {}, None
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            group = groups.setdefault(line[16:-1], []) if line.startswith("[Desktop Action ") else None
+        elif group is not None and "=" in line:
+            key, value = line.split("=", 1)
+            group.append((key.strip(), value.strip()))
+    listed = (desktop_values(text) or {}).get("Actions", "")
+    return {action: groups[action] for action in listed.split(";") if action in groups}
+
+
+def launcher_text(entry, actions=None):
+    """DesktopEntry.get_text() for an entry without translations, then its desktop actions."""
     lines = ["[Desktop Entry]", f"Type={entry.get('Type', 'Application')}"]
     for key in DESKTOP_KEYS:
         value = entry.get(key)
@@ -196,7 +224,11 @@ def launcher_text(entry):
             value = ";".join(value.removesuffix(";").split(";")) + ";"
         if value is not None and (value or key not in ("Name", "GenericName", "Comment")):
             lines.append(f"{key}={value}")
+    if actions:
+        lines.append("Actions=" + "".join(f"{action};" for action in actions))
     lines += [f"{key}={value}" for key, value in entry.items() if key.startswith("X-")]
+    for action, values in (actions or {}).items():
+        lines += ["", f"[Desktop Action {action}]", *(f"{key}={value}" for key, value in values)]
     return "".join(line + "\n" for line in lines)
 
 
@@ -446,7 +478,8 @@ class GearLeverModel:
         if fault == "fail":
             return 1, "", "Traceback (most recent call last):\nInternalError: Missing mounted extraction folder\n"
         sections = appimage_sections(source)
-        embedded = desktop_values(sections.get(".monolith.desktop", b"").decode()) or {}
+        embedded_text = sections.get(".monolith.desktop", b"").decode()
+        embedded = desktop_values(embedded_text) or {}
         if "Name" not in embedded:
             return 1, "", "AttributeError: 'NoneType' object has no attribute 'get'\n"
         keep = "--replace" not in arguments
@@ -488,8 +521,14 @@ class GearLeverModel:
             if version:
                 entry["X-AppImage-Version"] = version
             entry["X-AppImage-Name"] = name
+            # Each action keeps its names, but takes the AppImage's icon and runs the AppImage with the
+            # action's arguments, whatever program the action ran.
+            actions = {action: [(key, value) for key, value in values if key == "Name" or key.startswith("Name[")]
+                       + [("Icon", icon), ("Exec", shlex.join(
+                           [destination, *terminal_arguments(dict(values).get("Exec", ""))[2]]))]
+                       for action, values in desktop_actions(embedded_text).items()}
             with open(desktop, "w+") as file:
-                file.write(launcher_text(entry))
+                file.write(launcher_text(entry, actions))
             self.set_app_config(destination, name, {"default_exec_arguments": " ".join(exec_arguments)})
         except OSError as error:
             return 1, "", f"Traceback (most recent call last):\n{type(error).__name__}: {error}\n"
@@ -842,20 +881,27 @@ class Fixture:
     old: str  # a release tests install first ...
     new: str  # ... and a later one they update to
     settings: tuple = ()  # files below XDG_CONFIG_HOME that the helper writes for the app
+    tag_prefix: str = "v"  # what precedes the version in its release tags
+    appimage: str = ""  # its AppImage asset name when that carries no version
+
+    def tag(self, version):
+        return f"{self.tag_prefix}{version}"
 
     def asset(self, version):
-        return f"{self.name}-{version}.AppImage"
+        return self.appimage or f"{self.name}-{version}.AppImage"
 
     def releases_url(self, page):
         return f"https://api.github.com/repos/{self.repository}/releases?per_page=100&page={page}"
 
     def download_url(self, version):
-        return f"https://github.com/{self.repository}/releases/download/v{version}/{self.asset(version)}"
+        return f"https://github.com/{self.repository}/releases/download/{self.tag(version)}/{self.asset(version)}"
 
 
 WOWUP_CF = Fixture("wowup-cf", "WowUp-CF", "WowUp/WowUp.CF", "wowupcf", "2.24.0-beta.6", "2.24.0-beta.10",
                    ("WowUpCf/preferences.json", "WowUpCf/preferences.json.monolith-backup"))
 R2MODMAN = Fixture("r2modman", "r2modman", "ebkr/r2modmanPlus", "r2modman", "3.2.19", "3.2.20")
+SIDRA = Fixture("sidra", "Sidra", "wimpysworld/sidra", "sidra", "1.1.1", "1.1.2", tag_prefix="",
+                appimage="Sidra-linux-x86_64.AppImage")
 
 
 def download_url(version, app=WOWUP_CF):
@@ -867,7 +913,7 @@ def release(version, *, app=WOWUP_CF, data=None, prerelease=None, draft=False, d
     """A GitHub release object as the REST API returns it, with Windows/macOS/updater assets beside it."""
     data = make_appimage(version, name=app.name) if data is None else data
     name = name or app.asset(version)
-    base = f"https://github.com/{app.repository}/releases/download/v{version}/"
+    base = f"https://github.com/{app.repository}/releases/download/{app.tag(version)}/"
     asset = {"name": name, "state": state, "size": len(data) if size is None else size,
              "content_type": "application/octet-stream",
              "digest": f"sha256:{sha256(data)}" if digest == "auto" else digest,
@@ -877,7 +923,7 @@ def release(version, *, app=WOWUP_CF, data=None, prerelease=None, draft=False, d
                "browser_download_url": f"{base}{app.name}-Setup-{version}.exe"},
               {"name": "latest-linux.yml", "state": "uploaded", "size": 5, "digest": f"sha256:{sha256(b'yaml')}",
                "browser_download_url": base + "latest-linux.yml"}]
-    return {"tag_name": f"v{version}", "name": f"v{version}", "draft": draft,
+    return {"tag_name": app.tag(version), "name": app.tag(version), "draft": draft,
             "prerelease": ("-beta." in version) if prerelease is None else prerelease,
             "assets": [others[0], asset, *([dict(asset)] if duplicate else []), others[1]]}
 
@@ -888,6 +934,14 @@ def r2_release(version, **options):
 
 def r2_appimage(version, **options):
     return make_appimage(version, name="r2modman", **options)
+
+
+def sidra_release(version, **options):
+    return release(version, app=SIDRA, **options)
+
+
+def sidra_appimage(version, **options):
+    return make_appimage(version, name="Sidra", **options)
 
 
 class FakeResponse(io.BytesIO):
@@ -1028,7 +1082,7 @@ EMBEDDED = {
 
 
 class GearLeverAppCase(unittest.TestCase):
-    """A HOME with unrelated launchers, a regular WowUp integration and both apps' user data, plus the Gear
+    """A HOME with unrelated launchers, a regular WowUp integration and every app's user data, plus the Gear
     Lever, HTTP and /proc doubles. APP is the application the harness helpers act on by default."""
 
     APP = WOWUP_CF
@@ -1064,6 +1118,7 @@ class GearLeverAppCase(unittest.TestCase):
         self.appimages = self.home / "AppImages"
         self.cf, self.cf_desktop, self.cf_icon = self.files_of(WOWUP_CF)
         self.r2, self.r2_desktop, self.r2_icon = self.files_of(R2MODMAN)
+        self.sidra, self.sidra_desktop, self.sidra_icon = self.files_of(SIDRA)
         self.allow_recovery = False
         # Unrelated data and a regular (non-CurseForge) WowUp integration that must never change.
         self.apps.mkdir(parents=True)
@@ -1080,6 +1135,9 @@ class GearLeverAppCase(unittest.TestCase):
             self.config / "r2modman/Preferences": b'{"spellcheck":{"dictionaries":["en-US"]}}',
             self.home / ".config/r2modmanPlus-local/config/window-state.yml": b"width: 1024\nheight: 768\n",
             self.home / ".config/r2modman/Preferences": b'{"spellcheck":{"dictionaries":["de-DE"]}}',
+            # Sidra's Apple Music sign-in and settings, in its Electron user data directory.
+            self.config / "Sidra/config.json": b'{\n  "startPage": "home"\n}\n',
+            self.config / "Sidra/Network/Cookies": b"SQLite format 3\0media-user-token\n",
         }
         for path, data in self.kept.items():
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -2048,12 +2106,12 @@ class WowUpCfTests(GearLeverAppCase):
         self.receipt.write_text(receipt)
 
     def test_command_line(self):
-        # --help names both applications and exits before any filesystem work.
+        # --help names every application and exits before any filesystem work.
         missing = self.root / "missing home"
         result = subprocess.run([sys.executable, str(HELPER), "--help"], capture_output=True, text=True,
                                 env={"PATH": os.environ["PATH"], "HOME": str(missing)})
         self.assertEqual(result.returncode, 0, result.stderr)
-        for app in (WOWUP_CF, R2MODMAN):
+        for app in (WOWUP_CF, R2MODMAN, SIDRA):
             self.assertIn(app.id, result.stdout)
         self.assertFalse(missing.exists())
         # install and remove require a scope, and the application must be one the helper knows.
@@ -2070,9 +2128,10 @@ class WowUpCfTests(GearLeverAppCase):
 
 class GearLeverModelTests(GearLeverAppCase):
     def test_launchers_match_real_gear_lever(self):
-        """The model writes the launchers real Gear Lever 4.6.2 wrote for both official AppImages."""
+        """The model writes the launchers real Gear Lever 4.6.2 wrote for the official AppImages."""
         self.assertEqual(self.integrate(make_appimage("2.24.0-beta.6")), self.cf)
         self.assertEqual(self.integrate(r2_appimage("3.2.20")), self.r2)
+        self.assertEqual(self.integrate(sidra_appimage("1.1.2")), self.sidra)
         self.assertEqual(self.cf_desktop.read_text(), (
             "[Desktop Entry]\nType=Application\nName=WowUp-CF\nComment=World of Warcraft addon updater\n"
             f"Icon={self.cf_icon}\nTryExec={self.cf}\nExec=env DESKTOPINTEGRATION=1 {self.cf} --no-sandbox %U\n"
@@ -2086,7 +2145,19 @@ class GearLeverModelTests(GearLeverAppCase):
             "X-AppImage-Version=3.2.20\nX-AppImage-Name=r2modman\n"))
         self.assertEqual(self.gear_lever_config()[f"app.{GearLeverModel.digest(str(self.r2))}"], {
             "default_exec_arguments": "--no-sandbox %U", "name": "r2modman", "file_path": str(self.r2)})
-        self.assertEqual(sorted(entry["name"] for entry in self.flatpak.listing()), ["WowUp", "WowUp-CF", "r2modman"])
+        # Sidra's desktop actions stay, but each runs the AppImage with the arguments meant for dbus-send.
+        self.assertEqual(self.sidra_desktop.read_text(), (
+            "[Desktop Entry]\nType=Application\nName=Sidra\nComment=An elegant Apple Music desktop client for Linux, "
+            "macOS and Windows. No frippery, just quality. A better class of Cider 🍎\n"
+            f"Icon={self.sidra_icon}\nTryExec={self.sidra}\n"
+            f"Exec=env DESKTOPINTEGRATION=1 {self.sidra} --no-sandbox %U\nTerminal=false\n"
+            "MimeType=x-scheme-handler/itms;\nCategories=Audio;\nStartupWMClass=Sidra\n"
+            "Actions=PlayPause;Next;Previous;Stop;\nX-AppImage-Version=1.1.2\nX-AppImage-Name=Sidra\n"
+            + "".join(f"\n[Desktop Action {action}]\nName={label}\nName[de]={german}\nIcon={self.sidra_icon}\n"
+                      f"Exec={self.sidra} --print-reply --dest=org.mpris.MediaPlayer2.sidra /org/mpris/MediaPlayer2 "
+                      f"org.mpris.MediaPlayer2.Player.{action}\n" for action, label, german in SIDRA_ACTIONS)))
+        self.assertEqual(sorted(entry["name"] for entry in self.flatpak.listing()),
+                         ["Sidra", "WowUp", "WowUp-CF", "r2modman"])
 
 
 class R2modmanTests(GearLeverAppCase):
@@ -2349,6 +2420,79 @@ class R2modmanTests(GearLeverAppCase):
             self.assertEqual((info["version"], info["conflicts"]), (None, [str(self.receipt)]))
         self.receipt.write_text(receipt)
         self.assert_no_settings_written()
+
+
+class SidraTests(GearLeverAppCase):
+    """Sidra: X.Y.Z tags without a "v" and one AppImage name for every release; its launcher's desktop actions
+    and its own data are never changed."""
+
+    APP = SIDRA
+
+    def test_release_selection(self):
+        helper = self.helper
+        app = helper.APPS["sidra"]
+
+        def pick(*items):
+            return app.select(helper.parse_releases(app, list(items)), None)
+
+        line = [sidra_release("0.3.0"), sidra_release("1.1.1"), sidra_release("1.1.2")]
+        self.assertEqual(pick(*reversed(line)).url,
+                         "https://github.com/wimpysworld/sidra/releases/download/1.1.2/Sidra-linux-x86_64.AppImage")
+        self.assertEqual(pick(sidra_release("1.10.0"), *line).version, "1.10.0")
+        # Only bare tags are Sidra's, prereleases are skipped, and the ARM AppImage never stands in.
+        rejected = [dict(sidra_release("1.3.0"), tag_name="v1.3.0"), sidra_release("1.3.1", prerelease=True),
+                    sidra_release("1.3.2", name="Sidra-linux-arm64.AppImage")]
+        self.assertEqual(pick(*line, *rejected).version, "1.1.2")
+        with self.assertRaises(helper.HelperError):
+            pick(*rejected)
+
+    def test_install_self_update_update_and_remove(self):
+        self.serve("1.1.1", assets=["1.1.1"])
+        self.ok(self.install())
+        self.assertEqual(self.sidra.read_bytes(), sidra_appimage("1.1.1"))
+        self.assertEqual(self.read_receipt(), {
+            "version": "1.1.1", "source": SIDRA.download_url("1.1.1"), "channel": "stable",
+            "sha256": sha256(sidra_appimage("1.1.1")), "appimage": str(self.sidra), "desktop_id": "sidra.desktop",
+            "icon": str(self.sidra_icon)})
+        launcher = self.sidra_desktop.read_bytes()
+        self.assertEqual(launcher.count(b"\n[Desktop Action "), 4)
+        # Sidra updates itself: its updater replaces the AppImage in place with the 1.1.2 release.
+        self.sidra.write_bytes(sidra_appimage("1.1.2"))
+        self.serve("1.1.1", "1.1.2")  # no asset route: nothing may be downloaded
+        self.ok(self.update())
+        receipt = self.read_receipt()
+        self.assertEqual((receipt["version"], receipt["sha256"]), ("1.1.2", sha256(sidra_appimage("1.1.2"))))
+        # Only the launcher's version line changes; the desktop actions stay as Gear Lever wrote them.
+        self.assertEqual(self.sidra_desktop.read_bytes(), launcher.replace(b"X-AppImage-Version=1.1.1\n",
+                                                                            b"X-AppImage-Version=1.1.2\n"))
+        # Monolith's own update downloads the next release into the same, single integration.
+        self.serve("1.1.2", "1.2.0", assets=["1.2.0"])
+        self.ok(self.update())
+        self.assertEqual(self.sidra.read_bytes(), sidra_appimage("1.2.0"))
+        self.assertEqual(self.sidra_desktop.read_bytes(), launcher.replace(b"X-AppImage-Version=1.1.1\n",
+                                                                            b"X-AppImage-Version=1.2.0\n"))
+        self.assertEqual([entry["path"] for entry in self.entries()], [str(self.sidra)])
+        self.assertEqual((self.read_receipt()["source"], self.status()), (SIDRA.download_url("1.2.0"), "installed"))
+        # Removal deletes the integration and Monolith's records; Sidra's sign-in and settings stay (check_clean).
+        self.ok(self.remove())
+        for path in (self.sidra, self.sidra_desktop, self.sidra_icon, self.receipt, self.snapshots):
+            self.assertFalse(path.exists(), path)
+        self.assertEqual(self.status(), "not installed")
+
+    def test_running_sidra_blocks_every_change(self):
+        self.managed_install()
+        self.serve("1.1.1", "1.1.2", assets=["1.1.2"])
+        installed = self.snapshot()
+        # An Electron process from the mount of sidra.appimage whose environment cannot be read.
+        self.proc.add(4200, uid=os.getuid(), comm="sidra", cmdline=("/tmp/.mount_sidra.AbC/sidra", "--type=renderer"),
+                      readable=False)
+        for action in (self.install, self.remove):
+            result = action()
+            self.assertEqual((result.code, result.stderr.strip()), (1, "Close Sidra and retry this action."))
+        self.assertEqual(self.snapshot(), installed)
+        self.proc.clear()
+        self.ok(self.install())
+        self.assertEqual(self.sidra.read_bytes(), sidra_appimage("1.1.2"))
 
 
 class CoexistenceTests(GearLeverAppCase):

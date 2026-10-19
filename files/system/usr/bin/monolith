@@ -34,11 +34,11 @@ UP_TO_DATE=0
 readonly SELF BIN_DIR DATA_HOME STATE_HOME MANAGED_ROOT STATE_ROOT GHOSTTY_THEMES_HELPER GEAR_LEVER_APP_HELPER
 readonly GEAR_LEVER_ID GEAR_LEVER_REF GEAR_LEVER_MIN_VERSION FLATHUB_REPO QUIT_TOKEN HELPER_UP_TO_DATE
 
-ALL_TOOLS=(tea superfile claude codex opencode omp herdr wowup-cf r2modman prismlauncher moonfin plezy photocraft vectorcraft filmcraft lightcraft pdfcraft effectcraft designcraft figcraft wordcraft soundcraft deckcraft cadcraft gridcraft fluxer fluxer-canary ghostty-themes)
+ALL_TOOLS=(tea superfile claude codex opencode omp herdr wowup-cf r2modman prismlauncher moonfin plezy sidra photocraft vectorcraft filmcraft lightcraft pdfcraft effectcraft designcraft figcraft wordcraft soundcraft deckcraft cadcraft gridcraft fluxer fluxer-canary ghostty-themes)
 CLI_TOOLS=(tea superfile)
 AI_TOOLS=(claude codex opencode omp herdr)
 GAMING_TOOLS=(wowup-cf r2modman prismlauncher)
-MEDIA_TOOLS=(moonfin plezy)
+MEDIA_TOOLS=(moonfin plezy sidra)
 CRAFTING_TOOLS=(photocraft vectorcraft filmcraft lightcraft pdfcraft effectcraft designcraft figcraft wordcraft soundcraft deckcraft cadcraft gridcraft)
 COMMUNICATION_TOOLS=(fluxer fluxer-canary)
 APPEARANCE_TOOLS=(ghostty-themes)
@@ -112,6 +112,7 @@ tool_name() {
         prismlauncher) echo "Prism Launcher" ;;
         moonfin)   echo "Moonfin" ;;
         plezy)     echo "Plezy" ;;
+        sidra)     echo "Sidra" ;;
         photocraft) echo "PhotoCraft" ;;
         vectorcraft) echo "VectorCraft" ;;
         filmcraft) echo "FilmCraft" ;;
@@ -146,6 +147,7 @@ tool_description() {
         prismlauncher) echo "Minecraft launcher for multiple instances, mods, and modpacks" ;;
         moonfin)   echo "media client for Jellyfin and Emby servers" ;;
         plezy)     echo "media client for Plex, Jellyfin, and Emby servers" ;;
+        sidra)     echo "Apple Music client with media keys, themes, and Last.fm scrobbling" ;;
         photocraft) echo "image editor for photos and layered PSD documents" ;;
         vectorcraft) echo "vector illustration editor for SVG and PDF artwork" ;;
         filmcraft) echo "video editor with color and sound tools" ;;
@@ -171,7 +173,7 @@ tool_category() {
         tea|superfile) echo "Developer CLIs" ;;
         claude|codex|opencode|omp|herdr) echo "AI coding" ;;
         wowup-cf|r2modman|prismlauncher) echo "Gaming" ;;
-        moonfin|plezy) echo "Media" ;;
+        moonfin|plezy|sidra) echo "Media" ;;
         fluxer|fluxer-canary) echo "Communication" ;;
         ghostty-themes) echo "Appearance" ;;
         *)
@@ -190,7 +192,7 @@ tool_commands() {
         opencode)  echo "opencode" ;;
         omp)       echo "omp" ;;
         herdr)     echo "herdr" ;;
-        wowup-cf|r2modman|prismlauncher|moonfin|plezy|fluxer|fluxer-canary|ghostty-themes) return 0 ;;
+        wowup-cf|r2modman|prismlauncher|moonfin|plezy|sidra|fluxer|fluxer-canary|ghostty-themes) return 0 ;;
         *)         is_crafting_app "$1" ;;
     esac
 }
@@ -268,7 +270,7 @@ launcher_is_managed() {
 # AppImages that Monolith integrates with Gear Lever.
 is_gear_lever_app() {
     case "$1" in
-        wowup-cf|r2modman) return 0 ;;
+        wowup-cf|r2modman|sidra) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -1175,6 +1177,15 @@ r2modman release policy:
     r2modman may also update itself to newer stable releases.
 EOF
             ;;
+        sidra)
+            cat <<'EOF'
+Sidra release policy:
+  - Added to Gear Lever; one supported existing integration is reused.
+  - Installs the newest stable release; prereleases are skipped.
+  - Monolith, not Gear Lever, selects updates (monolith update sidra);
+    Sidra may also update itself to newer stable releases.
+EOF
+            ;;
     esac
 }
 
@@ -1185,6 +1196,7 @@ kept_data() {
         r2modman) echo "profiles, mods, and settings" ;;
         prismlauncher) echo "instances, worlds, accounts, and settings" ;;
         moonfin|plezy) echo "servers, sign-ins, settings, and downloads" ;;
+        sidra) echo "Apple Music sign-in and settings" ;;
         photocraft) echo "settings, recent files, brush presets, and recovery files" ;;
         vectorcraft) echo "settings, swatches, libraries, added fonts, and recovery files" ;;
         filmcraft) echo "settings, presets, auto-saves, and media cache" ;;
@@ -2342,7 +2354,7 @@ Tool IDs:
   Developer CLIs   tea superfile
   AI coding        claude codex opencode omp herdr
   Gaming           wowup-cf r2modman prismlauncher
-  Media            moonfin plezy
+  Media            moonfin plezy sidra
   Crafting Apps    photocraft vectorcraft filmcraft lightcraft pdfcraft
                    effectcraft designcraft figcraft wordcraft soundcraft
                    deckcraft cadcraft gridcraft

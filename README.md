@@ -281,6 +281,23 @@ installed, updating or installing again downloads nothing. Plezy can stay open
 while it updates. Removal keeps your servers, sign-ins, settings, and downloads
 in `~/.var/app/com.edde746.plezy`.
 
+### Sidra
+
+**Media → Sidra** installs [Sidra](https://github.com/wimpysworld/sidra), an
+Apple Music app with media keys, desktop notifications, themes, and Last.fm
+scrobbling; it needs an Apple Music subscription. As with WowUp-CF and r2modman,
+Monolith downloads the official AppImage, checks it against the SHA256 digest
+GitHub publishes, and adds it to Gear Lever. An existing Gear Lever Sidra
+integration is adopted and updated in place rather than gaining a second
+launcher.
+
+Monolith installs the newest stable Sidra release and skips prereleases. Use
+**Update** in the dashboard or `monolith update sidra`; Sidra also updates
+itself to newer stable releases and offers to restart, which Monolith
+recognizes. Close Sidra before updating or removing it; an update that finds no
+newer release leaves it alone, so it can stay open. Removal keeps your Apple
+Music sign-in and settings in `~/.config/Sidra`.
+
 ### Crafting Apps
 
 The **Crafting Apps** category offers all thirteen
