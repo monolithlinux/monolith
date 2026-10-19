@@ -42,7 +42,7 @@ fi
 if [[ -e $last_update ]]; then
     since="$(days_since "$last_update") days"
 else
-    since="over $interval_days days"
+    since="over a week"
 fi
 
 # Plasma may still be starting its notification service. Without one, keep the
@@ -58,7 +58,7 @@ touch -- "$last_reminder"
 # notify-send waits for the notification to close and prints the chosen action.
 action="$(notify-send --app-name=Monolith --icon=monolith-logo \
     --action=update='Update now' 'Time to run topgrade' \
-    "It has been $since since you last ran topgrade. The system and Flatpaks update on their own; topgrade also updates Monolith software, Distrobox containers, and developer tools.")" ||
+    "It's been $since since you last ran topgrade. Run it to keep everything up to date.")" ||
     exit 0
 
 if [[ $action == update ]]; then

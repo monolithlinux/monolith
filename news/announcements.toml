@@ -33,12 +33,11 @@ date = 2026-10-19
 title = "A reminder when topgrade has not run for a week"
 category = "Monolith"
 body = """
-Your system and Flatpaks update automatically, but Monolith software, Distrobox
-containers, and developer tools update only when you run `topgrade` (or
-`mjust update`, which runs it).
+Some of your apps and tools update only when you run `topgrade`. Monolith now
+reminds you when you haven't run it for a week.
 
-- **Reminder:** When `topgrade` has not finished a run for a week, a
-  notification at login reminds you, at most once a week.
+- **Reminder:** A notification at login, at most once a week, until you run
+  `topgrade` again.
 - **Update now:** The notification's button opens a terminal that runs
   `topgrade`.
 - **Turn it off:** Disable Monolith Update Reminder in Plasma's Autostart

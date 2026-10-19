@@ -63,7 +63,7 @@ run
 age last-reminder 7
 run
 shown || fail 'no reminder after a week without an update'
-grep -Fq 'over 7 days since' "$log/notify-send" || fail 'wrong age without a recorded update'
+grep -Fq 'over a week since' "$log/notify-send" || fail 'wrong age without a recorded update'
 just_written last-reminder || fail 'the reminder was not recorded'
 run
 ! shown || fail 'reminded twice in a week'
@@ -79,7 +79,7 @@ run
 age last-update 9
 run
 shown || fail 'no reminder nine days after an update'
-grep -Fq 'It has been 9 days since' "$log/notify-send" || fail 'wrong age of the last update'
+grep -Fq "It's been 9 days since" "$log/notify-send" || fail 'wrong age of the last update'
 
 age last-reminder 2
 run
