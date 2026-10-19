@@ -7,6 +7,7 @@ SHA256 digest GitHub publishes, integrated with the Gear Lever Flatpak and then 
   wowup-cf  WowUp-CF follows only the 2.24.0 beta series (beta.6 or newer) until a downloadable
             stable release 2.24.0 or newer exists, then follows stable releases only.
   r2modman  r2modman follows stable releases only.
+  sidra     Sidra follows stable releases only.
 
 An application only ever inspects and changes its own integration, receipt, snapshots and processes.
 """
@@ -140,8 +141,8 @@ class App:
     id: str  # APP argument; names the receipt <id>.managed and the snapshot directory <id>
     name: str  # display name, the launcher's X-AppImage-Name and Gear Lever's listing name
     repository: str  # GitHub repository whose releases publish the official AppImage
-    asset: str  # exact AppImage asset name for {version}
-    version: re.Pattern  # release tags are "v" followed by a full match
+    asset: str  # exact AppImage asset name, where {version} stands for the release's version
+    version: re.Pattern  # release tags are tag_prefix followed by a full match
     key: Callable  # version match -> ordering key
     stable: Callable  # (version match, GitHub prerelease flag) -> whether stable; None rejects the release
     channel: Callable  # version match -> the channel a receipt records for it
@@ -152,6 +153,7 @@ class App:
     unidentified: str  # advice when the installed bytes match no published release
     policy: str  # what it follows, for --help
     setting: Setting | None = None
+    tag_prefix: str = "v"  # what precedes the version in release tags
 
     @property
     def user_agent(self):
@@ -164,7 +166,8 @@ class App:
         return self.asset.format(version=version)
 
     def download_url(self, version):
-        return f"https://github.com/{self.repository}/releases/download/v{version}/{self.asset_name(version)}"
+        return (f"https://github.com/{self.repository}/releases/download/{self.tag_prefix}{version}/"
+                f"{self.asset_name(version)}")
 
     def version_key(self, version):
         match = self.version.fullmatch(version)
@@ -229,20 +232,23 @@ WOWUP_CF = App(
 )
 
 
-# r2modman: plain vX.Y.Z tags, where only GitHub's prerelease flag marks a prerelease. Its own updater
-# follows stable releases and replaces the AppImage in place with release bytes, identified by digest.
-def r2modman_stable(match, prerelease):
+# r2modman and Sidra: X.Y.Z versions, where only GitHub's prerelease flag marks a prerelease. Their own updaters
+# follow stable releases and replace the AppImage in place with release bytes, identified by digest.
+def flagged_stable(match, prerelease):
     return not prerelease if isinstance(prerelease, bool) else None
 
 
-def r2modman_select(releases, receipt):
-    """The newest stable release; prereleases only identify installed bytes."""
-    stable = [release for release in releases if release.stable]
-    if not stable:
-        raise HelperError("GitHub lists no downloadable r2modman stable release. Nothing was changed.")
-    return max(stable, key=lambda release: release.key)
+def newest_stable(name):
+    """Select the newest stable release; prereleases only identify installed bytes."""
+    def select(releases, receipt):
+        stable = [release for release in releases if release.stable]
+        if not stable:
+            raise HelperError(f"GitHub lists no downloadable {name} stable release. Nothing was changed.")
+        return max(stable, key=lambda release: release.key)
+    return select
 
 
+# r2modman tags its releases vX.Y.Z.
 R2MODMAN = App(
     id="r2modman",
     name="r2modman",
@@ -250,9 +256,9 @@ R2MODMAN = App(
     asset="r2modman-{version}.AppImage",
     version=re.compile(r"(\d+)\.(\d+)\.(\d+)", re.ASCII),
     key=lambda match: (int(match[1]), int(match[2]), int(match[3])),
-    stable=r2modman_stable,
+    stable=flagged_stable,
     channel=lambda match: "stable",
-    select=r2modman_select,
+    select=newest_stable("r2modman"),
     describe=lambda release: f"{release.version} (stable release)",
     process=re.compile(r"r2modman", re.IGNORECASE),
     kept="profiles, mods and settings",
@@ -261,7 +267,26 @@ R2MODMAN = App(
     policy="stable releases only; prereleases are never installed",
 )
 
-APPS = {app.id: app for app in (WOWUP_CF, R2MODMAN)}
+# Sidra tags its releases X.Y.Z, without a "v", and publishes every x86_64 AppImage under the same name.
+SIDRA = App(
+    id="sidra",
+    name="Sidra",
+    repository="wimpysworld/sidra",
+    asset="Sidra-linux-x86_64.AppImage",
+    version=re.compile(r"(\d+)\.(\d+)\.(\d+)", re.ASCII),
+    key=lambda match: (int(match[1]), int(match[2]), int(match[3])),
+    stable=flagged_stable,
+    channel=lambda match: "stable",
+    select=newest_stable("Sidra"),
+    describe=lambda release: f"{release.version} (stable release)",
+    process=re.compile(r"sidra", re.IGNORECASE),
+    kept="Apple Music sign-in and settings",
+    unidentified="Restore or remove that integration in Gear Lever, then retry.",
+    policy="stable releases only; prereleases are never installed",
+    tag_prefix="",
+)
+
+APPS = {app.id: app for app in (WOWUP_CF, R2MODMAN, SIDRA)}
 
 
 class Paths:
@@ -425,13 +450,14 @@ def fetch_releases(app):
 def parse_release(app, item):
     """Return the release's official AppImage, or None when it is not a usable candidate."""
     tag = item.get("tag_name")
-    match = app.version.fullmatch(tag[1:]) if isinstance(tag, str) and tag.startswith("v") else None
+    prefixed = isinstance(tag, str) and tag.startswith(app.tag_prefix)
+    version = tag[len(app.tag_prefix):] if prefixed else None
+    match = app.version.fullmatch(version) if prefixed else None
     if match is None or item.get("draft") is not False:
         return None
     stable = app.stable(match, item.get("prerelease"))
     if stable is None:
         return None
-    version = tag[1:]
     asset_name = app.asset_name(version)
     assets = item.get("assets")
     if not isinstance(assets, list):
