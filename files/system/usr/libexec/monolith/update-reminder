@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# Remind the user at login to run topgrade when it has not finished a run for a
+# week. The OS and Flatpaks update daily on their own; topgrade, which
+# `mjust update` also runs, updates Monolith software, Distrobox containers,
+# and developer tools too.
+#
+#   update-reminder           check at login; started by
+#                             /etc/xdg/autostart/monolith-update-reminder.desktop
+#   update-reminder --record  note a finished topgrade run; a post command in
+#                             /usr/share/monolith/topgrade.d/monolith.toml
+set -euo pipefail
+
+interval_days=7
+state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/monolith/update-reminder"
+last_update="$state_dir/last-update"
+last_reminder="$state_dir/last-reminder"
+
+mkdir -p -- "$state_dir"
+
+if [[ ${1-} == --record ]]; then
+    touch -- "$last_update"
+    exit 0
+fi
+
+now="$(date +%s)"
+days_since() { printf '%s\n' "$(((now - $(stat -c %Y -- "$1")) / 86400))"; }
+
+# Updated within the last week.
+if [[ -e $last_update ]] && (($(days_since "$last_update") < interval_days)); then
+    exit 0
+fi
+# Nothing recorded yet, as on a new account: start counting instead of reminding.
+if [[ ! -e $last_update && ! -e $last_reminder ]]; then
+    touch -- "$last_reminder"
+    exit 0
+fi
+# Remind at most once a week.
+if [[ -e $last_reminder ]] && (($(days_since "$last_reminder") < interval_days)); then
+    exit 0
+fi
+
+if [[ -e $last_update ]]; then
+    since="$(days_since "$last_update") days"
+else
+    since="over $interval_days days"
+fi
+
+# Plasma may still be starting its notification service. Without one, keep the
+# reminder due so the next login tries again.
+waited=0
+until busctl --user status org.freedesktop.Notifications >/dev/null 2>&1; do
+    ((waited < 60)) || exit 0
+    sleep 2
+    waited=$((waited + 2))
+done
+
+touch -- "$last_reminder"
+# notify-send waits for the notification to close and prints the chosen action.
+action="$(notify-send --app-name=Monolith --icon=monolith-logo \
+    --action=update='Update now' 'Time to run topgrade' \
+    "It has been $since since you last ran topgrade. The system and Flatpaks update on their own; topgrade also updates Monolith software, Distrobox containers, and developer tools.")" ||
+    exit 0
+
+if [[ $action == update ]]; then
+    # Keep the window open afterwards so topgrade's summary can be read.
+    exec ghostty --wait-after-command=true -e topgrade
+fi

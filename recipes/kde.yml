@@ -14,6 +14,9 @@ modules:
         # Monolith News typefaces.
         - ibm-plex-sans-fonts
         - ibm-plex-mono-fonts
+        # notify-send for the login update reminder; otherwise present only as a
+        # dependency.
+        - libnotify
         # KDE extras the ublue base used to provide.
         - kate
         - icoutils
@@ -139,6 +142,13 @@ modules:
           /etc/xdg/autostart/monolith-news.desktop
         fc-match --format '%{family}\n' 'IBM Plex Sans' | grep -F 'IBM Plex Sans'
         fc-match --format '%{family}\n' 'IBM Plex Mono' | grep -F 'IBM Plex Mono'
+      - |
+        # Fail the build if the login update reminder cannot run.
+        set -euxo pipefail
+        test -x /usr/libexec/monolith/update-reminder
+        bash -n /usr/libexec/monolith/update-reminder
+        desktop-file-validate /etc/xdg/autostart/monolith-update-reminder.desktop
+        command -v notify-send busctl ghostty topgrade
       - |
         # Expose the launcher mark in KDE's applications icon category.
         set -euxo pipefail

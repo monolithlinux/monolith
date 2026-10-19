@@ -33,6 +33,7 @@ jobs:
           python3 tests/gear-lever-apps.py
           tests/monolith-topgrade.sh
           tests/opendeck-flatpak-migration.sh
+          tests/monolith-update-reminder.sh
       - name: Test edition selection
         run: bash tests/pick-editions.sh
       - name: Test Monolith News

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Monolith Update Reminder
+Comment=Remind you at login when topgrade has not run for a week
+Exec=/usr/libexec/monolith/update-reminder
+Icon=monolith-logo
+Terminal=false
+OnlyShowIn=KDE;
