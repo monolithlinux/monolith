@@ -34,12 +34,12 @@ UP_TO_DATE=0
 readonly SELF BIN_DIR DATA_HOME STATE_HOME MANAGED_ROOT STATE_ROOT GHOSTTY_THEMES_HELPER GEAR_LEVER_APP_HELPER
 readonly GEAR_LEVER_ID GEAR_LEVER_REF GEAR_LEVER_MIN_VERSION FLATHUB_REPO QUIT_TOKEN HELPER_UP_TO_DATE
 
-ALL_TOOLS=(tea superfile nak ngit claude codex opencode omp herdr wowup-cf r2modman prismlauncher moonfin plezy photocraft vectorcraft filmcraft lightcraft pdfcraft effectcraft designcraft wordcraft soundcraft deckcraft cadcraft gridcraft fluxer fluxer-canary opendeck ghostty-themes)
+ALL_TOOLS=(tea superfile nak ngit claude codex opencode omp herdr wowup-cf r2modman prismlauncher moonfin plezy photocraft vectorcraft filmcraft lightcraft pdfcraft effectcraft designcraft figcraft wordcraft soundcraft deckcraft cadcraft gridcraft fluxer fluxer-canary opendeck ghostty-themes)
 CLI_TOOLS=(tea superfile nak ngit)
 AI_TOOLS=(claude codex opencode omp herdr)
 GAMING_TOOLS=(wowup-cf r2modman prismlauncher)
 MEDIA_TOOLS=(moonfin plezy)
-CRAFTING_TOOLS=(photocraft vectorcraft filmcraft lightcraft pdfcraft effectcraft designcraft wordcraft soundcraft deckcraft cadcraft gridcraft)
+CRAFTING_TOOLS=(photocraft vectorcraft filmcraft lightcraft pdfcraft effectcraft designcraft figcraft wordcraft soundcraft deckcraft cadcraft gridcraft)
 COMMUNICATION_TOOLS=(fluxer fluxer-canary)
 DEVICES_TOOLS=(opendeck)
 APPEARANCE_TOOLS=(ghostty-themes)
@@ -122,6 +122,7 @@ tool_name() {
         pdfcraft)  echo "PdfCraft" ;;
         effectcraft) echo "EffectCraft" ;;
         designcraft) echo "DesignCraft" ;;
+        figcraft)  echo "FigCraft" ;;
         wordcraft) echo "WordCraft" ;;
         soundcraft) echo "SoundCraft" ;;
         deckcraft) echo "DeckCraft" ;;
@@ -158,6 +159,7 @@ tool_description() {
         pdfcraft)  echo "PDF workbench to read, organize, combine, split, and secure PDFs" ;;
         effectcraft) echo "motion graphics and visual effects compositor" ;;
         designcraft) echo "page layout for magazines, books, and print documents" ;;
+        figcraft)  echo "interface design and prototyping" ;;
         wordcraft) echo "word processor that opens and saves Word documents" ;;
         soundcraft) echo "audio workstation to record, edit, and mix audio and MIDI" ;;
         deckcraft) echo "presentation app to create and present slide decks" ;;
@@ -1244,6 +1246,7 @@ kept_data() {
         pdfcraft) echo "settings, recent files, signatures, stamps, and trusted certificates" ;;
         effectcraft) echo "settings, templates, scripts, plug-ins, and models" ;;
         designcraft) echo "settings, workspaces, shortcuts, and recovery files" ;;
+        figcraft) echo "settings, recent files, plugins, and recovery files" ;;
         wordcraft|gridcraft) echo "settings and recent files" ;;
         soundcraft) echo "settings, session auto-saves, and plug-in presets" ;;
         deckcraft) echo "settings, recent files, and recovery files" ;;
@@ -2398,8 +2401,8 @@ Tool IDs:
   Gaming           wowup-cf r2modman prismlauncher
   Media            moonfin plezy
   Crafting Apps    photocraft vectorcraft filmcraft lightcraft pdfcraft
-                   effectcraft designcraft wordcraft soundcraft deckcraft
-                   cadcraft gridcraft
+                   effectcraft designcraft figcraft wordcraft soundcraft
+                   deckcraft cadcraft gridcraft
   Communication    fluxer fluxer-canary
   Devices          opendeck
   Appearance       ghostty-themes
