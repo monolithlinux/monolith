@@ -62,3 +62,7 @@ berarma/oversteer 7f6b3ad8ebedb23b8d5c3d32e63ae653f4d02480 (GPL-3.0, oversteer-L
   99-logitech-wheel-perms.rules
   99-thrustmaster-wheel-perms.rules
   99-fanatec-wheel-perms.rules
+
+OpenActionAPI/rust-elgato-streamdeck 63770911befa295a467d5e66e1a1a8c1e0a642fc (MPL-2.0, rust-elgato-streamdeck-LICENSE)
+  https://github.com/OpenActionAPI/rust-elgato-streamdeck/blob/63770911befa295a467d5e66e1a1a8c1e0a642fc/40-streamdeck.rules
+  40-streamdeck.rules (the rules OpenDeck asks for; access to every Elgato Stream Deck it supports)

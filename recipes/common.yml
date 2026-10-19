@@ -177,6 +177,20 @@ modules:
         # Distrobox replaces toolbox.
         - toolbox
 
+  # Node.js 24 LTS and npm, for Node-based tools and OpenDeck's Stream Deck
+  # plugins. The -bin packages provide the plain node and npm commands, and
+  # full-i18n the locale data that Intl needs beyond English. Weak
+  # dependencies would add only the documentation.
+  - type: dnf
+    install:
+      install-weak-deps: false
+      packages:
+        - nodejs24
+        - nodejs24-bin
+        - nodejs24-npm
+        - nodejs24-npm-bin
+        - nodejs24-full-i18n
+
   - type: script
     scripts:
       - fix-protontricks-icon.sh
@@ -333,6 +347,13 @@ modules:
         for command in fzf python3 curl flock readelf flatpak; do
           command -v "$command" >/dev/null
         done
+        # Node.js 24 with full locale data, and npm installing global packages
+        # for the current user (/etc/npmrc) instead of into root-owned /usr/local.
+        node --version | grep -q '^v24\.'
+        test "$(node -e 'console.log(new Intl.DateTimeFormat("de", {month: "long"}).format(new Date(2020, 0, 15)))')" = Januar
+        home="$(mktemp -d)"
+        test "$(HOME="$home" npm config get prefix)" = "$home/.local"
+        rm -rf "$home"
         # The login rule must link a drop-in that the image ships.
         home="$(mktemp -d)"
         HOME="$home" XDG_RUNTIME_DIR="$home" \
