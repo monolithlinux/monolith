@@ -3,3 +3,8 @@
 # /usr/share/user-tmpfiles.d/monolith-topgrade.conf.
 [commands]
 "Monolith software" = "monolith update"
+
+# Note each finished run, even one with failed steps, for the login update
+# reminder (/usr/libexec/monolith/update-reminder).
+[post_commands]
+"Record update time" = "/usr/libexec/monolith/update-reminder --record"

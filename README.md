@@ -418,6 +418,21 @@ image's copy. To use the bundled version, remove only that user-installed plugin
 with `kpackagetool6 --type Plasma/Wallpaper --remove org.waywallen.kde` (without
 `sudo` or `--global`), then log out and back in.
 
+## Update reminder
+
+The OS and Flatpaks update automatically every day. `topgrade`, which
+`mjust update` also runs, updates Monolith software, Distrobox containers, and
+developer tools such as rustup and Claude Code too. When it has not finished a
+run for a week, a notification at login reminds you, at most once a week;
+**Update now** opens Ghostty and runs `topgrade`, keeping the window open
+afterwards so you can read the summary. Every finished run counts,
+even one with failed steps: topgrade records it through the post command in
+`~/.config/topgrade.d/monolith.toml`, so if you opted out of that file, turn the
+reminder off too. A new account is reminded a week after its first login at the
+earliest. To turn the reminder off, disable Monolith Update Reminder in Plasma's
+Autostart settings. The times are stored per user in
+`~/.local/state/monolith/update-reminder/`.
+
 ## Monolith News
 
 KDE editions include Monolith News, a reader for project announcements such as

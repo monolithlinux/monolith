@@ -28,6 +28,29 @@
 #   files/kde/usr/bin/monolith-news --preview news/announcements.toml
 
 [[announcements]]
+id = "2026-10-19-update-reminder"
+date = 2026-10-19
+title = "A reminder when topgrade has not run for a week"
+category = "Monolith"
+body = """
+Some of your apps and tools update only when you run `topgrade`. Monolith now
+reminds you when you haven't run it for a week.
+
+- **Reminder:** A notification at login, at most once a week, until you run
+  `topgrade` again.
+- **Update now:** The notification's button opens a terminal that runs
+  `topgrade`.
+- **Turn it off:** Disable Monolith Update Reminder in Plasma's Autostart
+  settings.
+
+The reminder starts after you update Monolith and reboot. The first one comes a
+week later at the earliest.
+"""
+links = [
+  { label = "Monolith guide", url = "https://github.com/monolithlinux/monolith#update-reminder" },
+]
+
+[[announcements]]
 id = "2026-10-19-opendeck-built-in"
 date = 2026-10-19
 title = "OpenDeck is now built into Monolith"
