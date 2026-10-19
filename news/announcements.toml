@@ -28,6 +28,59 @@
 #   files/kde/usr/bin/monolith-news --preview news/announcements.toml
 
 [[announcements]]
+id = "2026-10-18-opendeck"
+date = 2026-10-18
+title = "OpenDeck joins Monolith Software"
+category = "Devices"
+install_path = ["monolith", "Devices", "OpenDeck"]
+body = """
+OpenDeck is an app for the Elgato Stream Deck that runs most plugins made for
+Elgato's own Stream Deck software. To install it, run `monolith`, open
+**Devices**, and select **OpenDeck**.
+
+- **No setup:** Monolith installs the Flathub Flatpak for your account and
+  includes the device rules OpenDeck asks for, so every Elgato Stream Deck it
+  supports works when you plug it in.
+- **Elgato plugins:** Plugins built on Node.js use the Node.js that Monolith now
+  includes, and plugins built only for Windows use Wine. These plugins run on
+  your system, outside OpenDeck's Flatpak.
+- **One limit:** Switching profiles automatically when you change windows does
+  not work in OpenDeck's Flatpak on KDE.
+- **Updates:** It updates like any other Flatpak, including the daily automatic
+  update, Bazaar, topgrade, and `monolith update`.
+- **Your data stays:** Removing OpenDeck keeps your profiles, installed
+  plugins, and settings.
+
+No Devices category in `monolith` yet? Update Monolith and reboot first.
+"""
+links = [
+  { label = "OpenDeck", url = "https://github.com/nekename/OpenDeck" },
+  { label = "OpenDeck on Flathub", url = "https://flathub.org/apps/me.amankhanna.opendeck" },
+  { label = "Monolith software guide", url = "https://github.com/monolithlinux/monolith#opendeck" },
+]
+
+[[announcements]]
+id = "2026-10-18-nodejs"
+date = 2026-10-18
+title = "Node.js 24 is now included"
+category = "Monolith"
+body = """
+Monolith now includes Node.js 24 and npm, so Node-based tools work without
+installing anything.
+
+- **Global packages:** `npm install -g` installs for your account in
+  `~/.local`, with the commands in `~/.local/bin`, so no administrator password
+  is needed. topgrade keeps them updated.
+- **Your own Node.js:** A Node.js from nvm, fnm, or mise still comes first in
+  your shell.
+
+The change takes effect after you update Monolith and reboot.
+"""
+links = [
+  { label = "Monolith guide", url = "https://github.com/monolithlinux/monolith#nodejs" },
+]
+
+[[announcements]]
 id = "2026-10-12-more-crafting-apps"
 date = 2026-10-12
 title = "Five more Crafting Apps join Monolith Software"

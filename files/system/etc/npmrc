@@ -1,0 +1,4 @@
+# Monolith: npm install -g installs packages for the current user in
+# ~/.local, whose bin folder is on PATH, instead of into /usr/local, which only
+# root can write. Set prefix in ~/.npmrc to choose another place.
+prefix=${HOME}/.local
