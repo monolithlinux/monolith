@@ -18,8 +18,8 @@ assert_file_equals() { cmp -s -- "$1" "$2" || fail "files differ: $1 and $2"; }
 # Release fixtures. v9.9.9 publishes programs that fail to start.
 for version in v1.0.0 v2.0.0 v9.9.9; do
     dir="$fixtures/$version"
-    mkdir -p "$dir/superfile-src/dist/superfile-linux-$version-amd64" "$dir/ngit-src"
-    for tool in omp nak herdr claude opencode codex tea spf ngit git-remote-nostr; do
+    mkdir -p "$dir/superfile-src/dist/superfile-linux-$version-amd64"
+    for tool in omp herdr claude opencode codex tea spf; do
         if [ "$version" = v9.9.9 ]; then
             printf '#!/bin/sh\necho "broken %s" >&2\nexit 3\n' "$tool" >"$dir/$tool"
         else
@@ -30,7 +30,6 @@ for version in v1.0.0 v2.0.0 v9.9.9; do
     plain="${version#v}"
     cp -- "$dir/omp" "$dir/omp-linux-x64"
     (cd "$dir" && sha256sum omp-linux-x64 >SHA256SUMS.txt)
-    cp -- "$dir/nak" "$dir/nak-$version-linux-amd64"
     cp -- "$dir/tea" "$dir/tea-$plain-linux-amd64"
     (cd "$dir" && sha256sum "tea-$plain-linux-amd64" >"tea-$plain-linux-amd64.sha256")
     cp -- "$dir/spf" "$dir/superfile-src/dist/superfile-linux-$version-amd64/spf"
@@ -39,8 +38,6 @@ for version in v1.0.0 v2.0.0 v9.9.9; do
         printf '%064d  superfile-linux-%s-arm64.tar.gz\n' 0 "$version"
         sha256sum "superfile-linux-$version-amd64.tar.gz"
     } >"superfile-$version-checksums.txt")
-    cp -- "$dir/ngit" "$dir/git-remote-nostr" "$dir/ngit-src/"
-    tar -czf "$dir/ngit-$version-x86_64-unknown-linux-musl.tar.gz" -C "$dir/ngit-src" ngit git-remote-nostr
     # A Flatpak bundle that the fake flatpak installs; see tests/gear-lever-apps.py.
     printf '{"app": "org.moonfin.linux", "version": "%s", "runtime": "org.gnome.Platform/x86_64/50"}\n' \
         "$plain" >"$dir/Moonfin_Linux_v$plain.flatpak"
@@ -98,13 +95,6 @@ case "$url" in
     https://api.github.com/repos/can1357/oh-my-pi/releases/latest|https://api.github.com/repos/yorukot/superfile/releases/latest|https://gitea.com/api/v1/repos/gitea/tea/releases/latest)
         printf '{"name":"release","tag_name":"%s","body":"\\"tag_name\\": \\"v0.0.0-decoy\\""}\n' "$version"
         exit 0 ;;
-    https://api.github.com/repos/fiatjaf/nak/releases/latest)
-        github_release fiatjaf/nak "nak-$version-linux-amd64" "$dir/nak-$version-linux-amd64"
-        exit 0 ;;
-    https://api.github.com/repos/DanConwayDev/ngit-cli/releases/latest)
-        github_release DanConwayDev/ngit-cli "ngit-$version-x86_64-unknown-linux-musl.tar.gz" \
-            "$dir/ngit-$version-x86_64-unknown-linux-musl.tar.gz"
-        exit 0 ;;
     # Moonfin tags its releases without a leading v.
     https://api.github.com/repos/Moonfin-Client/Moonfin-Core/releases/latest)
         github_release Moonfin-Client/Moonfin-Core "Moonfin_Linux_v$plain.flatpak" \
@@ -131,10 +121,6 @@ case "$url" in
         payload="$dir/omp-linux-x64" ;;
     https://github.com/can1357/oh-my-pi/releases/download/"$version"/SHA256SUMS.txt)
         payload="$dir/SHA256SUMS.txt" ;;
-    https://github.com/fiatjaf/nak/releases/download/"$version"/nak-"$version"-linux-amd64)
-        payload="$dir/nak-$version-linux-amd64" ;;
-    https://github.com/DanConwayDev/ngit-cli/releases/download/"$version"/ngit-"$version"-x86_64-unknown-linux-musl.tar.gz)
-        payload="$dir/ngit-$version-x86_64-unknown-linux-musl.tar.gz" ;;
     https://github.com/Moonfin-Client/Moonfin-Core/releases/download/"$plain"/Moonfin_Linux_v"$plain".flatpak)
         payload="$dir/Moonfin_Linux_v$plain.flatpak" ;;
     https://github.com/storytold/photocraft/releases/download/"$version"/photocraft-"$plain"-linux-x86_64.flatpak)
@@ -600,79 +586,79 @@ test_omp_checksum_failure() {
 }
 
 test_failed_publication() {
-    run_monolith install nak
-    cp -- "$state_root/nak.managed" "$case_root/marker-before"
+    run_monolith install tea
+    cp -- "$state_root/tea.managed" "$case_root/marker-before"
     release_version=v2.0.0
-    fail_publish_tool=nak
-    expect_failure update nak
+    fail_publish_tool=tea
+    expect_failure update tea
     [ -f "$case_root/mv-failed" ] || fail 'publication fault was not reached'
-    assert_version nak 'nak v1.0.0'
-    assert_file_equals "$case_root/marker-before" "$state_root/nak.managed"
+    assert_version tea 'tea v1.0.0'
+    assert_file_equals "$case_root/marker-before" "$state_root/tea.managed"
     assert_no_temp_leaks
     fail_publish_tool=
-    run_monolith update nak
-    assert_version nak 'nak v2.0.0'
+    run_monolith update tea
+    assert_version tea 'tea v2.0.0'
 }
 
 assert_failed_commit_preserves_install() {
     local destination="$1" original_launcher
-    run_monolith install nak
-    cp -- "$state_root/nak.managed" "$case_root/marker-before"
-    original_launcher="$(readlink -- "$bin_dir/nak")"
+    run_monolith install tea
+    cp -- "$state_root/tea.managed" "$case_root/marker-before"
+    original_launcher="$(readlink -- "$bin_dir/tea")"
     release_version=v2.0.0
     fail_move_destination="$destination"
-    expect_failure update nak
+    expect_failure update tea
     [ -f "$case_root/mv-failed" ] || fail 'late publication fault was not reached'
-    assert_version nak 'nak v1.0.0'
-    [ "$(readlink -- "$bin_dir/nak")" = "$original_launcher" ] || fail 'original launcher not restored'
-    assert_file_equals "$case_root/marker-before" "$state_root/nak.managed"
+    assert_version tea 'tea v1.0.0'
+    [ "$(readlink -- "$bin_dir/tea")" = "$original_launcher" ] || fail 'original launcher not restored'
+    assert_file_equals "$case_root/marker-before" "$state_root/tea.managed"
     assert_no_temp_leaks
     fail_move_destination=
-    run_monolith update nak
-    assert_version nak 'nak v2.0.0'
+    run_monolith update tea
+    assert_version tea 'tea v2.0.0'
     assert_no_temp_leaks
 }
 
 test_failed_launcher_publication() {
-    assert_failed_commit_preserves_install "$bin_dir/nak"
+    assert_failed_commit_preserves_install "$bin_dir/tea"
 }
 
 test_failed_marker_publication() {
-    assert_failed_commit_preserves_install "$state_root/nak.managed"
+    assert_failed_commit_preserves_install "$state_root/tea.managed"
 }
 
 test_download_failure_cleanup() {
-    fail_download_match=nak-v1.0.0-linux-amd64
-    expect_failure install nak
-    assert_failure_reported nak
-    assert_absent "$bin_dir/nak"
-    assert_absent "$state_root/nak.managed"
+    fail_download_match=tea-1.0.0-linux-amd64
+    expect_failure install tea
+    assert_failure_reported Tea
+    assert_absent "$bin_dir/tea"
+    assert_absent "$state_root/tea.managed"
     assert_no_temp_leaks
     fail_download_match=
-    run_monolith install nak
-    assert_version nak 'nak v1.0.0'
+    run_monolith install tea
+    assert_version tea 'tea v1.0.0'
     assert_no_temp_leaks
 }
 
 test_batch_preflight() {
-    expect_failure install nak not-a-tool
-    assert_absent "$bin_dir/nak"
+    expect_failure install tea not-a-tool
+    assert_absent "$bin_dir/tea"
     [ ! -s "$case_root/curl.log" ] || fail 'invalid install batch performed downloads'
-    expect_failure install not-a-tool nak
+    expect_failure install not-a-tool tea
     [ ! -s "$case_root/curl.log" ] || fail 'invalid install batch performed downloads'
-    run_monolith install nak
-    cp -- "$state_root/nak.managed" "$case_root/marker-before"
+    run_monolith install tea
+    cp -- "$state_root/tea.managed" "$case_root/marker-before"
     release_version=v2.0.0
     : >"$case_root/curl.log"
-    expect_failure update nak not-a-tool
-    expect_failure update nak tea
-    assert_version nak 'nak v1.0.0'
-    assert_file_equals "$case_root/marker-before" "$state_root/nak.managed"
+    expect_failure update tea not-a-tool
+    expect_failure update tea superfile
+    assert_version tea 'tea v1.0.0'
+    assert_file_equals "$case_root/marker-before" "$state_root/tea.managed"
     [ ! -s "$case_root/curl.log" ] || fail 'invalid update batch performed downloads'
-    expect_failure remove nak not-a-tool
-    expect_failure remove nak tea
-    assert_version nak 'nak v1.0.0'
-    assert_file_equals "$case_root/marker-before" "$state_root/nak.managed"
+    expect_failure remove tea not-a-tool
+    expect_failure remove tea superfile
+    assert_version tea 'tea v1.0.0'
+    assert_file_equals "$case_root/marker-before" "$state_root/tea.managed"
 }
 
 test_empty_update_all() {
@@ -686,8 +672,8 @@ test_empty_update_all() {
 # it reads only release metadata and republishes nothing. Install still
 # reinstalls on request, and a failed version lookup never counts as current.
 test_update_skips_current_items() {
-    local tools=(tea superfile nak ngit omp herdr claude codex opencode) tool name
-    local names=(Tea Superfile nak ngit 'Oh My Pi' Herdr 'Claude Code' 'Codex CLI' OpenCode)
+    local tools=(tea superfile omp herdr claude codex opencode) tool name
+    local names=(Tea Superfile 'Oh My Pi' Herdr 'Claude Code' 'Codex CLI' OpenCode)
     run_monolith install "${tools[@]}"
     for tool in "${tools[@]}"; do
         cp -- "$state_root/$tool.managed" "$case_root/$tool.marker-before"
@@ -707,15 +693,15 @@ test_update_skips_current_items() {
     assert_no_temp_leaks
 
     : >"$case_root/curl.log"
-    run_monolith install nak
-    grep -q '/nak-v1\.0\.0-linux-amd64$' "$case_root/curl.log" || fail 'install did not download nak again'
+    run_monolith install tea
+    grep -q '/tea-1\.0\.0-linux-amd64$' "$case_root/curl.log" || fail 'install did not download Tea again'
 
     release_version=v2.0.0
     run_monolith update >"$case_root/update.log"
     for name in "${names[@]}"; do
         grep -Eq "^  $name +Updated\$" "$case_root/update.log" || fail "$name was not updated"
     done
-    assert_version nak 'nak v2.0.0'
+    assert_version tea 'tea v2.0.0'
     assert_version claude 'claude v2.0.0'
     assert_version herdr 'herdr v2.0.0'
 
@@ -729,20 +715,20 @@ test_update_skips_current_items() {
 
 test_batch_continues_after_failure() {
     fail_download_match=omp-linux-x64
-    expect_failure install nak omp herdr
+    expect_failure install tea omp herdr
     assert_failure_reported 'Oh My Pi'
-    grep -Eq '^  nak +Installed' "$case_root/expected-failure.log" || fail 'nak result missing'
+    grep -Eq '^  Tea +Installed' "$case_root/expected-failure.log" || fail 'Tea result missing'
     grep -Eq '^  Herdr +Installed' "$case_root/expected-failure.log" || fail 'Herdr result missing'
-    assert_version nak 'nak v1.0.0'
+    assert_version tea 'tea v1.0.0'
     assert_version herdr 'herdr v1.0.0'
     assert_absent "$bin_dir/omp"
     assert_absent "$state_root/omp.managed"
     # Update-all also continues past a failing item.
     release_version=v2.0.0
-    fail_download_match=nak-v2.0.0
+    fail_download_match=tea-2.0.0
     expect_failure update
-    assert_failure_reported nak
-    assert_version nak 'nak v1.0.0'
+    assert_failure_reported Tea
+    assert_version tea 'tea v1.0.0'
     assert_version herdr 'herdr v2.0.0'
     assert_no_temp_leaks
 }
@@ -755,16 +741,6 @@ test_tea_lifecycle() {
 test_superfile_lifecycle() {
     seed_user_data "$case_root/config/superfile/config.toml" "$case_root/data/superfile/state.json"
     static_lifecycle superfile spf
-}
-
-test_nak_lifecycle() {
-    seed_user_data "$case_home/.config/nak/config.json"
-    static_lifecycle nak nak
-}
-
-test_ngit_lifecycle() {
-    seed_user_data "$case_home/.gitconfig" "$case_root/config/ngit/accounts.json"
-    static_lifecycle ngit ngit git-remote-nostr
 }
 
 test_herdr_lifecycle() {
@@ -784,24 +760,6 @@ test_herdr_lifecycle() {
     assert_no_temp_leaks
 }
 
-test_digest_failures() {
-    local mode
-    snapshot_install nak nak
-    snapshot_install ngit ngit git-remote-nostr
-    release_version=v2.0.0
-    for mode in wrong missing; do
-        digest_mode="$mode"
-        assert_failed_update_preserves nak nak nak
-        assert_failed_update_preserves ngit ngit ngit git-remote-nostr
-    done
-    # A missing digest also blocks a first install.
-    run_monolith remove nak
-    expect_failure install nak
-    assert_absent "$bin_dir/nak"
-    assert_absent "$state_root/nak.managed"
-    assert_no_temp_leaks
-}
-
 test_checksum_list_failures() {
     snapshot_install tea tea
     snapshot_install superfile spf
@@ -818,70 +776,50 @@ test_checksum_list_failures() {
 
 test_bad_archive_and_broken_program() {
     snapshot_install superfile spf
-    snapshot_install nak nak
+    snapshot_install tea tea
     release_version=v2.0.0
     bad_archive=1
     assert_failed_update_preserves superfile Superfile spf
     bad_archive=0
     release_version=v9.9.9
-    assert_failed_update_preserves nak nak nak
-}
-
-test_second_ngit_launcher_failure() {
-    run_monolith install ngit
-    cp -- "$state_root/ngit.managed" "$case_root/marker-before"
-    release_version=v2.0.0
-    fail_move_destination="$bin_dir/git-remote-nostr"
-    expect_failure update ngit
-    [ -f "$case_root/mv-failed" ] || fail 'second launcher fault was not reached'
-    assert_version ngit 'ngit v1.0.0'
-    assert_version git-remote-nostr 'git-remote-nostr v1.0.0'
-    assert_launcher_under ngit "$managed_root/ngit"
-    assert_launcher_under git-remote-nostr "$managed_root/ngit"
-    assert_file_equals "$case_root/marker-before" "$state_root/ngit.managed"
-    assert_no_temp_leaks
+    assert_failed_update_preserves tea Tea tea
 }
 
 test_regular_file_adoption() {
     local tool
     cp -- "$fixtures/v1.0.0/omp" "$bin_dir/omp"
-    cp -- "$fixtures/v1.0.0/ngit" "$bin_dir/ngit"
-    cp -- "$fixtures/v1.0.0/git-remote-nostr" "$bin_dir/git-remote-nostr"
+    cp -- "$fixtures/v1.0.0/tea" "$bin_dir/tea"
     release_version=v2.0.0
-    run_monolith install omp ngit
-    for tool in omp ngit; do
+    run_monolith install omp tea
+    for tool in omp tea; do
         [ -f "$state_root/$tool.managed" ] || fail "$tool was not adopted"
     done
     assert_launcher_under omp "$managed_root/omp"
-    assert_launcher_under ngit "$managed_root/ngit"
-    assert_launcher_under git-remote-nostr "$managed_root/ngit"
+    assert_launcher_under tea "$managed_root/tea"
     assert_version omp 'omp v2.0.0'
-    assert_version git-remote-nostr 'git-remote-nostr v2.0.0'
+    assert_version tea 'tea v2.0.0'
     assert_no_temp_leaks
 }
 
+# Adoption replaces the launcher before writing the marker, so a failure there
+# must put the adopted program back as it was.
 test_failed_adoption_restores_originals() {
-    cp -- "$fixtures/v1.0.0/ngit" "$bin_dir/ngit"
-    cp -- "$fixtures/v1.0.0/git-remote-nostr" "$bin_dir/git-remote-nostr"
-    cp -- "$bin_dir/ngit" "$case_root/ngit-before"
-    cp -- "$bin_dir/git-remote-nostr" "$case_root/remote-before"
-    fail_move_destination="$bin_dir/git-remote-nostr"
-    expect_failure install ngit
+    cp -- "$fixtures/v1.0.0/tea" "$bin_dir/tea"
+    cp -- "$bin_dir/tea" "$case_root/tea-before"
+    fail_move_destination="$state_root/tea.managed"
+    expect_failure install tea
     [ -f "$case_root/mv-failed" ] || fail 'adoption fault was not reached'
-    for command in ngit git-remote-nostr; do
-        [ -f "$bin_dir/$command" ] && [ ! -L "$bin_dir/$command" ] || fail "$command was not restored as a file"
-        [ -x "$bin_dir/$command" ] || fail "$command lost its mode"
-    done
-    assert_file_equals "$case_root/ngit-before" "$bin_dir/ngit"
-    assert_file_equals "$case_root/remote-before" "$bin_dir/git-remote-nostr"
-    assert_absent "$state_root/ngit.managed"
-    assert_absent "$managed_root/ngit"
+    [ -f "$bin_dir/tea" ] && [ ! -L "$bin_dir/tea" ] || fail 'tea was not restored as a file'
+    [ -x "$bin_dir/tea" ] || fail 'tea lost its mode'
+    assert_file_equals "$case_root/tea-before" "$bin_dir/tea"
+    assert_absent "$state_root/tea.managed"
+    assert_absent "$managed_root/tea"
     [ ! -s "$case_root/curl.log" ] || fail 'failed adoption continued to a download'
     assert_no_temp_leaks
     fail_move_destination=
-    run_monolith install ngit
-    assert_launcher_under ngit "$managed_root/ngit"
-    assert_version ngit 'ngit v1.0.0'
+    run_monolith install tea
+    assert_launcher_under tea "$managed_root/tea"
+    assert_version tea 'tea v1.0.0'
 }
 
 test_claude_broken_launcher_needs_repair() {
@@ -1044,14 +982,14 @@ test_legacy_herdr_adoption() {
 
 # A standalone copy that replaced a managed launcher can be adopted as well.
 test_replaced_launcher_adoption() {
-    run_monolith install nak
-    rm -- "$bin_dir/nak"
-    cp -- "$fixtures/v1.0.0/nak" "$bin_dir/nak"
+    run_monolith install tea
+    rm -- "$bin_dir/tea"
+    cp -- "$fixtures/v1.0.0/tea" "$bin_dir/tea"
     release_version=v2.0.0
-    run_monolith __action adopt nak
-    assert_launcher_under nak "$managed_root/nak"
-    assert_version nak 'nak v2.0.0'
-    grep -qx 'version=v2.0.0' "$state_root/nak.managed" || fail 'nak marker did not update'
+    run_monolith __action adopt tea
+    assert_launcher_under tea "$managed_root/tea"
+    assert_version tea 'tea v2.0.0'
+    grep -qx 'version=2.0.0' "$state_root/tea.managed" || fail 'Tea marker did not update'
     assert_no_temp_leaks
 }
 
@@ -1120,43 +1058,43 @@ test_overlapping_mutation_is_locked() {
     start_background install herdr
     wait_for_file "$block_file.started"
     block_file=
-    expect_failure install nak
+    expect_failure install tea
     grep -Fq 'Another Monolith software operation is running.' "$case_root/expected-failure.log" ||
         fail 'lock conflict was not reported'
-    assert_absent "$bin_dir/nak"
-    if grep -q nak "$case_root/curl.log"; then fail 'locked action downloaded files'; fi
+    assert_absent "$bin_dir/tea"
+    if grep -q gitea "$case_root/curl.log"; then fail 'locked action downloaded files'; fi
     : >"$case_root/release-herdr"
     finish_background
     [ "$background_status" -eq 0 ] || fail "first action failed: $(cat "$case_root/background.log")"
     assert_version herdr 'herdr v1.0.0'
     [ -f "$state_root/.lock" ] || fail 'lock file was unlinked'
-    run_monolith install nak
-    assert_version nak 'nak v1.0.0'
+    run_monolith install tea
+    assert_version tea 'tea v1.0.0'
     assert_no_temp_leaks
 }
 
 test_interrupt_rolls_back_and_cancels_batch() {
     seed_user_data "$case_home/.claude/settings.json"
-    run_monolith install claude nak
+    run_monolith install claude tea
     cp -- "$state_root/claude.managed" "$case_root/claude-marker-before"
-    cp -- "$state_root/nak.managed" "$case_root/nak-marker-before"
+    cp -- "$state_root/tea.managed" "$case_root/tea-marker-before"
     : >"$case_root/curl.log"
     release_version=v2.0.0
     block_file="$case_root/never"
-    start_background update claude nak
+    start_background update claude tea
     wait_for_file "$block_file.started"
     kill -INT -- "-$background_pid"
     finish_background
     [ "$background_status" -eq 130 ] || fail "interrupted batch exited $background_status"
     grep -Eq '^  Claude Code +Cancelled' "$case_root/background.log" || fail 'cancellation not reported'
-    grep -Eq '^  nak +Not run' "$case_root/background.log" || fail 'later item was not skipped'
-    if grep -q nak "$case_root/curl.log"; then fail 'cancelled batch continued to nak'; fi
+    grep -Eq '^  Tea +Not run' "$case_root/background.log" || fail 'later item was not skipped'
+    if grep -q gitea "$case_root/curl.log"; then fail 'cancelled batch continued to Tea'; fi
     block_file=
     assert_version claude 'claude v1.0.0'
     assert_absent "$case_root/data/claude/versions/v2.0.0"
     assert_file_equals "$case_root/claude-marker-before" "$state_root/claude.managed"
-    assert_version nak 'nak v1.0.0'
-    assert_file_equals "$case_root/nak-marker-before" "$state_root/nak.managed"
+    assert_version tea 'tea v1.0.0'
+    assert_file_equals "$case_root/tea-marker-before" "$state_root/tea.managed"
     assert_user_data_preserved
     assert_no_temp_leaks
 }
@@ -1190,12 +1128,12 @@ test_prism_lifecycle() {
     assert_prism_listed 'installed +11\.1\.1'
 
     # Updating everything updates Prism Launcher through Flatpak beside other
-    # tools; nak has no newer release, so it is left alone.
-    run_monolith install nak
+    # tools; Tea has no newer release, so it is left alone.
+    run_monolith install tea
     flatpak_state '{"flathub": {"org.prismlauncher.PrismLauncher": "11.2.0"}}'
     forget_flatpak_calls
     run_monolith update >"$case_root/update.log"
-    grep -Eq '^  nak +Up to date$' "$case_root/update.log" || fail 'nak was not reported up to date'
+    grep -Eq '^  Tea +Up to date$' "$case_root/update.log" || fail 'Tea was not reported up to date'
     grep -Eq '^  Prism Launcher +Updated' "$case_root/update.log" || fail 'Prism Launcher was not updated'
     assert_flatpak_called "update --user --noninteractive --assumeyes $prism_id"
     grep -qx 'version=11.2.0' "$state_root/prismlauncher.managed" || fail 'Prism Launcher marker did not update'
@@ -1525,9 +1463,9 @@ passed=0
 failed=0
 for test in omp_lifecycle omp_unmanaged_launcher omp_replaced_launcher omp_checksum_failure failed_publication \
     failed_launcher_publication failed_marker_publication download_failure_cleanup batch_preflight \
-    empty_update_all update_skips_current_items batch_continues_after_failure tea_lifecycle superfile_lifecycle nak_lifecycle \
-    ngit_lifecycle herdr_lifecycle digest_failures checksum_list_failures bad_archive_and_broken_program \
-    second_ngit_launcher_failure regular_file_adoption failed_adoption_restores_originals \
+    empty_update_all update_skips_current_items batch_continues_after_failure tea_lifecycle superfile_lifecycle \
+    herdr_lifecycle checksum_list_failures bad_archive_and_broken_program \
+    regular_file_adoption failed_adoption_restores_originals \
     claude_broken_launcher_needs_repair native_installers codex_lifecycle_and_inherited_environment \
     native_failures_roll_back native_adoption herdr_legacy_launcher herdr_replaced_launcher \
     legacy_herdr_adoption replaced_launcher_adoption adopted_copy_survives_failed_update \
