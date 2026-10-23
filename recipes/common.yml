@@ -84,10 +84,12 @@ modules:
         - https://brave-browser-rpm-nightly.s3.brave.com/brave-browser-nightly.repo
         - https://negativo17.org/repos/fedora-steam.repo
         - https://pkgs.tailscale.com/stable/fedora/tailscale.repo
+        - https://cli.github.com/packages/rpm/gh-cli.repo
       keys:
         - https://brave-browser-rpm-nightly.s3.brave.com/brave-core-nightly.asc
         - https://negativo17.org/repos/RPM-GPG-KEY-slaanesh
         - https://pkgs.tailscale.com/stable/fedora/repo.gpg
+        - https://cli.github.com/packages/githubcli-archive-keyring.asc
     install:
       packages:
         # Basics
@@ -95,7 +97,6 @@ modules:
         # Optional software helpers and terminal compatibility commands.
         - python3
         - git
-        - gh
         - curl
         - btop
         - fastfetch
@@ -170,6 +171,14 @@ modules:
         - google-noto-sans-cjk-fonts       # static CJK fonts; /usr/share/fonts/noto-cjk target
         - google-noto-sans-javanese-fonts
         - google-noto-sans-sundanese-fonts
+        # GitHub's own gh; Fedora's trails by months. Fedora's 2.97 scans
+        # ~/.codex/skills, so topgrade's GitHub CLI skills step warned about
+        # every skill Codex ships there; 2.99 and later scan ~/.agents/skills.
+        # The module installs repo entries after the plain list, which
+        # supplies git, the one package gh needs from outside gh-cli.
+        - repo: gh-cli
+          packages:
+            - gh
     remove:
       packages:
         - firefox
