@@ -232,6 +232,28 @@ from a non-Flatpak Prism Launcher; to bring them over, copy the folders in
 `~/.local/share/PrismLauncher/instances` to
 `~/.var/app/org.prismlauncher.PrismLauncher/data/PrismLauncher/instances`.
 
+### Epic Games Launcher
+
+**Gaming → Epic Games Launcher** installs Epic's [new launcher](https://launcher.epicgames.com/),
+which runs natively on Linux. It's a Preview from Epic, so expect rough edges;
+Epic ships fixes almost daily. Your library, cloud saves, and progress come from
+your Epic account, and Windows-only games run through Proton, which the launcher
+downloads the first time a game needs it.
+
+Monolith downloads the AppImage from Epic's own download link and adds it to
+Gear Lever. Epic publishes no checksum, so unlike the GitHub apps above, Monolith
+cannot check the download against one. It only accepts the file over HTTPS from
+Epic's build server and checks that it is a real AppImage. An existing Gear Lever
+copy is adopted, and a fresh download from Epic replaces its AppImage.
+
+After that, the launcher keeps itself up to date. `monolith update epic-games`,
+the dashboard's **Update**, and topgrade leave a working copy alone
+and only repair a missing launcher, icon, or AppImage. `monolith install
+epic-games` downloads Epic's current build again over whatever is installed. Close
+the launcher, including its tray icon, before installing or removing it. Removal
+deletes the AppImage and its launcher only; your sign-in, settings, and installed
+games stay where the launcher put them.
+
 ### Moonfin
 
 **Media → Moonfin** installs [Moonfin](https://moonfin.io), a media client for

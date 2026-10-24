@@ -34,10 +34,10 @@ UP_TO_DATE=0
 readonly SELF BIN_DIR DATA_HOME STATE_HOME MANAGED_ROOT STATE_ROOT GHOSTTY_THEMES_HELPER GEAR_LEVER_APP_HELPER
 readonly GEAR_LEVER_ID GEAR_LEVER_REF GEAR_LEVER_MIN_VERSION FLATHUB_REPO QUIT_TOKEN HELPER_UP_TO_DATE
 
-ALL_TOOLS=(tea superfile claude codex opencode omp herdr wowup-cf r2modman prismlauncher moonfin plezy sidra photocraft vectorcraft filmcraft lightcraft pdfcraft effectcraft designcraft figcraft wordcraft soundcraft deckcraft cadcraft gridcraft fluxer fluxer-canary ghostty-themes)
+ALL_TOOLS=(tea superfile claude codex opencode omp herdr wowup-cf r2modman prismlauncher epic-games moonfin plezy sidra photocraft vectorcraft filmcraft lightcraft pdfcraft effectcraft designcraft figcraft wordcraft soundcraft deckcraft cadcraft gridcraft fluxer fluxer-canary ghostty-themes)
 CLI_TOOLS=(tea superfile)
 AI_TOOLS=(claude codex opencode omp herdr)
-GAMING_TOOLS=(wowup-cf r2modman prismlauncher)
+GAMING_TOOLS=(wowup-cf r2modman prismlauncher epic-games)
 MEDIA_TOOLS=(moonfin plezy sidra)
 CRAFTING_TOOLS=(photocraft vectorcraft filmcraft lightcraft pdfcraft effectcraft designcraft figcraft wordcraft soundcraft deckcraft cadcraft gridcraft)
 COMMUNICATION_TOOLS=(fluxer fluxer-canary)
@@ -110,6 +110,7 @@ tool_name() {
         wowup-cf)  echo "WowUp-CF" ;;
         r2modman)  echo "r2modman" ;;
         prismlauncher) echo "Prism Launcher" ;;
+        epic-games) echo "Epic Games Launcher" ;;
         moonfin)   echo "Moonfin" ;;
         plezy)     echo "Plezy" ;;
         sidra)     echo "Sidra" ;;
@@ -145,6 +146,7 @@ tool_description() {
         wowup-cf)  echo "World of Warcraft addon manager with CurseForge and WoW Forever support" ;;
         r2modman)  echo "Thunderstore mod manager for Lethal Company, Risk of Rain 2, Valheim, and more" ;;
         prismlauncher) echo "Minecraft launcher for multiple instances, mods, and modpacks" ;;
+        epic-games) echo "Epic's own launcher for your Epic Games library (Preview)" ;;
         moonfin)   echo "media client for Jellyfin and Emby servers" ;;
         plezy)     echo "media client for Plex, Jellyfin, and Emby servers" ;;
         sidra)     echo "Apple Music client with media keys, themes, and Last.fm scrobbling" ;;
@@ -172,7 +174,7 @@ tool_category() {
     case "$1" in
         tea|superfile) echo "Developer CLIs" ;;
         claude|codex|opencode|omp|herdr) echo "AI coding" ;;
-        wowup-cf|r2modman|prismlauncher) echo "Gaming" ;;
+        wowup-cf|r2modman|prismlauncher|epic-games) echo "Gaming" ;;
         moonfin|plezy|sidra) echo "Media" ;;
         fluxer|fluxer-canary) echo "Communication" ;;
         ghostty-themes) echo "Appearance" ;;
@@ -192,7 +194,7 @@ tool_commands() {
         opencode)  echo "opencode" ;;
         omp)       echo "omp" ;;
         herdr)     echo "herdr" ;;
-        wowup-cf|r2modman|prismlauncher|moonfin|plezy|sidra|fluxer|fluxer-canary|ghostty-themes) return 0 ;;
+        wowup-cf|r2modman|prismlauncher|epic-games|moonfin|plezy|sidra|fluxer|fluxer-canary|ghostty-themes) return 0 ;;
         *)         is_crafting_app "$1" ;;
     esac
 }
@@ -270,7 +272,7 @@ launcher_is_managed() {
 # AppImages that Monolith integrates with Gear Lever.
 is_gear_lever_app() {
     case "$1" in
-        wowup-cf|r2modman|sidra) return 0 ;;
+        wowup-cf|r2modman|sidra|epic-games) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -1186,6 +1188,18 @@ Sidra release policy:
     Sidra may also update itself to newer stable releases.
 EOF
             ;;
+        epic-games)
+            cat <<'EOF'
+Epic Games Launcher policy:
+  - A Preview from Epic; expect rough edges.
+  - Added to Gear Lever; an existing integration is reused, with a fresh
+    download from Epic replacing its AppImage.
+  - Downloaded from Epic's own link over HTTPS. Epic publishes no checksum,
+    so Monolith cannot verify the download the way it does for GitHub apps.
+  - The launcher updates itself; monolith update only repairs a missing or
+    broken copy. monolith install downloads Epic's current build again.
+EOF
+            ;;
     esac
 }
 
@@ -1197,6 +1211,7 @@ kept_data() {
         prismlauncher) echo "instances, worlds, accounts, and settings" ;;
         moonfin|plezy) echo "servers, sign-ins, settings, and downloads" ;;
         sidra) echo "Apple Music sign-in and settings" ;;
+        epic-games) echo "sign-in, settings, and installed games" ;;
         photocraft) echo "settings, recent files, brush presets, and recovery files" ;;
         vectorcraft) echo "settings, swatches, libraries, added fonts, and recovery files" ;;
         filmcraft) echo "settings, presets, auto-saves, and media cache" ;;
@@ -1631,7 +1646,7 @@ run_actions() {
     done
     printf '\nResults:\n'
     for index in "${!names[@]}"; do
-        printf '  %-16s %s\n' "${names[$index]}" "${results[$index]}"
+        printf '  %-19s %s\n' "${names[$index]}" "${results[$index]}"
     done
     if [ "$cancelled" -ne 0 ]; then
         printf '\nCancelled. Later items were not started.\n'
@@ -1794,10 +1809,10 @@ list_tools() {
     local tool
     refresh_status "${ALL_TOOLS[@]}"
     refresh_versions "${ALL_TOOLS[@]}"
-    printf '%-16s  %-14s  %-14s  %s\n' "CATEGORY" "TOOL" "STATUS" "VERSION"
-    printf '%-16s  %-14s  %-14s  %s\n' "----------------" "--------------" "--------------" "-------"
+    printf '%-16s  %-19s  %-14s  %s\n' "CATEGORY" "TOOL" "STATUS" "VERSION"
+    printf '%-16s  %-19s  %-14s  %s\n' "----------------" "-------------------" "--------------" "-------"
     for tool in "${ALL_TOOLS[@]}"; do
-        printf '%-16s  %-14s  %-14s  %s\n' \
+        printf '%-16s  %-19s  %-14s  %s\n' \
             "$(tool_category "$tool")" "$(tool_name "$tool")" "${ROW_STATUS[$tool]}" "${ROW_VERSION[$tool]}"
     done
 }
@@ -1992,7 +2007,7 @@ status_badge() {
 
 row_label() {
     local tool="$1" prefix="${2:-}"
-    printf '%-14s  %s  %-22.22s  %s%s' "$(tool_name "$tool")" "$(status_badge "${ROW_STATUS[$tool]}")" \
+    printf '%-19s  %s  %-22.22s  %s%s' "$(tool_name "$tool")" "$(status_badge "${ROW_STATUS[$tool]}")" \
         "${ROW_VERSION[$tool]}" "$prefix" "$(tool_description "$tool")"
 }
 
@@ -2052,6 +2067,7 @@ show_gear_lever_app_details() {
     case "${APP_CHANNEL[$tool]}" in
         beta-bridge) printf 'Releases: 2.24.0 beta series until a compatible stable exists\n' ;;
         stable) printf 'Releases: stable\n' ;;
+        preview) printf 'Releases: Preview; the launcher updates itself\n' ;;
     esac
     if [ -n "${APP_APPIMAGE[$tool]}" ]; then
         printf 'AppImage: %s\n' "${APP_APPIMAGE[$tool]}"
@@ -2353,7 +2369,7 @@ Commands:
 Tool IDs:
   Developer CLIs   tea superfile
   AI coding        claude codex opencode omp herdr
-  Gaming           wowup-cf r2modman prismlauncher
+  Gaming           wowup-cf r2modman prismlauncher epic-games
   Media            moonfin plezy sidra
   Crafting Apps    photocraft vectorcraft filmcraft lightcraft pdfcraft
                    effectcraft designcraft figcraft wordcraft soundcraft
