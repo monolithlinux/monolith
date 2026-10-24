@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 """Install, update and remove Gear Lever-integrated AppImages under Monolith's release policies.
 
-Each application in APPS is the official AppImage from its GitHub releases, verified against the
-SHA256 digest GitHub publishes, integrated with the Gear Lever Flatpak and then updated in place:
+Each application in APPS is an official AppImage, integrated with the Gear Lever Flatpak and then
+updated in place. Most come from GitHub releases and are verified against the SHA256 digest GitHub
+publishes:
 
-  wowup-cf  WowUp-CF follows only the 2.24.0 beta series (beta.6 or newer) until a downloadable
-            stable release 2.24.0 or newer exists, then follows stable releases only.
-  r2modman  r2modman follows stable releases only.
-  sidra     Sidra follows stable releases only.
+  wowup-cf    WowUp-CF follows only the 2.24.0 beta series (beta.6 or newer) until a downloadable
+              stable release 2.24.0 or newer exists, then follows stable releases only.
+  r2modman    r2modman follows stable releases only.
+  sidra       Sidra follows stable releases only.
+
+  epic-games  The Epic Games Launcher comes from Epic's own download link, which publishes no
+              checksum, so only HTTPS downloads from Epic's build server are accepted. It updates
+              itself, so `update` keeps a working copy and only repairs.
 
 An application only ever inspects and changes its own integration, receipt, snapshots and processes.
 """
@@ -33,6 +38,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import urllib.parse
 import urllib.request
 
 
@@ -140,7 +146,7 @@ class App:
 
     id: str  # APP argument; names the receipt <id>.managed and the snapshot directory <id>
     name: str  # display name, the launcher's X-AppImage-Name and Gear Lever's listing name
-    repository: str  # GitHub repository whose releases publish the official AppImage
+    repository: str  # GitHub repository whose releases publish the official AppImage, or "" with fetch
     asset: str  # exact AppImage asset name, where {version} stands for the release's version
     version: re.Pattern  # release tags are tag_prefix followed by a full match
     key: Callable  # version match -> ordering key
@@ -154,10 +160,22 @@ class App:
     policy: str  # what it follows, for --help
     setting: Setting | None = None
     tag_prefix: str = "v"  # what precedes the version in release tags
+    # For applications outside GitHub: app -> [Release], with sha256 None when the publisher lists none,
+    # version -> its download URL, and who publishes it, for messages.
+    fetch: Callable | None = None
+    source_url: Callable | None = None
+    publisher: str = ""
+    # The application replaces its own AppImage with its publisher's updates: `update` keeps any intact
+    # copy instead of identifying it, and `install` replaces whatever is there with a fresh download.
+    self_updating: bool = False
 
     @property
     def user_agent(self):
         return f"monolith-{self.id}/1 (+https://github.com/monolithlinux/monolith)"
+
+    @property
+    def origin(self):
+        return self.publisher or self.repository
 
     def releases_url(self, page):
         return f"https://api.github.com/repos/{self.repository}/releases?per_page={PAGE_SIZE}&page={page}"
@@ -166,6 +184,8 @@ class App:
         return self.asset.format(version=version)
 
     def download_url(self, version):
+        if self.source_url is not None:
+            return self.source_url(version)
         return (f"https://github.com/{self.repository}/releases/download/{self.tag_prefix}{version}/"
                 f"{self.asset_name(version)}")
 
@@ -286,7 +306,75 @@ SIDRA = App(
     tag_prefix="",
 )
 
-APPS = {app.id: app for app in (WOWUP_CF, R2MODMAN, SIDRA)}
+# The Epic Games Launcher: Epic's stable download link redirects to a build named VERSION+gCOMMIT on its
+# content server. Epic publishes no checksum, and the launcher replaces its own AppImage when it updates
+# itself, so Monolith never selects updates for an installed copy.
+EPIC_LINK = ("https://launcher-public-service-prod06.ol.epicgames.com/launcher/api/installer/download/"
+             "EpicGamesLauncher-x86_64.AppImage")
+EPIC_BUILDS = "https://content-download-egs.distro.on.epicgames.com/Builds/EGLv2/"
+EPIC_ASSET = "EpicGamesLauncher-x86_64.AppImage"
+EPIC_BUILD = re.compile(re.escape(EPIC_BUILDS) + r"([^/?#]+)/Linux/" + re.escape(EPIC_ASSET) + r"(?:\?[^#]*)?")
+
+
+def epic_url(version):
+    return f"{EPIC_BUILDS}{urllib.parse.quote(version, safe='')}/Linux/{EPIC_ASSET}"
+
+
+def epic_releases(app):
+    """The build Epic's download link currently serves, as the only candidate; any doubt changes nothing."""
+    request = urllib.request.Request(EPIC_LINK, method="HEAD", headers={"User-Agent": app.user_agent})
+    try:
+        with urllib.request.urlopen(request, timeout=METADATA_TIMEOUT) as response:
+            status = getattr(response, "status", 200)
+            if status != 200:
+                raise HelperError(f"HTTP status {status}")
+            final = getattr(response, "url", None) or ""
+            headers = getattr(response, "headers", None)
+            length = (headers.get("Content-Length") if headers is not None else None) or ""
+        match = EPIC_BUILD.fullmatch(final)
+        version = urllib.parse.unquote(match[1]) if match else None
+        version_match = app.version.fullmatch(version) if version else None
+        if version_match is None or epic_url(version) != final.partition("?")[0]:
+            raise HelperError(f"it led to {final or 'no address'}, not an {app.name} build on Epic's server")
+        if not length.strip().isdigit() or int(length) <= 0:
+            raise HelperError("the server did not say how large the AppImage is")
+    except (HelperError, OSError, http.client.HTTPException, ValueError) as error:
+        raise HelperError(f"Could not read {app.name} download information from {EPIC_LINK}: {error}. "
+                          "Nothing was changed; retry later.") from error
+    return [Release(version, app.key(version_match), True, app.channel(version_match), EPIC_ASSET,
+                    epic_url(version), int(length), None)]
+
+
+def only_candidate(name):
+    def select(releases, receipt):
+        if not releases:
+            raise HelperError(f"{name} offers no download right now. Nothing was changed.")
+        return max(releases, key=lambda release: release.key)
+    return select
+
+
+EPIC_GAMES = App(
+    id="epic-games",
+    name="Epic Games Launcher",
+    repository="",
+    asset=EPIC_ASSET,
+    version=re.compile(r"(\d+)\.(\d+)\.(\d+)\+g([0-9a-f]{7,40})", re.ASCII),
+    key=lambda match: (int(match[1]), int(match[2]), int(match[3])),
+    stable=lambda match, prerelease: True,
+    channel=lambda match: "preview",
+    select=only_candidate("Epic"),
+    describe=lambda release: f"{release.version} (Preview)",
+    process=re.compile(r"epic-?games-?launc", re.IGNORECASE),
+    kept="sign-in, settings and installed games",
+    unidentified="Remove that integration in Gear Lever, then retry.",
+    policy="the build Epic's download link serves; it then updates itself, and Monolith only repairs it",
+    fetch=epic_releases,
+    source_url=epic_url,
+    publisher="Epic Games",
+    self_updating=True,
+)
+
+APPS = {app.id: app for app in (WOWUP_CF, R2MODMAN, SIDRA, EPIC_GAMES)}
 
 
 class Paths:
@@ -409,7 +497,11 @@ class Release:
     asset: str
     url: str
     size: int
-    sha256: str
+    sha256: str | None  # None when the publisher lists no checksum; the download's own digest is recorded
+
+
+def releases_for(app):
+    return app.fetch(app) if app.fetch is not None else parse_releases(app, fetch_releases(app))
 
 
 def github_get(app, url):
@@ -511,7 +603,11 @@ def identify(app, path, receipt, releases):
             raise HelperError(f"{path} is not a regular file; Monolith will not replace it.")
         digest = hashlib.file_digest(file, "sha256").hexdigest()
     identity = (status.st_dev, status.st_ino, status.st_size, status.st_mtime_ns)
-    matches = [release for release in releases if release.sha256 == digest]
+    if app.self_updating:
+        # Its own updater changes these bytes, so they identify nothing; install replaces them anyway.
+        known = receipt is not None and receipt.sha256 == digest
+        return Current(receipt.version if known else "", (), digest, identity)
+    matches = [release for release in releases if release.sha256 is not None and release.sha256 == digest]
     if matches:
         release = max(matches, key=lambda item: item.key)
         return Current(release.version, release.key, digest, identity)
@@ -570,13 +666,17 @@ def download(app, release, stage):
     if received != release.size:
         raise HelperError(f"The download of {release.asset} was truncated ({received} of {release.size} "
                           "bytes). Nothing was changed.")
-    if digest.hexdigest() != release.sha256:
+    if release.sha256 is not None and digest.hexdigest() != release.sha256:
         raise HelperError(f"{release.asset} failed SHA256 verification (expected {release.sha256}, got "
                           f"{digest.hexdigest()}). Nothing was changed.")
     check_header(destination)
     os.chmod(destination, 0o755)
-    print(f"Verified SHA256 {release.sha256}.", flush=True)
-    return destination
+    if release.sha256 is None:
+        print(f"{app.publisher or app.name} publishes no checksum; downloaded over HTTPS from "
+              f"{urllib.parse.urlsplit(release.url).hostname} (SHA256 {digest.hexdigest()}).", flush=True)
+    else:
+        print(f"Verified SHA256 {release.sha256}.", flush=True)
+    return destination, dataclasses.replace(release, sha256=digest.hexdigest())
 
 
 def require_readelf(app):
@@ -1662,26 +1762,45 @@ def install(app, scope, only_if_changed=False):
     gear_lever = GearLever(scope)
     plan = make_plan(paths, receipt, inspect_gear_lever(paths, gear_lever))
     load_snapshots(paths, plan)
-    releases = parse_releases(app, fetch_releases(app))
-    target = app.select(releases, receipt)
-    current = None
-    if plan.mode != "fresh" and "appimage" not in plan.missing:
-        current = identify(app, plan.appimage, receipt, releases)
-    elif receipt is not None:
-        current = Current(receipt.version, app.version_key(receipt.version))
-    if current is not None and current.key > target.key:
+    # An update keeps a self-updating application's intact copy, whatever version it updated itself to.
+    keep = (app.self_updating and only_if_changed and plan.mode == "managed"
+            and "appimage" not in plan.missing)
+    if keep:
+        check_header(Path(plan.appimage))
+        current = Current(receipt.version, app.version_key(receipt.version), receipt.sha256,
+                          file_identity(plan.appimage))
+        target = Release(receipt.version, current.key, True, receipt.channel, app.asset, receipt.source,
+                         os.lstat(plan.appimage).st_size, receipt.sha256)
+    else:
+        releases = releases_for(app)
+        target = app.select(releases, receipt)
+        current = None
+        if plan.mode != "fresh" and "appimage" not in plan.missing:
+            current = identify(app, plan.appimage, receipt, releases)
+        elif receipt is not None:
+            current = Current(receipt.version, app.version_key(receipt.version))
+    if current is not None and not app.self_updating and current.key > target.key:
         raise HelperError(f"The installed {app.name} {current.version} is newer than {target.version}, the newest "
                           "version Monolith permits; Monolith never downgrades. Nothing was changed.")
     if only_if_changed and nothing_to_change(paths, plan, preferences_before, current, target):
-        print(f"{app.name} {target.version} is already up to date.", flush=True)
+        if keep:
+            print(f"{app.name} keeps itself up to date, and its integration is complete.", flush=True)
+        else:
+            print(f"{app.name} {target.version} is already up to date.", flush=True)
         return False
     ensure_closed(app, [plan.entry], [plan.appimage])
-    reuse = current is not None and current.sha256 == target.sha256
-    print(f"Selected {app.name} {app.describe(target)} from {app.repository}.", flush=True)
+    reuse = keep or (current is not None and target.sha256 is not None and current.sha256 == target.sha256)
+    if keep:
+        print(f"Keeping the installed {app.name}, which updates itself.", flush=True)
+    else:
+        print(f"Selected {app.name} {app.describe(target)} from {app.origin}.", flush=True)
     scratch = Scratch(paths)
     success = False
     try:
-        source = Path(plan.appimage) if reuse else download(app, target, scratch.mkdtemp(".stage."))
+        if reuse:
+            source = Path(plan.appimage)
+        else:
+            source, target = download(app, target, scratch.mkdtemp(".stage."))
         check_embedded(app, source, target)
         recheck(paths, gear_lever, plan)
         transaction = Transaction(scratch)
@@ -1714,6 +1833,10 @@ def install(app, scope, only_if_changed=False):
     location = integration.entry.path
     if plan.mode == "fresh":
         print(f"Installed {app.name} {target.version} with Gear Lever at {location}.")
+    elif keep:
+        print(f"{app.name} is installed at {location} and keeps itself up to date.")
+    elif app.self_updating and not reuse:
+        print(f"Installed {app.name} {target.version} over the previous copy at {location}.")
     elif current is not None and current.key != target.key:
         print(f"Updated {app.name} from {current.version} to {target.version} at {location}.")
     else:
@@ -1734,9 +1857,8 @@ def repair_before_removal(paths, gear_lever, plan):
     try:
         source = release = None
         if "appimage" in plan.missing:
-            releases = parse_releases(app, fetch_releases(app))
-            release = app.select(releases, receipt)
-            source = download(app, release, scratch.mkdtemp(".stage."))
+            release = app.select(releases_for(app), receipt)
+            source, release = download(app, release, scratch.mkdtemp(".stage."))
         ensure_closed(app, [plan.entry], [plan.appimage])
         transaction = Transaction(scratch)
 
@@ -1864,7 +1986,7 @@ def inspect(paths):
 
 def build_parser():
     applications = "".join(textwrap.fill(f"{app.name} follows {app.policy}.", width=79,
-                                         initial_indent=f"  {app.id:<10}", subsequent_indent=" " * 12) + "\n"
+                                         initial_indent=f"  {app.id:<12}", subsequent_indent=" " * 14) + "\n"
                            for app in APPS.values())
     parser = argparse.ArgumentParser(
         prog="gear-lever-app",

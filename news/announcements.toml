@@ -28,6 +28,34 @@
 #   files/kde/usr/bin/monolith-news --preview news/announcements.toml
 
 [[announcements]]
+id = "2026-10-24-epic-games-launcher"
+date = 2026-10-24
+title = "The Epic Games Launcher is in Monolith Software"
+category = "Gaming"
+install_path = ["monolith", "Gaming", "Epic Games Launcher"]
+body = """
+Epic has a new launcher that runs natively on Linux, and you can install it
+from `monolith` under **Gaming**. It's still a preview, so expect some rough
+edges. Epic ships fixes almost every day.
+
+Your library, cloud saves and progress come along from your Epic account.
+Windows-only games run through Proton, which the launcher downloads the first
+time a game needs it.
+
+After you install it, the launcher keeps itself up to date. If you remove it,
+Monolith deletes only the app itself. Your sign-in, settings and installed games
+stay, so a reinstall picks up where you left off.
+
+Fortnite isn't on Linux yet. Epic says it's coming once its new anti-cheat is
+ready, but there's no date.
+"""
+note = "Not under Gaming yet? Update Monolith and reboot first."
+links = [
+  { label = "Epic Games Launcher", url = "https://launcher.epicgames.com/" },
+  { label = "Monolith software guide", url = "https://github.com/monolithlinux/monolith#epic-games-launcher" },
+]
+
+[[announcements]]
 id = "2026-10-19-sidra"
 date = 2026-10-19
 title = "Sidra joins Monolith Software"

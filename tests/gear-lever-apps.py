@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Offline tests for Monolith's Gear Lever app helper (WowUp-CF, r2modman and Sidra) against a file-backed
-Gear Lever 4.6.2 model.
+"""Offline tests for Monolith's Gear Lever app helper (WowUp-CF, r2modman, Sidra and the Epic Games Launcher)
+against a file-backed Gear Lever 4.6.2 model.
 
 Besides running the suite, this file provides test doubles for other harnesses:
 
@@ -108,9 +108,23 @@ ACTIONS = {"Sidra": ("".join(f"{action};" for action, _, _ in SIDRA_ACTIONS), ""
     for action, label, german in SIDRA_ACTIONS))}
 
 
+# Desktop entries embedded exactly as the official AppImage ships them. Epic's names no version.
+EMBEDDED_DESKTOPS = {"Epic Games Launcher": (
+    "[Desktop Entry]\nCategories=Game;\nComment=Epic Games Launcher\nExec=EpicGamesLauncher %u\n"
+    "Icon=EpicGamesLauncher\nName=Epic Games Launcher\nTerminal=false\nType=Application\n"
+    "StartupWMClass=EpicGamesLauncher\nMimeType=x-scheme-handler/com.epicgames.launcher;\n")}
+
+
 def make_appimage(version, *, name="WowUp-CF", update_info=b""):
     """A small AppImage: real ELF for readelf, plus the embedded desktop entry and .DirIcon Gear Lever reads."""
     key = (version, name, update_info)
+    if key not in _APPIMAGES and name in EMBEDDED_DESKTOPS:
+        _APPIMAGES[key] = elf([
+            (".upd_info", update_info.ljust(1024, b"\0")),
+            (".monolith.desktop", EMBEDDED_DESKTOPS[name].encode()),
+            (".monolith.diricon", ICON),
+            (".monolith.payload", f"{name} {version} payload\n".encode() * 32),
+        ])
     if key not in _APPIMAGES:
         mime_type = f"MimeType={MIME_TYPES[name]}\n" if name in MIME_TYPES else ""
         listed, groups = ACTIONS.get(name, ("", ""))
@@ -849,6 +863,7 @@ import tempfile  # noqa: E402
 import unittest  # noqa: E402
 from unittest import mock  # noqa: E402
 import urllib.error  # noqa: E402
+import urllib.parse  # noqa: E402
 import urllib.request  # noqa: E402
 
 
@@ -883,6 +898,7 @@ class Fixture:
     settings: tuple = ()  # files below XDG_CONFIG_HOME that the helper writes for the app
     tag_prefix: str = "v"  # what precedes the version in its release tags
     appimage: str = ""  # its AppImage asset name when that carries no version
+    epic: bool = False  # downloaded from Epic's build server instead of GitHub releases
 
     def tag(self, version):
         return f"{self.tag_prefix}{version}"
@@ -894,14 +910,23 @@ class Fixture:
         return f"https://api.github.com/repos/{self.repository}/releases?per_page=100&page={page}"
 
     def download_url(self, version):
+        if self.epic:
+            return f"{EPIC_BUILDS}{urllib.parse.quote(version, safe='')}/Linux/{EPIC_ASSET}"
         return f"https://github.com/{self.repository}/releases/download/{self.tag(version)}/{self.asset(version)}"
 
+
+EPIC_LINK = ("https://launcher-public-service-prod06.ol.epicgames.com/launcher/api/installer/download/"
+             "EpicGamesLauncher-x86_64.AppImage")
+EPIC_BUILDS = "https://content-download-egs.distro.on.epicgames.com/Builds/EGLv2/"
+EPIC_ASSET = "EpicGamesLauncher-x86_64.AppImage"
 
 WOWUP_CF = Fixture("wowup-cf", "WowUp-CF", "WowUp/WowUp.CF", "wowupcf", "2.24.0-beta.6", "2.24.0-beta.10",
                    ("WowUpCf/preferences.json", "WowUpCf/preferences.json.monolith-backup"))
 R2MODMAN = Fixture("r2modman", "r2modman", "ebkr/r2modmanPlus", "r2modman", "3.2.19", "3.2.20")
 SIDRA = Fixture("sidra", "Sidra", "wimpysworld/sidra", "sidra", "1.1.1", "1.1.2", tag_prefix="",
                 appimage="Sidra-linux-x86_64.AppImage")
+EPIC = Fixture("epic-games", "Epic Games Launcher", "", "epic_games_launcher", "0.101.0+g5d41f0c",
+               "0.102.0+g6aa6663", appimage=EPIC_ASSET, epic=True)
 
 
 def download_url(version, app=WOWUP_CF):
@@ -944,9 +969,14 @@ def sidra_appimage(version, **options):
     return make_appimage(version, name="Sidra", **options)
 
 
+def epic_appimage(version, **options):
+    return make_appimage(version, name="Epic Games Launcher", **options)
+
+
 class FakeResponse(io.BytesIO):
-    def __init__(self, data, headers, hold=None):
+    def __init__(self, data, headers, hold=None, url=None):
         super().__init__(data)
+        self.url = url
         self.status = 200
         self.headers = email.message.Message()
         for key, value in headers.items():
@@ -971,9 +1001,10 @@ class FakeWeb:
         self.requests = []
         self.unexpected = []
 
-    def add(self, url, body=b"", *, status=200, headers=None, error=None, hold=None, on_open=None):
+    def add(self, url, body=b"", *, status=200, headers=None, error=None, hold=None, on_open=None, final_url=None):
+        """final_url: where the request ends up after redirects (urlopen follows them), default url itself."""
         self.routes[url] = {"body": body, "status": status, "headers": headers or {}, "error": error,
-                            "hold": hold, "on_open": on_open}
+                            "hold": hold, "on_open": on_open, "final_url": final_url}
 
     def publish(self, releases, app=WOWUP_CF):
         pages = [releases[index:index + 100] for index in range(0, len(releases), 100)] or [[]]
@@ -1001,7 +1032,7 @@ class FakeWeb:
             raise urllib.error.URLError(route["error"])
         if route["status"] != 200:
             raise urllib.error.HTTPError(url, route["status"], "Error", email.message.Message(), io.BytesIO(b""))
-        return FakeResponse(route["body"], route["headers"], route["hold"])
+        return FakeResponse(route["body"], route["headers"], route["hold"], route["final_url"] or url)
 
     def save(self, path):
         directory = Path(f"{path}.bodies")
@@ -1011,7 +1042,7 @@ class FakeWeb:
             body = directory / str(index)
             body.write_bytes(route["body"])
             routes[url] = {"body_file": str(body), "status": route["status"], "headers": route["headers"],
-                           "error": route["error"], "hold": route["hold"]}
+                           "error": route["error"], "hold": route["hold"], "final_url": route["final_url"]}
         Path(path).write_text(json.dumps(routes))
 
     @classmethod
@@ -1019,7 +1050,7 @@ class FakeWeb:
         web = cls()
         for url, route in json.loads(Path(path).read_text()).items():
             web.add(url, Path(route["body_file"]).read_bytes(), status=route["status"], headers=route["headers"],
-                    error=route["error"], hold=route["hold"])
+                    error=route["error"], hold=route["hold"], final_url=route.get("final_url"))
         return web
 
 
@@ -1119,6 +1150,7 @@ class GearLeverAppCase(unittest.TestCase):
         self.cf, self.cf_desktop, self.cf_icon = self.files_of(WOWUP_CF)
         self.r2, self.r2_desktop, self.r2_icon = self.files_of(R2MODMAN)
         self.sidra, self.sidra_desktop, self.sidra_icon = self.files_of(SIDRA)
+        self.epic, self.epic_desktop, self.epic_icon = self.files_of(EPIC)
         self.allow_recovery = False
         # Unrelated data and a regular (non-CurseForge) WowUp integration that must never change.
         self.apps.mkdir(parents=True)
@@ -1138,6 +1170,11 @@ class GearLeverAppCase(unittest.TestCase):
             # Sidra's Apple Music sign-in and settings, in its Electron user data directory.
             self.config / "Sidra/config.json": b'{\n  "startPage": "home"\n}\n',
             self.config / "Sidra/Network/Cookies": b"SQLite format 3\0media-user-token\n",
+            # The Epic Games Launcher's sign-in, settings, Proton runtime and an installed game.
+            self.data / "com.epicgames.eglv2/auth/session.json": b'{"account": "player"}\n',
+            self.config / "com.epicgames.eglv2/settings.json": b'{"minimizeToTray": true}\n',
+            self.data / "com.epicgames.eglv2/compat/runtime/GE-Proton/version": b"GE-Proton10-25\n",
+            self.home / "Games/Epic Games/Hades II/Hades2.exe": b"MZ hades\n",
         }
         for path, data in self.kept.items():
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -2493,6 +2530,182 @@ class SidraTests(GearLeverAppCase):
         self.proc.clear()
         self.ok(self.install())
         self.assertEqual(self.sidra.read_bytes(), sidra_appimage("1.1.2"))
+
+
+class EpicGamesLauncherTests(GearLeverAppCase):
+    """The Epic Games Launcher: the build Epic's download link serves, without a published checksum; it updates
+    itself, so an update keeps any intact copy and only repairs, while install downloads afresh."""
+
+    APP = EPIC
+    RUNNING = "Close Epic Games Launcher and retry this action."
+
+    def serve_epic(self, version, data=None, *, final=None, length="auto", head_length="auto"):
+        """Epic's link redirects to VERSION's build; the build URL itself serves the AppImage."""
+        data = epic_appimage(version) if data is None else data
+        build = EPIC.download_url(version)
+        for url in [url for url in self.web.routes if url == EPIC_LINK or url.startswith(EPIC_BUILDS)]:
+            del self.web.routes[url]
+        size = str(len(data)) if head_length == "auto" else head_length
+        self.web.add(EPIC_LINK, b"", headers={"Content-Length": size} if size is not None else {},
+                     final_url=final or f"{build}?launcherfilename={EPIC_ASSET}")
+        self.web.add(build, data, headers={"Content-Length": str(len(data)) if length == "auto" else length})
+
+    def offline(self):
+        self.web.routes.clear()
+
+    def managed_install(self, version=None, app=None):
+        self.serve_epic(version or EPIC.old)
+        self.ok(self.install())
+
+    def test_download_link_resolution(self):
+        helper = self.helper
+        app = helper.APPS["epic-games"]
+
+        def resolve():
+            with mock.patch("urllib.request.urlopen", self.web.urlopen):
+                return helper.epic_releases(app)
+
+        self.serve_epic("0.102.0+g6aa6663")
+        [found] = resolve()
+        self.assertEqual((found.version, found.url, found.size, found.sha256, found.channel),
+                         ("0.102.0+g6aa6663", EPIC_BUILDS + "0.102.0%2Bg6aa6663/Linux/" + EPIC_ASSET,
+                          len(epic_appimage("0.102.0+g6aa6663")), None, "preview"))
+        self.assertEqual(found.key, (0, 102, 0))
+        build = EPIC.download_url("0.102.0+g6aa6663")
+        refused = {
+            "another host": dict(final="https://downloads.example.invalid/Builds/EGLv2/0.102.0%2Bg6aa6663/Linux/"
+                                       + EPIC_ASSET),
+            "plain HTTP": dict(final=build.replace("https://", "http://")),
+            "no version": dict(final=EPIC_BUILDS + "latest/Linux/" + EPIC_ASSET),
+            "another file": dict(final=build.replace(EPIC_ASSET, "EpicGamesLauncher-arm64.AppImage")),
+            "no size": dict(head_length=None),
+            "empty": dict(head_length="0"),
+        }
+        for label, options in refused.items():
+            with self.subTest(label):
+                self.serve_epic("0.102.0+g6aa6663", **options)
+                with self.assertRaisesRegex(helper.HelperError, "Nothing was changed; retry later"):
+                    resolve()
+        self.web.add(EPIC_LINK, error="Temporary failure in name resolution")
+        with self.assertRaisesRegex(helper.HelperError, "name resolution"):
+            resolve()
+
+    def test_install_self_update_update_and_remove(self):
+        self.serve_epic(EPIC.old)
+        result = self.ok(self.install())
+        self.assertIn("Epic Games publishes no checksum; downloaded over HTTPS from "
+                      "content-download-egs.distro.on.epicgames.com", result.stdout)
+        self.assertEqual(self.epic.read_bytes(), epic_appimage(EPIC.old))
+        self.assertEqual(self.read_receipt(), {
+            "version": EPIC.old, "source": EPIC.download_url(EPIC.old), "channel": "preview",
+            "sha256": sha256(epic_appimage(EPIC.old)), "appimage": str(self.epic),
+            "desktop_id": "epic_games_launcher.desktop", "icon": str(self.epic_icon)})
+        # Epic's launcher names no version, so Monolith records the one it installed.
+        self.assertEqual(self.epic_desktop.read_text(), (
+            "[Desktop Entry]\nType=Application\nName=Epic Games Launcher\nComment=Epic Games Launcher\n"
+            f"Icon={self.epic_icon}\nTryExec={self.epic}\nExec=env DESKTOPINTEGRATION=1 {self.epic} %u\n"
+            "Terminal=false\nMimeType=x-scheme-handler/com.epicgames.launcher;\nCategories=Game;\n"
+            f"StartupWMClass=EpicGamesLauncher\nX-AppImage-Name=Epic Games Launcher\nX-AppImage-Version={EPIC.old}\n"))
+        receipt = self.read_receipt()
+        # The launcher updates itself in place. An update then needs no network and changes nothing,
+        # even though these bytes match nothing Monolith downloaded.
+        self.epic.write_bytes(epic_appimage(EPIC.new))
+        self.offline()
+        installed = self.snapshot()
+        result = self.update()
+        self.assertEqual(result.code, self.helper.UP_TO_DATE, result)
+        self.assertIn("keeps itself up to date", result.stdout)
+        self.assertEqual(self.snapshot(), installed)
+        self.assertEqual(self.read_receipt(), receipt)
+        # A missing launcher is repaired from Monolith's snapshot, still offline, keeping the updated copy.
+        self.epic_desktop.unlink()
+        self.ok(self.update())
+        self.assertEqual(self.snapshot(), installed)
+        # An explicit install downloads what Epic serves now and replaces the copy in the same integration.
+        self.serve_epic("0.103.0+gabcdef0")
+        result = self.ok(self.install())
+        self.assertIn("Installed Epic Games Launcher 0.103.0+gabcdef0 over the previous copy", result.stdout)
+        self.assertEqual(self.epic.read_bytes(), epic_appimage("0.103.0+gabcdef0"))
+        self.assertEqual((self.read_receipt()["version"], self.read_receipt()["sha256"]),
+                         ("0.103.0+gabcdef0", sha256(epic_appimage("0.103.0+gabcdef0"))))
+        self.assertEqual([entry["path"] for entry in self.entries()], [str(self.epic)])
+        self.assertEqual(self.launchers(), [self.epic_desktop])
+        # Removal deletes only the integration and Monolith's records; Epic's data and games stay (check_clean).
+        self.ok(self.remove())
+        for path in (self.epic, self.epic_desktop, self.epic_icon, self.receipt, self.snapshots):
+            self.assertFalse(path.exists(), path)
+        self.assertEqual(self.status(), "not installed")
+
+    def test_missing_appimage_is_downloaded_again(self):
+        self.managed_install()
+        self.epic.unlink()
+        self.assertEqual(self.status(), "needs repair")
+        self.serve_epic(EPIC.new)
+        self.ok(self.update())
+        self.assertEqual(self.epic.read_bytes(), epic_appimage(EPIC.new))
+        self.assertEqual((self.read_receipt()["version"], self.status()), (EPIC.new, "installed"))
+
+    def test_broken_copy_is_not_kept(self):
+        """An update keeps only an intact AppImage; anything else stops without changing it."""
+        self.managed_install()
+        self.epic.write_bytes(b"#!/bin/sh\necho not an AppImage\n")
+        self.offline()
+        before = self.snapshot()
+        result = self.failed(self.update())
+        self.assertIn("is not an x86_64 type-2 AppImage", result.stderr)
+        self.assertEqual(self.snapshot(), before)
+        # Installing again replaces it with Epic's current build.
+        self.serve_epic(EPIC.new)
+        self.ok(self.install())
+        self.assertEqual(self.epic.read_bytes(), epic_appimage(EPIC.new))
+
+    def test_bad_downloads_change_nothing(self):
+        for label, options in {
+            "not an AppImage": dict(data=b"<html>Access denied</html>\n"),
+            "truncated": dict(head_length=str(len(epic_appimage(EPIC.old)) + 10),
+                              length=str(len(epic_appimage(EPIC.old)) + 10)),
+            "size disagrees": dict(length="12"),
+        }.items():
+            with self.subTest(label):
+                self.serve_epic(EPIC.old, **options)
+                before = self.snapshot()
+                self.failed(self.install())
+                self.assertEqual(self.snapshot(), before)
+                self.assertEqual((self.status(), self.leaks()), ("not installed", []))
+
+    def test_adopts_an_existing_integration_with_a_fresh_download(self):
+        """Monolith cannot vouch for a copy it did not download, so adoption replaces it in place."""
+        self.integrate(epic_appimage("0.99.0+g0000000"))
+        self.assertEqual(self.status(), "external")
+        self.serve_epic(EPIC.new)
+        result = self.ok(self.install())
+        self.assertIn("Monolith now manages this existing Gear Lever integration", result.stdout)
+        self.assertEqual(self.epic.read_bytes(), epic_appimage(EPIC.new))
+        self.assertEqual(self.launchers(), [self.epic_desktop])
+        self.assertEqual((self.read_receipt()["version"], self.status()), (EPIC.new, "installed"))
+
+    def test_running_launcher_blocks_changes_but_not_a_no_op_update(self):
+        self.managed_install()
+        self.serve_epic(EPIC.new)
+        installed = self.snapshot()
+        # The launcher's process from the mount of its AppImage, whose environment cannot be read.
+        self.proc.add(4300, uid=os.getuid(), comm="EpicGamesLaunch",
+                      cmdline=("/tmp/.mount_epic_gAbC/usr/bin/EpicGamesLauncher",), readable=False)
+        for action in (self.install, self.remove):
+            result = action()
+            self.assertEqual((result.code, result.stderr.strip()), (1, self.RUNNING))
+        self.assertEqual(self.update().code, self.helper.UP_TO_DATE)
+        self.assertEqual(self.snapshot(), installed)
+        self.proc.clear()
+        self.ok(self.install())
+        self.assertEqual(self.epic.read_bytes(), epic_appimage(EPIC.new))
+
+    def test_status_and_info_only_read_the_filesystem(self):
+        self.assertEqual(self.observe_read_only("not installed")["version"], None)
+        self.managed_install()
+        info = self.observe_read_only("installed")
+        self.assertEqual((info["version"], info["source"], info["channel"], info["appimage"]),
+                         (EPIC.old, EPIC.download_url(EPIC.old), "preview", str(self.epic)))
 
 
 class CoexistenceTests(GearLeverAppCase):
