@@ -52,7 +52,7 @@ ready, but there's no date.
 note = "Not under Gaming yet? Update Monolith and reboot first."
 links = [
   { label = "Epic Games Launcher", url = "https://launcher.epicgames.com/" },
-  { label = "Monolith software guide", url = "https://github.com/monolithlinux/monolith#epic-games-launcher" },
+  { label = "Monolith software guide", url = "https://github.com/monolithlinux/monolith/blob/main/docs/software.md#epic-games-launcher" },
 ]
 
 [[announcements]]
@@ -81,7 +81,7 @@ Not in your Media menu yet? Update Monolith and reboot first.
 """
 links = [
   { label = "Sidra", url = "https://github.com/wimpysworld/sidra" },
-  { label = "Monolith software guide", url = "https://github.com/monolithlinux/monolith#sidra" },
+  { label = "Monolith software guide", url = "https://github.com/monolithlinux/monolith/blob/main/docs/software.md#sidra" },
 ]
 
 [[announcements]]
@@ -104,7 +104,7 @@ The reminder starts after you update Monolith and reboot. The first one comes a
 week later at the earliest.
 """
 links = [
-  { label = "Monolith guide", url = "https://github.com/monolithlinux/monolith#update-reminder" },
+  { label = "Monolith guide", url = "https://github.com/monolithlinux/monolith/blob/main/docs/desktop.md#update-reminder" },
 ]
 
 [[announcements]]
@@ -134,7 +134,7 @@ The change takes effect after you update Monolith and reboot.
 """
 links = [
   { label = "OpenDeck", url = "https://github.com/nekename/OpenDeck" },
-  { label = "Monolith guide", url = "https://github.com/monolithlinux/monolith#opendeck" },
+  { label = "Monolith guide", url = "https://github.com/monolithlinux/monolith/blob/main/docs/desktop.md#opendeck" },
 ]
 
 [[announcements]]
@@ -163,7 +163,7 @@ FigCraft not in your Crafting Apps menu yet? Update Monolith and reboot first.
 """
 links = [
   { label = "FigCraft", url = "https://getartcraft.com/apps/figcraft" },
-  { label = "Monolith software guide", url = "https://github.com/monolithlinux/monolith#crafting-apps" },
+  { label = "Monolith software guide", url = "https://github.com/monolithlinux/monolith/blob/main/docs/software.md#crafting-apps" },
 ]
 
 [[announcements]]
@@ -184,7 +184,7 @@ installing anything.
 The change takes effect after you update Monolith and reboot.
 """
 links = [
-  { label = "Monolith guide", url = "https://github.com/monolithlinux/monolith#nodejs" },
+  { label = "Monolith guide", url = "https://github.com/monolithlinux/monolith/blob/main/docs/desktop.md#nodejs" },
 ]
 
 [[announcements]]
@@ -216,7 +216,7 @@ No Crafting Apps category in `monolith` yet? Update Monolith and reboot first.
 """
 links = [
   { label = "Crafting Apps", url = "https://getartcraft.com/apps" },
-  { label = "Monolith software guide", url = "https://github.com/monolithlinux/monolith#crafting-apps" },
+  { label = "Monolith software guide", url = "https://github.com/monolithlinux/monolith/blob/main/docs/software.md#crafting-apps" },
 ]
 
 [[announcements]]
@@ -252,7 +252,7 @@ No Crafting Apps category in `monolith` yet? Update Monolith and reboot first.
 links = [
   { label = "Crafting Apps", url = "https://getartcraft.com/apps" },
   { label = "Crafting Apps on GitHub", url = "https://github.com/storytold" },
-  { label = "Monolith software guide", url = "https://github.com/monolithlinux/monolith#crafting-apps" },
+  { label = "Monolith software guide", url = "https://github.com/monolithlinux/monolith/blob/main/docs/software.md#crafting-apps" },
 ]
 
 [[announcements]]
@@ -282,7 +282,7 @@ No Communication category in `monolith` yet? Update Monolith and reboot first.
 links = [
   { label = "Fluxer", url = "https://fluxer.app" },
   { label = "Fluxer on Flathub", url = "https://flathub.org/apps/app.fluxer.Fluxer" },
-  { label = "Monolith software guide", url = "https://github.com/monolithlinux/monolith#fluxer" },
+  { label = "Monolith software guide", url = "https://github.com/monolithlinux/monolith/blob/main/docs/software.md#fluxer" },
 ]
 
 [[announcements]]
@@ -336,7 +336,7 @@ Plezy not in your Media menu yet? Update Monolith and reboot first.
 links = [
   { label = "Plezy", url = "https://plezy.app" },
   { label = "Plezy releases", url = "https://github.com/edde746/plezy/releases" },
-  { label = "Monolith software guide", url = "https://github.com/monolithlinux/monolith#plezy" },
+  { label = "Monolith software guide", url = "https://github.com/monolithlinux/monolith/blob/main/docs/software.md#plezy" },
 ]
 
 [[announcements]]
@@ -366,7 +366,7 @@ No Media category in `monolith` yet? Update Monolith and reboot first.
 links = [
   { label = "Moonfin", url = "https://moonfin.io" },
   { label = "Moonfin releases", url = "https://github.com/Moonfin-Client/Moonfin-Core/releases" },
-  { label = "Monolith software guide", url = "https://github.com/monolithlinux/monolith#moonfin" },
+  { label = "Monolith software guide", url = "https://github.com/monolithlinux/monolith/blob/main/docs/software.md#moonfin" },
 ]
 
 [[announcements]]
@@ -419,7 +419,7 @@ Not in your Gaming menu yet? Update Monolith and reboot first.
 links = [
   { label = "Prism Launcher", url = "https://prismlauncher.org" },
   { label = "Prism Launcher on Flathub", url = "https://flathub.org/apps/org.prismlauncher.PrismLauncher" },
-  { label = "Monolith software guide", url = "https://github.com/monolithlinux/monolith#prism-launcher" },
+  { label = "Monolith software guide", url = "https://github.com/monolithlinux/monolith/blob/main/docs/software.md#prism-launcher" },
 ]
 
 [[announcements]]
@@ -448,7 +448,7 @@ Not in your Gaming menu yet? Update Monolith and reboot first.
 """
 links = [
   { label = "r2modman releases", url = "https://github.com/ebkr/r2modmanPlus/releases" },
-  { label = "Monolith software guide", url = "https://github.com/monolithlinux/monolith#r2modman" },
+  { label = "Monolith software guide", url = "https://github.com/monolithlinux/monolith/blob/main/docs/software.md#r2modman" },
 ]
 
 [[announcements]]
@@ -480,7 +480,7 @@ No Gaming category in your menu yet? Update Monolith and reboot first.
 """
 links = [
   { label = "WowUp-CF releases", url = "https://github.com/WowUp/WowUp.CF/releases" },
-  { label = "Monolith software guide", url = "https://github.com/monolithlinux/monolith#optional-software" },
+  { label = "Monolith software guide", url = "https://github.com/monolithlinux/monolith/blob/main/docs/software.md" },
 ]
 
 [[announcements]]
