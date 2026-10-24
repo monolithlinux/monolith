@@ -119,17 +119,6 @@ and updated, and what removing it keeps.
 Run `mjust` to see Monolith's helper commands for updates, firmware, logs, Secure
 Boot and unlocking your disk with the TPM. The old name, `ujust`, still works.
 
-## Coming from the GNOME or COSMIC editions
-
-Those editions are retired and no longer get updates. Switch to a KDE edition to
-keep receiving them:
-
-```bash
-# Use kde-nvidia instead if you need the NVIDIA driver.
-rpm-ostree rebase ostree-image-signed:docker://ghcr.io/monolithlinux/kde:latest
-systemctl reboot
-```
-
 ## Checking an image's signature
 
 Every image is signed. To check one yourself, download [`cosign.pub`](cosign.pub)
