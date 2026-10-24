@@ -205,6 +205,27 @@ jobs:
           maximize_build_space: true
           retry_push_count: 3
 
+  # The one build check branch protection requires. Build jobs exist only for
+  # the editions a pull request affects, so requiring them by name would leave
+  # other pull requests waiting forever; this job always reports instead.
+  build-result:
+    name: Build result
+    needs: [test, check, bluebuild]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Fail unless the tests, check, and every edition build passed
+        env:
+          TEST: ${{ needs.test.result }}
+          CHECK: ${{ needs.check.result }}
+          BUILD: ${{ needs.bluebuild.result }}
+        run: |
+          echo "Test scripts: ${TEST}; rebuild check: ${CHECK}; builds: ${BUILD}"
+          [ "${TEST}" = success ] && [ "${CHECK}" = success ] || exit 1
+          # Skipped means no edition needed a build.
+          case "${BUILD}" in success | skipped) ;; *) exit 1 ;; esac
+
   generate-release:
     name: Release
     needs: bluebuild
