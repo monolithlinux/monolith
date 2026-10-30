@@ -22,8 +22,9 @@ Open a terminal and run:
 monolith
 ```
 
-`mjust monolith`, `mjust software` and `mjust monolith-software` open the same
-dashboard.
+**System tools**, below the app categories, runs Monolith's other commands, such
+as status, rollback and the CPU scheduler. [Monolith's commands](commands.md)
+explains them.
 
 Apps are grouped into Developer CLIs, AI coding, Gaming, Media, Crafting Apps,
 Communication and Appearance, and each one shows whether it's installed and which
@@ -43,8 +44,8 @@ The same things work without the dashboard, which is handy for scripts:
 ```bash
 monolith list                  # every app and its state
 monolith install codex herdr   # install one or more apps
-monolith update                # update everything Monolith manages
 monolith update sidra          # update just one
+monolith update                # update everything, these apps included
 monolith remove codex
 ```
 
@@ -57,15 +58,19 @@ and everything after it. Only one install, update or removal runs at a time.
 
 ## How updates work
 
-`monolith update` first checks each app for a newer release. If an app already has
-it and doesn't need repair, it shows `Up to date` and nothing is downloaded.
+`monolith update` runs topgrade, which updates the system, your Flatpaks and your
+developer tools, and then these apps as its **Monolith software** step. **Update
+installed** in the dashboard, or `monolith update` followed by app names, updates
+only Monolith's apps.
+
+Monolith first checks each app for a newer release. If an app already has it and
+doesn't need repair, it shows `Up to date` and nothing is downloaded.
 `monolith install` always installs the newest release again, except for a Flatpak
 app that already has it.
 
-`topgrade` runs `monolith update` as well, as its **Monolith software** step after
-its other updates, so running `topgrade` or `mjust update` covers everything. If an
-app needs an update but can't get one right now, such as WowUp-CF while it's open,
-topgrade lists it as failed in its summary and still updates the rest.
+Running `topgrade` yourself does the same as `monolith update`. If an app needs an
+update but can't get one right now, such as WowUp-CF while it's open, topgrade
+lists it as failed in its summary and still updates the rest.
 
 At each login, Monolith links `~/.config/topgrade.d/monolith.toml` to the image's
 copy, unless you already have a file there. To opt out, replace that link with an
@@ -110,7 +115,7 @@ them current, alongside `monolith update`.
 aren't on Flathub, so Monolith downloads the Flatpak bundle from each project's
 releases and installs it. Flatpak can't update a bundle by itself, so Bazaar,
 `flatpak update` and the daily Flatpak update leave them alone. Only Monolith
-updates them: use **Update** in the dashboard, `monolith update`, or `mjust update`.
+updates them: use **Update** in the dashboard or run `monolith update`.
 If the app needs a runtime, Flatpak takes it from the system's Flatpaks when they
 have the right version, and otherwise downloads it from Flathub. Monolith adds
 Flathub to your account's Flatpak sources if it's missing.
@@ -237,7 +242,7 @@ system-wide copy is left alone; uninstall it first with
 Moonfin.
 
 Moonfin tells you inside the app when a new release is out, but you don't need to
-download it yourself; `monolith update` or `mjust update` takes care of it.
+download it yourself; `monolith update` takes care of it.
 Moonfin can stay open while it updates, and the new version starts the next time
 you open it. Removing it keeps your servers, sign-ins, settings and downloads in
 `~/.var/app/org.moonfin.linux`.

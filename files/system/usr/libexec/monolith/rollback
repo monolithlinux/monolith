@@ -1,0 +1,99 @@
+#!/usr/bin/bash
+# monolith rollback [DATE|list|latest]: go back to an earlier build of your
+# edition and stay on it until `monolith rollback latest`.
+#
+# This switches to the dated tag (ghcr.io/monolithlinux/EDITION:YYYYMMDD) that
+# CI pushes with every build, instead of running `rpm-ostree rollback`. That
+# command refuses to run while an update is staged, which Monolith does daily,
+# and the next automatic update would bring back the build you left.
+set -euo pipefail
+# shellcheck source-path=SCRIPTDIR source=common.sh
+. "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/common.sh"
+
+usage() {
+    cat <<'EOF'
+Usage: monolith rollback [date|list|latest]
+
+  monolith rollback            go back to the build you had before this one
+  monolith rollback list       show the builds you can go back to
+  monolith rollback 20261027   go back to the build from that day
+  monolith rollback latest     return to the newest build and daily updates
+
+Going back pauses system updates, so the build you left doesn't come back with
+the next automatic update. Flatpaks still update. Your apps, files and settings
+stay. Nothing changes until you restart.
+EOF
+}
+
+offline() {
+    die "Couldn't reach ghcr.io to look up Monolith's builds. Check your connection and try again."
+}
+
+list_builds() {
+    local dates current date mark
+    dates="$(registry_dates "$IMAGE_EDITION")" || offline
+    [[ $dates ]] || die "There are no dated $IMAGE_EDITION builds to go back to yet."
+    current="$(build_date "$IMAGE_VERSION" || true)"
+    printf 'Builds of %s you can go back to, newest first:\n\n' "$IMAGE_EDITION"
+    while read -r date; do
+        mark=""
+        [[ $date == "$current" ]] && mark="  (running now)"
+        printf '  %s  %s%s\n' "$date" "$(nice_date "$date")" "$mark"
+    done < <(head -n 30 <<<"$dates")
+    example="$(sed -n 2p <<<"$dates")"
+    printf '\nGo back to one with: monolith rollback %s\n' "${example:-$(head -n 1 <<<"$dates")}"
+}
+
+to_date() {
+    local date="${1//-/}" dates
+    [[ $date =~ ^[0-9]{8}$ ]] || die "Dates look like 20261027 or 2026-10-27. See the builds you can pick with: monolith rollback list"
+    if [[ $IMAGE_TAG == "$date" ]]; then
+        echo "You're already on the build from $(nice_date "$date")."
+        return 0
+    fi
+    dates="$(registry_dates "$IMAGE_EDITION")" || offline
+    grep -qxF -- "$date" <<<"$dates" ||
+        die "There's no $IMAGE_EDITION build from $(nice_date "$date"). See the builds you can pick with: monolith rollback list"
+    printf 'This switches you to the %s build from %s and pauses system updates\nuntil you run monolith rollback latest. Your apps, files and settings stay.\n\n' \
+        "$IMAGE_EDITION" "$(nice_date "$date")"
+    ask "Go back to the build from $(nice_date "$date")?" || { echo "Nothing changed."; return 0; }
+    rebase_to "$IMAGE_EDITION" "$date"
+    printf '\nDone. Restart to start the build from %s.\n' "$(nice_date "$date")"
+}
+
+to_previous() {
+    local previous current
+    [[ $PREVIOUS_VERSION ]] ||
+        die "There's no earlier build on this computer. See the builds you can go back to with: monolith rollback list"
+    previous="$(build_date "$PREVIOUS_VERSION")" ||
+        die "Couldn't tell which day build $PREVIOUS_VERSION is from. Pick a day with: monolith rollback list"
+    current="$(build_date "$IMAGE_VERSION" || true)"
+    if [[ $previous == "$current" ]]; then
+        die "Your previous build is from the same day as this one, so there's no older day to go back to. Pick one with: monolith rollback list"
+    fi
+    to_date "$previous"
+}
+
+to_latest() {
+    if [[ $IMAGE_TAG == latest ]]; then
+        echo "You're already on the newest build, and updates are on."
+        return 0
+    fi
+    ask "Return to the newest $IMAGE_EDITION build and daily updates?" || { echo "Nothing changed."; return 0; }
+    rebase_to "$IMAGE_EDITION" latest
+    printf '\nDone. Restart to start the newest build.\n'
+}
+
+case "${1-}" in
+    -h|--help|help) usage; exit 0 ;;
+esac
+load_image_info || die "Couldn't read your builds from rpm-ostree."
+[[ $IMAGE_EDITION ]] ||
+    die "You're not on one of Monolith's images (${IMAGE_NAME:-unknown}), so there are no Monolith builds to go back to."
+
+case "${1-}" in
+    "") to_previous ;;
+    list) list_builds ;;
+    latest) to_latest ;;
+    *) to_date "$1" ;;
+esac

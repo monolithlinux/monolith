@@ -15,6 +15,19 @@ fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 python3 -c 'import sys, tomllib; tomllib.load(open(sys.argv[1], "rb"))' "$dropin" ||
     fail "$dropin is not valid TOML"
 
+# `monolith update` runs topgrade, so the drop-in must call the catalog itself,
+# and every program it runs must be one the image ships.
+while IFS= read -r command; do
+    program="${command%% *}"
+    [[ $program == /* && -x $repo_root/files/system$program ]] ||
+        fail "the drop-in runs $program, which the image does not ship"
+    [[ $command != *"monolith update"* ]] || fail 'the drop-in would make topgrade start itself again'
+done < <(python3 -c 'import sys, tomllib
+d = tomllib.load(open(sys.argv[1], "rb"))
+for table in ("commands", "post_commands"):
+    for command in d.get(table, {}).values():
+        print(command)' "$dropin")
+
 # Apply the rule the way the user session does at login.
 login() {
     mkdir -p "$1" "$test_root/runtime"

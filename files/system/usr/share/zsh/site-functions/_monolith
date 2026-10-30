@@ -1,0 +1,16 @@
+#compdef monolith mjust ujust
+# Tab completion for monolith and its old names mjust and ujust. monolith
+# itself lists what can follow the words typed so far (monolith __complete),
+# one VALUE<TAB>DESCRIPTION per line.
+local -a candidates described
+local line
+candidates=("${(@f)$(monolith __complete "${(@)words[2,CURRENT-1]}" 2>/dev/null)}")
+for line in "${candidates[@]}"; do
+    [[ -n $line ]] || continue
+    if [[ $line == *$'\t'* ]]; then
+        described+=("${${line%%$'\t'*}//:/\\:}:${line#*$'\t'}")
+    else
+        described+=("${line//:/\\:}")
+    fi
+done
+_describe -t commands 'monolith' described

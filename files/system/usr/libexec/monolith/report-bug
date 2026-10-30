@@ -1,0 +1,82 @@
+#!/usr/bin/bash
+# monolith report-bug: collect the system details that help with a bug report
+# and open a new GitHub issue with them filled in. Nothing leaves the computer
+# until you submit the issue yourself. No user, host or serial names are
+# included.
+set -euo pipefail
+# shellcheck source-path=SCRIPTDIR source=common.sh
+. "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/common.sh"
+
+# The issue form is .github/ISSUE_TEMPLATE/bug_report.yml; its "system" field
+# takes the details.
+issues="${MONOLITH_ISSUES_URL:-https://github.com/monolithlinux/monolith/issues/new}"
+
+case "${1-}" in
+    -h|--help)
+        cat <<'EOF'
+Usage: monolith report-bug
+
+Collects your build, kernel, graphics and Secure Boot details and opens a new
+bug report on GitHub with them filled in. You describe the problem and submit
+it yourself; nothing is sent before that.
+EOF
+        exit 0
+        ;;
+    "") ;;
+    *) die "monolith report-bug doesn't take arguments." ;;
+esac
+
+package_version() {
+    rpm -q --qf '%{VERSION}\n' "$1" 2>/dev/null | head -n 1 | grep -v 'not installed' || echo unknown
+}
+
+details() {
+    local cpu gpus sb system_flatpaks user_flatpaks scheduler="the kernel's own"
+    if load_image_info; then
+        printf 'Monolith: %s\n' "$(os_pretty_name)"
+        printf 'Build: %s from %s:%s (signed: %s)\n' "${IMAGE_VERSION:-unknown}" \
+            "${IMAGE_EDITION:-${IMAGE_NAME:-unknown}}" "${IMAGE_TAG:-?}" "$IMAGE_SIGNED"
+        [[ -z $NEXT_VERSION ]] || printf 'Next restart: %s\n' "$NEXT_VERSION"
+        printf 'Layered packages: %s\n' "${LAYERED:-none}"
+    else
+        printf 'Monolith: %s (rpm-ostree did not answer)\n' "$(os_pretty_name)"
+    fi
+    printf 'Kernel: %s\n' "$(uname -r)"
+    sb="$(mokutil --sb-state 2>/dev/null | head -n 1 || true)"
+    printf 'Secure Boot: %s\n' "${sb:-unknown}"
+    cpu="$(sed -n 's/^model name[[:space:]]*: //p' /proc/cpuinfo 2>/dev/null | head -n 1)"
+    printf 'CPU: %s\n' "${cpu:-unknown}"
+    gpus="$(lspci 2>/dev/null | grep -E 'VGA compatible|3D controller|Display controller' | sed 's/^[^ ]* //' || true)"
+    gpus="${gpus:-unknown}"
+    printf 'Graphics:\n  %s\n' "${gpus//$'\n'/$'\n  '}"
+    [[ ! -r $MONOLITH_SYSFS/module/nvidia/version ]] ||
+        printf 'NVIDIA driver: %s\n' "$(<"$MONOLITH_SYSFS/module/nvidia/version")"
+    printf 'Mesa: %s\n' "$(package_version mesa-dri-drivers)"
+    printf 'Plasma: %s\n' "$(package_version plasma-workspace)"
+    printf 'Session: %s\n' "${XDG_SESSION_TYPE:-unknown}"
+    if [[ -r $MONOLITH_SYSFS/kernel/sched_ext/state && $(<"$MONOLITH_SYSFS/kernel/sched_ext/state") == enabled ]]; then
+        scheduler="$(cat -- "$MONOLITH_SYSFS/kernel/sched_ext/root/ops" 2>/dev/null || echo sched-ext)"
+    fi
+    printf 'CPU scheduler: %s\n' "$scheduler"
+    system_flatpaks="$(flatpak list --system --app --columns=application 2>/dev/null | wc -l || echo 0)"
+    user_flatpaks="$(flatpak list --user --app --columns=application 2>/dev/null | wc -l || echo 0)"
+    printf 'Flatpak apps: %s system, %s for this account\n' "$system_flatpaks" "$user_flatpaks"
+}
+
+text="$(details)"
+printf '%s\n\n' "$text"
+# The form adds the bug label itself; a labels= parameter would send people
+# without triage rights to a 404 page.
+url="$issues?template=bug_report.yml&system=$(jq -sRr @uri <<<"$text")"
+
+if [[ -n ${WAYLAND_DISPLAY-}${DISPLAY-} ]] && command -v xdg-open >/dev/null; then
+    echo "Opening a new bug report in your browser with these details filled in."
+    echo "Nothing is sent until you describe the problem and submit it."
+    xdg-open "$url" >/dev/null 2>&1 || {
+        echo "The browser didn't open. Use this link instead:"
+        echo "$url"
+    }
+else
+    echo "Open this link to start a bug report with these details filled in:"
+    echo "$url"
+fi

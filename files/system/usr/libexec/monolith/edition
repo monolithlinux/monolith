@@ -1,0 +1,63 @@
+#!/usr/bin/bash
+# monolith edition [kde|kde-nvidia]: show your edition, or switch to the other
+# one. Switching always lands on the newest build, which also resumes updates
+# after a rollback.
+set -euo pipefail
+# shellcheck source-path=SCRIPTDIR source=common.sh
+. "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/common.sh"
+
+describe() {
+    case "$1" in
+        kde) echo "KDE, for AMD or Intel graphics, or NVIDIA cards older than the GTX 16 series" ;;
+        kde-nvidia) echo "KDE NVIDIA, with NVIDIA's open driver for GTX 16, RTX 20 and newer cards" ;;
+    esac
+}
+
+usage() {
+    cat <<'EOF'
+Usage: monolith edition [kde|kde-nvidia]
+
+  monolith edition              show your edition
+  monolith edition kde          switch to KDE (AMD, Intel or older NVIDIA graphics)
+  monolith edition kde-nvidia   switch to KDE NVIDIA (GTX 16, RTX 20 and newer)
+
+Your apps, files and settings stay. Nothing changes until you restart.
+EOF
+}
+
+case "${1-}" in
+    -h|--help|help) usage; exit 0 ;;
+esac
+load_image_info || die "Couldn't read your build from rpm-ostree."
+[[ $IMAGE_EDITION ]] ||
+    die "You're not on one of Monolith's images (${IMAGE_NAME:-unknown}), so there's no edition to switch."
+
+name="${1-}"
+if [[ -z $name ]]; then
+    printf "You're on %s.\n\n" "$(describe "$IMAGE_EDITION")"
+    for edition in "${MONOLITH_EDITIONS[@]}"; do
+        [[ $edition == "$IMAGE_EDITION" ]] && continue
+        printf 'To switch to %s:\n    monolith edition %s\n' "$(describe "$edition")" "$edition"
+    done
+    exit 0
+fi
+[[ " ${MONOLITH_EDITIONS[*]} " == *" $name "* ]] ||
+    die "Monolith's editions are ${MONOLITH_EDITIONS[*]}."
+if [[ $name == "$IMAGE_EDITION" && $IMAGE_TAG == latest ]]; then
+    echo "You're already on the $name edition."
+    exit 0
+fi
+
+if [[ $name == kde-nvidia ]] && ! has_nvidia_gpu; then
+    printf "This computer doesn't seem to have an NVIDIA card, and the KDE NVIDIA\nedition is only for those.\n\n"
+elif [[ $name == kde ]] && has_nvidia_gpu; then
+    printf "Your NVIDIA card will run on Nouveau/NVK instead of NVIDIA's driver.\n\n"
+fi
+printf 'This switches you to the newest build of %s.\n' "$(describe "$name")"
+if [[ $IMAGE_TAG != latest ]]; then
+    printf 'System updates come back on, since you leave the older build you went back to.\n'
+fi
+printf 'Your apps, files and settings stay.\n\n'
+ask "Switch to the $name edition?" || { echo "Nothing changed."; exit 0; }
+rebase_to "$name" latest
+printf '\nDone. Restart to start the %s edition.\n' "$name"

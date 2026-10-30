@@ -1,7 +1,14 @@
-# Monolith helper commands. Run `mjust` to list them.
+# Monolith's system commands. Run them as `monolith COMMAND`; `monolith help`
+# lists them by group. /usr/bin/monolith runs them with just, which also keeps
+# the old names mjust and ujust working.
+set quiet
+set no-exit-message
 
-_default:
-    @/usr/bin/mjust --list --list-heading $'Monolith commands:\n' --list-prefix $' - '
+# The scripts behind the commands. /usr/bin/monolith sets this, which lets the
+# tests run the commands from the repository.
+export MONOLITH_LIBEXEC := env("MONOLITH_LIBEXEC", "/usr/libexec/monolith")
 
-import "/usr/share/monolith/just/10-system.just"
-import "/usr/share/monolith/just/60-monolith.just"
+import "just/10-updates.just"
+import "just/20-system.just"
+import "just/30-setup.just"
+import "just/40-troubleshooting.just"

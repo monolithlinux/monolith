@@ -141,7 +141,7 @@ modules:
         - swtpm
         - swtpm-tools
         # Packages the ublue base used to provide.
-        - just                      # mjust front-end
+        - just                      # runs monolith's system commands
         - fuse                      # fusermount for libfuse2 AppImages
         - flatpak-spawn
         - alsa-firmware
@@ -353,16 +353,21 @@ modules:
         dnf5 -y config-manager setopt "fedora-steam".enabled=false
       # Optional upstream CLIs are managed per-user by `monolith`.
       - |
-        # Fail the build if the software manager or its helpers cannot start.
+        # Fail the build if the monolith command, the software catalog or their
+        # helpers cannot start.
         set -euxo pipefail
         test -x /usr/bin/monolith
+        test -x /usr/libexec/monolith/software
         test -x /usr/libexec/monolith/ghostty-themes
         test -x /usr/libexec/monolith/gear-lever-app
         bash -n /usr/bin/monolith
+        bash -n /usr/libexec/monolith/software
         # Help must not need or touch a home directory.
-        HOME=/nonexistent /usr/bin/monolith help >/dev/null
+        HOME=/nonexistent /usr/libexec/monolith/software help >/dev/null
         HOME=/nonexistent python3 -B /usr/libexec/monolith/gear-lever-app --help >/dev/null
-        for command in fzf python3 curl flock readelf flatpak; do
+        # Programs the catalog and the system commands run.
+        for command in fzf python3 curl flock readelf flatpak jq just lspci mokutil xdg-open busctl \
+            topgrade; do
           command -v "$command" >/dev/null
         done
         # Node.js 24 with full locale data, and npm installing global packages
@@ -378,15 +383,31 @@ modules:
           systemd-tmpfiles --user --create /usr/share/user-tmpfiles.d/monolith-topgrade.conf
         test -f "$(readlink "$home/.config/topgrade.d/monolith.toml")"
         rm -rf "$home"
-        # Replacements for the old base: mjust (formerly ujust), FUSE 2, rescue boot, codecs, updates.
-        test -x /usr/bin/mjust
-        HOME=/nonexistent /usr/bin/mjust --list >/dev/null
-        recipes="$(HOME=/nonexistent /usr/bin/mjust --summary | tr ' ' '\n')"
-        test "$(HOME=/nonexistent /usr/bin/ujust --summary)" = "$(HOME=/nonexistent /usr/bin/mjust --summary)"
-        for recipe in monolith monolith-adopt enroll-monolith-secure-boot-key update changelogs \
-            toggle-updates check-idle-power-draw setup-luks-tpm-unlock remove-luks-tpm-unlock; do
-          grep -qx "$recipe" <<<"$recipes"
+        # Monolith's system commands, which replace the old base's ujust. mjust and
+        # ujust are old names for monolith, and old command names still work.
+        help="$(HOME=/nonexistent /usr/bin/monolith help)"
+        test "$(HOME=/nonexistent /usr/bin/mjust)" = "$help"
+        test "$(HOME=/nonexistent /usr/bin/ujust)" = "$help"
+        commands="$(HOME=/nonexistent /usr/bin/monolith __complete | cut -f1)"
+        for command in list install remove update status scheduler rollback edition report-bug \
+            adopt enroll-secure-boot-key changelogs toggle-updates check-idle-power-draw \
+            setup-luks-tpm-unlock remove-luks-tpm-unlock; do
+          grep -qx "$command" <<<"$commands"
         done
+        for command in monolith-adopt enroll-monolith-secure-boot-key device-info upgrade changelog \
+            auto-update; do
+          HOME=/nonexistent /usr/bin/monolith help "$command" >/dev/null
+        done
+        for command in status scheduler rollback edition report-bug; do
+          HOME=/nonexistent "/usr/libexec/monolith/$command" --help >/dev/null
+        done
+        # Tab completion for every name. Bash finds a completion by command name.
+        for command in monolith mjust ujust; do
+          test -f "/usr/share/bash-completion/completions/$command"
+        done
+        test -f /usr/share/fish/vendor_completions.d/monolith.fish
+        test -f /usr/share/zsh/site-functions/_monolith
+        # Replacements for the old base: FUSE 2, rescue boot, codecs, updates.
         test -x /usr/bin/fusermount
         test -x /usr/lib/systemd/system-generators/coreos-sulogin-force-generator
         test -x /usr/libexec/luks-enable-tpm2-autounlock
@@ -405,14 +426,6 @@ modules:
         if [ "$(rpm -E %fedora)" -le 44 ] && [ ! -e /usr/share/fonts/noto-cjk ]; then
           ln -s /usr/share/fonts/google-noto-sans-cjk-fonts /usr/share/fonts/noto-cjk
         fi
-      - |
-        # Bash completion for mjust and its former name ujust: just's dynamic
-        # completion, re-pointed at each command so it lists Monolith's recipes.
-        set -euxo pipefail
-        for cmd in mjust ujust; do
-          JUST_COMPLETE=bash just | sed -E "s/just/${cmd}/g" > "/usr/share/bash-completion/completions/${cmd}"
-          grep -q "complete .*-F _clap_complete_${cmd} ${cmd}" "/usr/share/bash-completion/completions/${cmd}"
-        done
       - |
         # Install Pure system-wide without a runtime plugin manager.
         set -euxo pipefail

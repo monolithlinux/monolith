@@ -1,0 +1,172 @@
+#!/usr/bin/bash
+# monolith status: one screen that says how this computer is doing, and the
+# command that fixes anything that needs attention. It changes nothing.
+set -euo pipefail
+# shellcheck source-path=SCRIPTDIR source=common.sh
+. "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/common.sh"
+
+case "${1-}" in
+    -h|--help)
+        cat <<'EOF'
+Usage: monolith status
+
+Shows the build you're running, waiting updates, Secure Boot, the NVIDIA
+driver, your last full update and the CPU scheduler, and says what to do
+about anything that needs attention. It changes nothing.
+EOF
+        exit 0
+        ;;
+    "") ;;
+    *) die "monolith status doesn't take arguments." ;;
+esac
+
+problems=()
+tips=()
+row() { printf '  %-12s %s\n' "$1" "$2"; }
+
+printf '%s%s%s\n\n' "$BOLD" "$(os_pretty_name)" "$RESET"
+
+# The build, and whether updates reach it.
+if load_image_info; then
+    if [[ $IMAGE_EDITION ]]; then
+        source_text="$IMAGE_EDITION:${IMAGE_TAG:-?}"
+    else
+        source_text="${IMAGE_NAME:-an unknown image}${IMAGE_TAG:+:$IMAGE_TAG}"
+    fi
+    case "$IMAGE_SIGNED" in
+        yes) source_text+=", signed" ;;
+        no) source_text+=", not signed" ;;
+    esac
+    row Build "${IMAGE_VERSION:-unknown} from $source_text"
+    if [[ $IMAGE_SIGNED == no && $IMAGE_EDITION ]]; then
+        problems+=("You're on the unsigned image, so updates aren't checked against Monolith's signature. Switch to the signed one:
+    rpm-ostree rebase ostree-image-signed:docker://$IMAGE_NAME:${IMAGE_TAG:-latest}")
+    fi
+    if [[ $IMAGE_EDITION && $IMAGE_TAG =~ ^[0-9]{8}$ ]]; then
+        row Updates "paused on the build from $(nice_date "$IMAGE_TAG")"
+        problems+=("Updates are paused because you went back to the build from $(nice_date "$IMAGE_TAG"). When you're ready for the newest build:
+    monolith rollback latest")
+    elif [[ $IMAGE_EDITION && $IMAGE_TAG == pr-* ]]; then
+        row Updates "test build from pull request ${IMAGE_TAG#pr-}"
+        problems+=("You're on a test build. To return to the newest regular build:
+    monolith rollback latest")
+    elif [[ $NEXT_VERSION && $STAGED == yes ]]; then
+        row Updates "build $NEXT_VERSION is downloaded; restart to use it"
+    elif [[ $NEXT_VERSION ]]; then
+        row Updates "your next restart starts build $NEXT_VERSION"
+    else
+        row Updates "up to date as of the last check"
+    fi
+    [[ -z ${LAYERED-} ]] || row Layered "${LAYERED// /, }"
+else
+    row Build "unknown, rpm-ostree didn't answer"
+fi
+
+if systemctl -q is-enabled rpm-ostreed-automatic.timer 2>/dev/null; then
+    row "Auto updates" "on, daily"
+else
+    row "Auto updates" "off (turn them on with: monolith toggle-updates enable)"
+fi
+
+# Secure Boot and Monolith's key, which signs the kernel and NVIDIA driver.
+sb="$(mokutil --sb-state 2>&1 || true)"
+key="$(mokutil --test-key "$MONOLITH_MOK_KEY" 2>&1 || true)"
+case "$key" in
+    *"is already enrolled"*) key=enrolled ;;
+    *"enrollment request"*) key=pending ;;
+    *"is not enrolled"*) key=missing ;;
+    *) key=unknown ;;
+esac
+case "$sb" in
+    *"SecureBoot enabled"*)
+        if [[ $key == pending ]]; then
+            row "Secure Boot" "on; Monolith's key waits to be enrolled"
+        else
+            row "Secure Boot" "on"
+        fi
+        ;;
+    *"SecureBoot disabled"*)
+        case "$key" in
+            enrolled) row "Secure Boot" "off; Monolith's key is enrolled, so you can turn it on" ;;
+            pending) row "Secure Boot" "off; Monolith's key waits to be enrolled" ;;
+            *) row "Secure Boot" "off (before you turn it on: monolith enroll-secure-boot-key)" ;;
+        esac
+        ;;
+    *) row "Secure Boot" "not available on this computer" ;;
+esac
+if [[ $key == pending ]]; then
+    problems+=("Monolith's Secure Boot key isn't enrolled yet. Restart, choose Enroll MOK in the MokManager screen, and type the password monolith.")
+fi
+
+# The NVIDIA driver, where it matters.
+nvidia_gpu=no
+has_nvidia_gpu && nvidia_gpu=yes
+if [[ -r $MONOLITH_SYSFS/module/nvidia/version ]]; then
+    row NVIDIA "driver $(<"$MONOLITH_SYSFS/module/nvidia/version") is running"
+elif [[ ${IMAGE_EDITION-} == kde-nvidia && $nvidia_gpu == yes ]]; then
+    row NVIDIA "the driver isn't running"
+    problems+=("NVIDIA's driver didn't load. Its messages from this boot:
+    journalctl -b -k --grep=nvidia
+Cards older than the GTX 16 series need the KDE edition: monolith edition kde")
+elif [[ ${IMAGE_EDITION-} == kde-nvidia ]]; then
+    row NVIDIA "no NVIDIA card found"
+    problems+=("This is the NVIDIA edition, but this computer has no NVIDIA card. The KDE edition fits it better:
+    monolith edition kde")
+elif [[ $nvidia_gpu == yes ]]; then
+    row NVIDIA "card found, running on Nouveau/NVK"
+    tips+=("For NVIDIA's own driver on a GTX 16, RTX 20 or newer card, switch editions: monolith edition kde-nvidia")
+fi
+
+# The last full update, which topgrade records for the login reminder.
+record="${XDG_STATE_HOME:-$HOME/.local/state}/monolith/update-reminder/last-update"
+if [[ -e $record ]]; then
+    days=$((($(date +%s) - $(stat -c %Y -- "$record")) / 86400))
+    case "$days" in
+        0) when=today ;;
+        1) when=yesterday ;;
+        *) when="$days days ago" ;;
+    esac
+    row "Full update" "$when"
+    if ((days >= 7)); then
+        problems+=("Your apps, containers and dev tools haven't been updated for $days days. Update everything:
+    monolith update")
+    fi
+else
+    row "Full update" "not run yet (monolith update updates everything)"
+fi
+
+# The CPU scheduler.
+if [[ -r $MONOLITH_SYSFS/kernel/sched_ext/state ]]; then
+    if [[ $(<"$MONOLITH_SYSFS/kernel/sched_ext/state") == enabled ]]; then
+        name="$(busctl --timeout=5 get-property org.scx.Loader /org/scx/Loader org.scx.Loader CurrentScheduler 2>/dev/null |
+            sed -n 's/^s "\(.*\)"$/\1/p' || true)"
+        if [[ -z $name || $name == unknown ]]; then
+            name="$(cat -- "$MONOLITH_SYSFS/kernel/sched_ext/root/ops" 2>/dev/null || echo sched-ext)"
+        fi
+        mode="$(busctl --timeout=5 get-property org.scx.Loader /org/scx/Loader org.scx.Loader SchedulerMode 2>/dev/null |
+            awk '{print $2}' || true)"
+        case "$mode" in
+            0) name+=" in auto mode" ;;
+            1) name+=" in gaming mode" ;;
+            2) name+=" in power save mode" ;;
+            3) name+=" in low latency mode" ;;
+            4) name+=" in server mode" ;;
+        esac
+        row Scheduler "$name"
+    else
+        row Scheduler "the kernel's own (try: monolith scheduler gaming)"
+    fi
+fi
+
+if ((${#problems[@]})); then
+    printf '\n%sNeeds attention%s\n' "$WARN$BOLD" "$RESET"
+    for problem in "${problems[@]}"; do
+        printf '%s\n' "$problem" | sed '1s/^/  • /; 1!s/^/    /'
+    done
+else
+    printf '\n%sEverything looks fine.%s\n' "$GOOD" "$RESET"
+fi
+for tip in "${tips[@]}"; do
+    printf '\nTip: %s\n' "$tip"
+done
+((${#problems[@]} == 0))

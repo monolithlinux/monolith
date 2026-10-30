@@ -2850,7 +2850,7 @@ class CoexistenceTests(GearLeverAppCase):
                 self.proc.clear()
 
 
-MANAGER = ROOT / "files/system/usr/bin/monolith"
+MANAGER = ROOT / "files/system/usr/libexec/monolith/software"
 PYTHON_SHIM = """#!/bin/sh
 # Run the real Gear Lever app helper with the suite's HTTP and /proc doubles; other Python runs are real.
 if [ "$#" -gt 0 ] && [ "$(readlink -f -- "$1")" = {helper} ]; then

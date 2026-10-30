@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-manager="$repo_root/files/system/usr/bin/monolith"
+manager="$repo_root/files/system/usr/libexec/monolith/software"
 test_root="$(mktemp -d)"
 trap 'rm -rf -- "$test_root"' EXIT
 

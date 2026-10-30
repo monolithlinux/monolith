@@ -3,7 +3,7 @@
 set -euo pipefail
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-manager="$repo_root/files/system/usr/bin/monolith"
+manager="$repo_root/files/system/usr/libexec/monolith/software"
 # A checkout-local TMPDIR also covers non-/tmp paths on normal checkouts.
 test_root="$(mktemp -d "$repo_root/.monolith-software-test.XXXXXX")"
 trap 'rm -rf -- "$test_root"' EXIT
