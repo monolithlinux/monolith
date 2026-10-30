@@ -1,0 +1,3 @@
+# Bash loads completions by command name; the old names share monolith's.
+# shellcheck source=/dev/null
+. /usr/share/bash-completion/completions/monolith

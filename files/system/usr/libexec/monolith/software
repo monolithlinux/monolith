@@ -1,5 +1,8 @@
 #!/usr/bin/bash
-# Install optional software per-user without removing user data on uninstall.
+# Monolith Software, the app catalog behind `monolith`: install optional
+# software per-user without removing user data on uninstall. /usr/bin/monolith
+# runs this for `monolith` on its own and for list, install, remove and
+# update with app IDs; everything else there is a system command.
 
 set -Eeuo pipefail
 # Keep errexit inside command substitutions so a failed probe cannot be ignored.
@@ -13,6 +16,8 @@ MANAGED_ROOT="$DATA_HOME/monolith/software"
 STATE_ROOT="$STATE_HOME/monolith/software"
 GHOSTTY_THEMES_HELPER="$(dirname -- "$SELF")/ghostty-themes"
 GEAR_LEVER_APP_HELPER="$(dirname -- "$SELF")/gear-lever-app"
+# The System tools menu runs system commands through the monolith command.
+MONOLITH_COMMAND="$(dirname -- "$SELF")/../../bin/monolith"
 GEAR_LEVER_ID=it.mijorus.gearlever
 GEAR_LEVER_REF=https://dl.flathub.org/repo/appstream/it.mijorus.gearlever.flatpakref
 GEAR_LEVER_MIN_VERSION=4.6.2
@@ -31,7 +36,7 @@ PICKED=""
 ONLY_IF_OUTDATED=0
 UP_TO_DATE=0
 
-readonly SELF BIN_DIR DATA_HOME STATE_HOME MANAGED_ROOT STATE_ROOT GHOSTTY_THEMES_HELPER GEAR_LEVER_APP_HELPER
+readonly SELF BIN_DIR DATA_HOME STATE_HOME MANAGED_ROOT STATE_ROOT GHOSTTY_THEMES_HELPER GEAR_LEVER_APP_HELPER MONOLITH_COMMAND
 readonly GEAR_LEVER_ID GEAR_LEVER_REF GEAR_LEVER_MIN_VERSION FLATHUB_REPO QUIT_TOKEN HELPER_UP_TO_DATE
 
 ALL_TOOLS=(tea superfile claude codex opencode omp herdr wowup-cf r2modman prismlauncher epic-games moonfin plezy sidra photocraft vectorcraft filmcraft lightcraft pdfcraft effectcraft designcraft figcraft wordcraft soundcraft deckcraft cadcraft gridcraft fluxer fluxer-canary ghostty-themes)
@@ -2101,7 +2106,7 @@ show_flatpak_app_details() {
     esac
     if release="$(flatpak_bundle_release "$tool")"; then
         printf 'Source:   GitHub, %s (SHA256-verified bundle)\n' "${release%%$'\t'*}"
-        printf 'Updates:  only through Monolith, such as monolith update or mjust update\n'
+        printf 'Updates:  only through Monolith, such as monolith update\n'
     else
         printf 'Source:   %s (%s)\n' "$(flatpak_app_source "$tool")" "$id"
     fi
@@ -2333,6 +2338,7 @@ interactive_menu() {
             "$(category_label "Appearance" "${APPEARANCE_TOOLS[@]}")"$'\t'"appearance"
             "All applications"$'\t'"all"
             "Update installed ($marked managed)"$'\t'"update"
+            "$(printf '%-16s  %s' "System tools" "Status, updates, scheduler, rollback and more")"$'\t'"system"
             "Exit"$'\t'"exit"
         )
         clear_screen
@@ -2347,9 +2353,58 @@ interactive_menu() {
             appearance) manage_category "Appearance" "${APPEARANCE_TOOLS[@]}" ;;
             all) manage_category "All applications" "${ALL_TOOLS[@]}" ;;
             update) menu_update "${ALL_TOOLS[@]}" ;;
+            system) system_menu ;;
             exit) return 0 ;;
         esac
     done
+}
+
+# System tools: the system commands from `monolith help`, below the catalog.
+# `monolith __menu` lists them as NAME<TAB>DESCRIPTION<TAB>CHOICES, where
+# CHOICES is VALUE=LABEL;VALUE=LABEL and the value - means no argument.
+system_menu() {
+    local options=() name description choices
+    local -A choices_of=()
+    while true; do
+        options=()
+        choices_of=()
+        while IFS=$'\t' read -r name description choices; do
+            [ -n "$name" ] || continue
+            options+=("$(printf '%-24s  %s' "$name" "$description")"$'\t'"command:$name")
+            choices_of[$name]="$choices"
+        done < <("$MONOLITH_COMMAND" __menu 2>/dev/null)
+        options+=("Back"$'\t'"back")
+        clear_screen
+        pick "System tools" "$(menu_help "Monolith Software › System tools" run)" "${options[@]}" || return 0
+        case "$PICKED" in
+            back) return 0 ;;
+            command:*)
+                name="${PICKED#command:}"
+                run_system_command "$name" "${choices_of[$name]-}"
+                ;;
+        esac
+    done
+}
+
+run_system_command() {
+    local name="$1" choices="$2" entry entries=() options=() argument=()
+    if [ -n "$choices" ]; then
+        IFS=';' read -r -a entries <<<"$choices"
+        for entry in "${entries[@]}"; do
+            options+=("${entry#*=}"$'\t'"value:${entry%%=*}")
+        done
+        options+=("Back"$'\t'"back")
+        clear_screen
+        pick "$name" "$(menu_help "Monolith Software › System tools › $name" run)" "${options[@]}" || return 0
+        case "$PICKED" in
+            back) return 0 ;;
+            value:-) ;;
+            value:*) argument=("${PICKED#value:}") ;;
+        esac
+    fi
+    clear_screen
+    "$MONOLITH_COMMAND" "$name" "${argument[@]}" || true
+    pause_after_action
 }
 
 usage() {
@@ -2397,6 +2452,8 @@ main() {
             ;;
         update) update_tools "$@" ;;
         __action) internal_action "$@" ;;
+        # App IDs and names for `monolith __complete`.
+        __ids) for tool in "${ALL_TOOLS[@]}"; do printf '%s\t%s\n' "$tool" "$(tool_name "$tool")"; done ;;
         help|-h|--help) usage ;;
         *) die "unknown command: $command (run monolith help)" ;;
     esac

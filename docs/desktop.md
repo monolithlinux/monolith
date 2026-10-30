@@ -114,14 +114,14 @@ or `--global`), then log out and back in.
 
 ## Update reminder
 
-The system and your Flatpaks update by themselves every day. `topgrade`, which
-`mjust update` also runs, updates the rest: apps from `monolith`, Distrobox
-containers, and developer tools such as rustup and Claude Code.
+The system and your Flatpaks update by themselves every day. `monolith update`
+updates the rest with topgrade: apps from `monolith`, Distrobox containers, and
+developer tools such as rustup and Claude Code.
 
 If topgrade hasn't finished a run for a week, a notification at login reminds you,
-at most once a week. **Update now** opens Ghostty and runs `topgrade`, and keeps the
-window open afterwards so you can read the summary. A new account gets its first
-reminder a week after its first login at the earliest.
+at most once a week. **Update now** opens Ghostty and runs `monolith update`, and
+keeps the window open afterwards so you can read the summary. A new account gets
+its first reminder a week after its first login at the earliest.
 
 Every finished run counts, even one where some steps failed. topgrade records it
 through the post command in `~/.config/topgrade.d/monolith.toml`, so if you opted

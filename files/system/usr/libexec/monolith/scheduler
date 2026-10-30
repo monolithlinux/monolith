@@ -1,0 +1,197 @@
+#!/usr/bin/bash
+# monolith scheduler [MODE] [SCHEDULER]: pick a sched-ext CPU scheduler mode,
+# keep it across restarts, and switch to it now.
+#
+# scx_loader, enabled in the image, starts the scheduler named in its config at
+# boot. scx-tools ships /usr/share/scx_loader/config.toml with every setting
+# commented out, so the kernel's own scheduler runs until you pick one here.
+# Your choice goes into /etc/scx_loader/config.toml (or /etc/scx_loader.toml if
+# you already use that one), which scx_loader reads instead of the shipped
+# file. A new file starts as a copy of the shipped one, and anything else in
+# the file stays as it is.
+set -euo pipefail
+# shellcheck source-path=SCRIPTDIR source=common.sh
+. "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/common.sh"
+
+# Tests point these at stand-ins for /etc and /usr/share.
+etc="${MONOLITH_ETC:-/etc}"
+vendor="${MONOLITH_VENDOR:-/usr/share}"
+marker="# Set by monolith scheduler."
+# LAVD was built for games and has a setting for every mode; see docs/commands.md.
+default_scheduler=scx_lavd
+# The schedulers scx_loader 1.1 knows how to run.
+supported=(scx_beerland scx_bpfland scx_cake scx_cosmos scx_flash scx_flow scx_forge scx_lavd
+    scx_mlfq scx_pandemonium scx_p2dq scx_tickless scx_rustland scx_rusty)
+
+usage() {
+    cat <<'EOF'
+Usage: monolith scheduler [mode] [scheduler]
+
+  monolith scheduler            show the scheduler running now
+  monolith scheduler gaming     scx_lavd tuned for low latency
+  monolith scheduler powersave  scx_lavd tuned for battery life
+  monolith scheduler auto       scx_lavd adjusts itself to the load
+  monolith scheduler off        back to the kernel's own scheduler
+
+lowlatency and server work too. To use another sched-ext scheduler, name it
+after the mode, such as: monolith scheduler gaming bpfland
+
+The choice stays after a restart. Turning one on takes your password once.
+EOF
+}
+
+state_file="$MONOLITH_SYSFS/kernel/sched_ext/state"
+work=""
+trap '[[ -z $work ]] || rm -rf -- "$work"' EXIT
+
+# active_config: the config scx_loader reads. It takes the first of these that
+# exists and ignores the rest.
+active_config() {
+    local path
+    for path in "$etc/scx_loader/config.toml" "$etc/scx_loader.toml" \
+        "$vendor/scx_loader/config.toml" "$vendor/scx_loader.toml"; do
+        if [[ -e $path ]]; then
+            printf '%s\n' "$path"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# config_path: the config in /etc to write.
+config_path() {
+    local active
+    if active="$(active_config)" && [[ $active == "$etc"/* ]]; then
+        printf '%s\n' "$active"
+    else
+        printf '%s\n' "$etc/scx_loader/config.toml"
+    fi
+}
+
+toml_ok() {
+    python3 -c 'import sys, tomllib; tomllib.load(open(sys.argv[1], "rb"))' "$1" 2>/dev/null
+}
+
+running() {
+    [[ -r $state_file && $(<"$state_file") == enabled ]]
+}
+
+show() {
+    local config default="" ops
+    if config="$(active_config)" && [[ -r $config ]]; then
+        default="$(python3 -c 'import sys, tomllib
+c = tomllib.load(open(sys.argv[1], "rb"))
+if c.get("default_sched"):
+    print(c["default_sched"], c.get("default_mode", "Auto"))' "$config" 2>/dev/null || true)"
+    fi
+    if [[ ! -e $state_file ]]; then
+        echo "This kernel can't run sched-ext schedulers."
+        return 0
+    fi
+    if running; then
+        ops="$(cat -- "$MONOLITH_SYSFS/kernel/sched_ext/root/ops" 2>/dev/null || echo unknown)"
+        echo "Running now: the sched-ext scheduler $ops."
+    else
+        echo "Running now: the kernel's own scheduler."
+    fi
+    if [[ $default ]]; then
+        echo "At boot: ${default% *} in ${default#* } mode."
+    else
+        echo "At boot: the kernel's own scheduler."
+    fi
+    echo
+    echo "Pick a mode with: monolith scheduler gaming|powersave|auto|off"
+}
+
+mode_value() {
+    case "$1" in
+        auto) echo Auto ;;
+        gaming) echo Gaming ;;
+        powersave) echo PowerSave ;;
+        lowlatency) echo LowLatency ;;
+        server) echo Server ;;
+    esac
+}
+
+mode_text() {
+    case "$1" in
+        powersave) echo "Power save mode" ;;
+        lowlatency) echo "Low latency mode" ;;
+        *) echo "${1^} mode" ;;
+    esac
+}
+
+# write_config MODE SCHEDULER: set the top-level default_sched and default_mode
+# and keep everything else from the config scx_loader reads now.
+write_config() {
+    local mode="$1" scheduler="$2" config base
+    config="$(config_path)"
+    base="$(active_config || true)"
+    work="$(mktemp -d)"
+    : >"$work/old"
+    if [[ -n $base ]]; then
+        if [[ -r $base ]]; then cat -- "$base"; else sudo cat -- "$base"; fi >"$work/old"
+        # scx_loader won't start with a config it can't read, so leave a broken one alone.
+        toml_ok "$work/old" ||
+            die "$base isn't valid TOML, so nothing was changed. Fix it or move it away, then try again."
+    fi
+    {
+        if [[ $mode == off ]]; then
+            printf '%s Off: no sched-ext scheduler starts at boot.\n' "$marker"
+        else
+            printf '%s\ndefault_sched = "%s"\ndefault_mode = "%s"\n' "$marker" "$scheduler" "$(mode_value "$mode")"
+        fi
+        # Top-level keys end where the first [table] begins.
+        awk -v marker="$marker" '
+            /^[[:space:]]*\[/ { table = 1 }
+            !table && /^[[:space:]]*default_(sched|mode)[[:space:]]*=/ { next }
+            index($0, marker) == 1 { next }
+            { print }' "$work/old"
+    } >"$work/new"
+    toml_ok "$work/new" || die "Couldn't add your choice to $config without breaking it, so nothing was changed."
+    sudo install -D -m 0644 -- "$work/new" "$config"
+}
+
+wait_for() {
+    local want="$1" tries=0
+    while ((tries < 20)); do
+        if [[ $want == on ]] && running; then return 0; fi
+        if [[ $want == off ]] && ! running; then return 0; fi
+        sleep 0.5
+        tries=$((tries + 1))
+    done
+    return 1
+}
+
+mode="${1-}"
+scheduler="${2-}"
+case "$mode" in
+    -h|--help|help) usage; exit 0 ;;
+    "") show; exit 0 ;;
+    auto|gaming|powersave|lowlatency|server|off) ;;
+    *) die "There's no $mode mode. Pick gaming, powersave, auto or off; monolith scheduler --help explains them." ;;
+esac
+[[ -e $state_file ]] || die "This kernel can't run sched-ext schedulers."
+
+if [[ $mode == off ]]; then
+    [[ -z $scheduler ]] || die "monolith scheduler off doesn't take a scheduler name."
+else
+    scheduler="${scheduler:-$default_scheduler}"
+    scheduler="scx_${scheduler#scx_}"
+    [[ " ${supported[*]} " == *" $scheduler "* ]] ||
+        die "scx_loader can't run $scheduler. It can run: ${supported[*]//scx_/}"
+    command -v "$scheduler" >/dev/null || die "$scheduler isn't installed."
+fi
+
+write_config "$mode" "$scheduler"
+systemctl -q is-enabled scx_loader.service 2>/dev/null || sudo systemctl enable scx_loader.service
+# scx_loader reads its config only when it starts.
+sudo systemctl restart scx_loader.service
+
+if [[ $mode == off ]]; then
+    wait_for off || die "A sched-ext scheduler is still running. See what happened with: journalctl -b -u scx_loader"
+    echo "The kernel's own scheduler is back, and no sched-ext scheduler starts at boot."
+else
+    wait_for on || die "$scheduler didn't start. See what went wrong with: journalctl -b -u scx_loader"
+    echo "$(mode_text "$mode") is on ($scheduler). It stays on after you restart."
+fi

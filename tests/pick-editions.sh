@@ -35,6 +35,8 @@ check .github/workflows/generate-iso.yml ''
 check .github/workflows/generate_release.yml ''
 check tests/pick-editions.sh ''
 check news/announcements.toml ''
+check .github/ISSUE_TEMPLATE/bug_report.yml ''
+check files/system/usr/libexec/monolith/software "$all"
 # Multiple changed paths are deduplicated and keep the canonical order.
 check $'recipes/nvidia.yml\nrecipes/kde.yml\nrecipes/recipe-kde.yml' "$all"
 

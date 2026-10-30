@@ -85,7 +85,7 @@ age last-reminder 2
 run
 ! shown || fail 'reminded again two days after a reminder'
 
-# Update now opens a terminal that stays open after topgrade.
+# Update now opens a terminal that runs monolith update (topgrade) and stays open.
 age last-reminder 7
 : >"$test_root/click"
 run
@@ -93,7 +93,7 @@ run
 age last-reminder 7
 printf 'update\n' >"$test_root/click"
 run
-[ "$(cat "$log/ghostty")" = '--wait-after-command=true -e topgrade' ] ||
+[ "$(cat "$log/ghostty")" = '--wait-after-command=true -e monolith update' ] ||
     fail "Update now ran: $(cat "$log/ghostty" 2>/dev/null)"
 
 # Without a notification service, the next login tries again.

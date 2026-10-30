@@ -1,0 +1,9 @@
+# Tab completion for monolith and its old names mjust and ujust. monolith
+# itself lists what can follow the words typed so far (monolith __complete).
+_monolith() {
+    local current="${COMP_WORDS[COMP_CWORD]}" candidates IFS=$'\n'
+    candidates="$(monolith __complete "${COMP_WORDS[@]:1:COMP_CWORD-1}" 2>/dev/null | cut -f1)"
+    # shellcheck disable=SC2207
+    COMPREPLY=($(compgen -W "$candidates" -- "$current"))
+}
+complete -F _monolith monolith mjust ujust

@@ -1,14 +1,11 @@
-# Monolith user helpers.
+# vim: set ft=make :
+# Setting up an account, Secure Boot and disk unlocking.
 
-# Per-user optional software manager.
-alias software := monolith
-alias monolith-software := monolith
+alias monolith-adopt := adopt
 
-monolith:
-    monolith
-
-# Adopt an existing home directory after rebasing to Monolith from another image: install the skel defaults new accounts get and rebuild the font cache.
-monolith-adopt:
+# Give an older account Monolith's default settings
+[group('Setup')]
+adopt:
     #!/usr/bin/bash
     set -euo pipefail
     # Copy defaults missed by accounts created before rebasing to Monolith.
@@ -36,10 +33,11 @@ monolith-adopt:
     echo "Rebuilt the user font cache."
     echo "Done. Log out and back in so running apps pick everything up."
 
-alias enroll-secure-boot-key := enroll-monolith-secure-boot-key
+alias enroll-monolith-secure-boot-key := enroll-secure-boot-key
 
-# Enroll the MOK after rebasing instead of installing from an ISO.
-enroll-monolith-secure-boot-key:
+# Let Secure Boot trust Monolith's kernel and drivers
+[group('Setup')]
+enroll-secure-boot-key:
     #!/usr/bin/bash
     set -euo pipefail
     ENROLLMENT_PASSWORD="monolith"
@@ -52,3 +50,13 @@ enroll-monolith-secure-boot-key:
     echo -e "$ENROLLMENT_PASSWORD\n$ENROLLMENT_PASSWORD" | sudo mokutil --import "$SECUREBOOT_KEY"
     echo 'At the next reboot the MokManager UEFI menu appears (QWERTY input).'
     echo 'Select "Enroll MOK", then enter the password "monolith".'
+
+# Unlock your encrypted disk with the TPM at boot
+[group('Setup')]
+setup-luks-tpm-unlock:
+    sudo /usr/libexec/luks-enable-tpm2-autounlock
+
+# Stop unlocking your encrypted disk with the TPM
+[group('Setup')]
+remove-luks-tpm-unlock:
+    sudo /usr/libexec/luks-disable-tpm2-autounlock

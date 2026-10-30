@@ -34,6 +34,23 @@ jobs:
           tests/monolith-topgrade.sh
           tests/opendeck-flatpak-migration.sh
           tests/monolith-update-reminder.sh
+      - name: Test the monolith command
+        run: |
+          # The versions in the image: just 1.59 from Fedora 44, and fish 4.6.
+          mkdir -p "$RUNNER_TEMP/bin"
+          cd "$RUNNER_TEMP"
+          curl -fsSLO https://github.com/casey/just/releases/download/1.59.0/just-1.59.0-x86_64-unknown-linux-musl.tar.gz
+          curl -fsSLO https://github.com/fish-shell/fish-shell/releases/download/4.6.0/fish-4.6.0-linux-x86_64.tar.xz
+          sha256sum -c <<'EOF'
+          409044617b6f06517c1035e55ca38c8c856ff8b650e41bc2aa1ef82d5903a23e  just-1.59.0-x86_64-unknown-linux-musl.tar.gz
+          497c9c4e3fb3c006fe9d2c9a5a5447c1c90490b6b4ce6bfaf75e53b495c82f36  fish-4.6.0-linux-x86_64.tar.xz
+          EOF
+          tar -xzf just-1.59.0-x86_64-unknown-linux-musl.tar.gz -C bin just
+          tar -xJf fish-4.6.0-linux-x86_64.tar.xz -C bin fish
+          sudo apt-get update && sudo apt-get install -y zsh
+          cd "$GITHUB_WORKSPACE"
+          PATH="$RUNNER_TEMP/bin:$PATH" tests/monolith-command.sh
+          tests/monolith-system-commands.sh
       - name: Test edition selection
         run: bash tests/pick-editions.sh
       - name: Test Monolith News

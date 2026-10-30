@@ -63,7 +63,7 @@ your account is missing and rebuilds the font cache. If you already have a
 different topgrade configuration, it's backed up first.
 
 ```bash
-mjust monolith-adopt
+monolith adopt
 ```
 
 **Turn on Secure Boot support.** Monolith signs its kernel and NVIDIA modules with
@@ -71,7 +71,7 @@ its own key, which your computer needs to trust once. Skip this if Secure Boot i
 off.
 
 ```bash
-mjust enroll-monolith-secure-boot-key
+monolith enroll-secure-boot-key
 ```
 
 Reboot, choose **Enroll MOK → Continue** in the MokManager screen, and type
@@ -90,8 +90,8 @@ takes effect the next time you boot, and a Flatpak update the next time you open
 the app.
 
 Everything else, such as apps from `monolith`, Distrobox containers and tools like
-rustup or Claude Code, updates when you run `topgrade` (or `mjust update`, which
-does the same). If you haven't run it for a week, Monolith reminds you at login.
+rustup or Claude Code, updates when you run `monolith update`. If you haven't run
+it for a week, Monolith reminds you at login.
 
 When something needs you to act, Monolith News opens at login and explains what to
 do.
@@ -114,10 +114,21 @@ settings and data when you remove one.
 The [Monolith Software guide](docs/software.md) explains how each app is installed
 and updated, and what removing it keeps.
 
-## Helper commands
+## System commands
 
-Run `mjust` to see Monolith's helper commands for updates, firmware, logs, Secure
-Boot and unlocking your disk with the TPM. The old name, `ujust`, still works.
+`monolith help` lists Monolith's other commands, for updates, going back to an
+earlier build, firmware, Secure Boot, logs and more. You'll also find them under
+**System tools** when you run `monolith`. A few worth knowing:
+
+```bash
+monolith status             # check this computer and see what needs attention
+monolith rollback           # go back to the build you had before the last update
+monolith scheduler gaming   # switch on a CPU scheduler tuned for low latency
+monolith report-bug         # start a bug report with your system details
+```
+
+[Monolith's commands](docs/commands.md) explains each one. The old names `mjust`
+and `ujust` still work.
 
 ## Checking an image's signature
 

@@ -1,3 +1,4 @@
 #!/usr/bin/bash
-# Former name of mjust, kept so existing commands and habits keep working.
-exec /usr/bin/mjust "$@"
+# The Universal Blue name of the system commands, which `monolith` runs now.
+# Kept so old habits keep working.
+exec "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/mjust" "$@"

@@ -1,8 +1,9 @@
-# topgrade also updates software installed with `monolith`.
+# topgrade also updates the apps installed from Monolith's catalog.
 # Linked into each account as ~/.config/topgrade.d/monolith.toml by
 # /usr/share/user-tmpfiles.d/monolith-topgrade.conf.
+# `monolith update` runs topgrade, so this calls the catalog directly.
 [commands]
-"Monolith software" = "monolith update"
+"Monolith software" = "/usr/libexec/monolith/software update"
 
 # Note each finished run, even one with failed steps, for the login update
 # reminder (/usr/libexec/monolith/update-reminder).

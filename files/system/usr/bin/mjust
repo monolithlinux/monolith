@@ -1,3 +1,9 @@
 #!/usr/bin/bash
-# Monolith's `just` front-end; recipes live in /usr/share/monolith/just/.
-JUST_JUSTFILE=/usr/share/monolith/justfile exec /usr/bin/just "$@"
+# Former name of the system commands, which `monolith` runs now. Kept so old
+# habits keep working: `mjust` on its own lists every command, and
+# `mjust update` is `monolith update`.
+monolith="$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/monolith"
+if [ "$#" -eq 0 ]; then
+    exec "$monolith" help
+fi
+exec "$monolith" "$@"

@@ -28,6 +28,34 @@
 #   files/kde/usr/bin/monolith-news --preview news/announcements.toml
 
 [[announcements]]
+id = "2026-10-30-monolith-command"
+date = 2026-10-30
+title = "mjust is now part of the monolith command"
+category = "System"
+body = """
+`monolith` used to be just the app catalog, and Monolith's system commands lived
+under `mjust`. Now one command does both. Run `monolith` and the catalog opens
+like before, with a new **System tools** entry for everything else.
+
+Some of the commands are new. `monolith status` checks updates, Secure Boot,
+your graphics driver and more, and tells you if something needs attention.
+`monolith rollback` takes you back to the build you had before the last update,
+and `monolith report-bug` starts a GitHub bug report with your system details
+already filled in.
+
+For games, you can try `monolith scheduler gaming`. It switches on a CPU
+scheduler tuned for low latency and keeps it on after a restart. How much it
+helps depends on the game, and `monolith scheduler off` switches back.
+
+`monolith update` now updates everything, like `mjust update` did. Run
+`monolith help` to see every command. `mjust` and `ujust` still work.
+"""
+note = "Don't see System tools yet? Update Monolith and restart first."
+links = [
+  { label = "Monolith's commands", url = "https://github.com/monolithlinux/monolith/blob/main/docs/commands.md" },
+]
+
+[[announcements]]
 id = "2026-10-24-epic-games-launcher"
 date = 2026-10-24
 title = "The Epic Games Launcher is in Monolith Software"

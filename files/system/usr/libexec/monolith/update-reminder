@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Remind the user at login to run topgrade when it has not finished a run for a
-# week. The OS and Flatpaks update daily on their own; topgrade, which
-# `mjust update` also runs, updates Monolith software, Distrobox containers,
-# and developer tools too.
+# Remind the user at login to update everything when topgrade has not finished
+# a run for a week. The OS and Flatpaks update daily on their own; topgrade,
+# which `monolith update` runs, updates the apps from Monolith's catalog,
+# Distrobox containers, and developer tools too.
 #
 #   update-reminder           check at login; started by
 #                             /etc/xdg/autostart/monolith-update-reminder.desktop
@@ -57,11 +57,11 @@ done
 touch -- "$last_reminder"
 # notify-send waits for the notification to close and prints the chosen action.
 action="$(notify-send --app-name=Monolith --icon=monolith-logo \
-    --action=update='Update now' 'Time to run topgrade' \
-    "It's been $since since you last ran topgrade. Run it to keep everything up to date.")" ||
+    --action=update='Update now' 'Time to update' \
+    "It's been $since since you last updated everything. Run monolith update to bring your apps and tools up to date.")" ||
     exit 0
 
 if [[ $action == update ]]; then
     # Keep the window open afterwards so topgrade's summary can be read.
-    exec ghostty --wait-after-command=true -e topgrade
+    exec ghostty --wait-after-command=true -e monolith update
 fi

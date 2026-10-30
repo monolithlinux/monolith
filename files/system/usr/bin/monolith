@@ -1,0 +1,298 @@
+#!/usr/bin/bash
+# monolith: one command for Monolith.
+#
+#   monolith                      open the app catalog (Monolith Software)
+#   monolith list                 show every app and its state
+#   monolith install|remove APP   install or remove apps
+#   monolith update [APP...]      update everything, or only the apps named
+#   monolith COMMAND [ARG]        run a system command, such as status
+#   monolith help                 show every command
+#
+# The catalog is /usr/libexec/monolith/software. The system commands are just
+# recipes in /usr/share/monolith/just/; the old names mjust and ujust run this.
+set -euo pipefail
+
+self="$(readlink -f -- "${BASH_SOURCE[0]}")"
+usr="$(cd -- "$(dirname -- "$self")/.." && pwd)"
+software="$usr/libexec/monolith/software"
+justfile="$usr/share/monolith/justfile"
+export MONOLITH_LIBEXEC="$usr/libexec/monolith"
+
+# shellcheck source-path=SCRIPTDIR source=../libexec/monolith/common.sh
+. "$MONOLITH_LIBEXEC/common.sh"
+
+# The app commands, listed first in help as NAME, USAGE and DESCRIPTION.
+app_rows=(
+    "list"$'\x1f'""$'\x1f'"Show every app and whether it's installed"
+    "install"$'\x1f'"<app>..."$'\x1f'"Install apps"
+    "remove"$'\x1f'"<app>..."$'\x1f'"Remove apps but keep their settings and data"
+    "update"$'\x1f'"<app>..."$'\x1f'"Update only the apps you name"
+)
+
+# Usage shown in help when the recipe's own would say too much.
+declare -A usage_override=([scheduler]="[mode]")
+
+# Choices offered by the System tools menu and by tab completion, as
+# VALUE=LABEL;VALUE=LABEL. The value - runs the command without an argument.
+declare -A choices=(
+    [scheduler]="-=Show the current scheduler;gaming=Gaming: scx_lavd tuned for low latency;powersave=Power save: scx_lavd tuned for battery life;auto=Auto: scx_lavd adjusts itself to the load;off=Off: back to the kernel's own scheduler"
+    [edition]="-=Show your edition;kde=KDE: AMD or Intel graphics, or older NVIDIA cards;kde-nvidia=KDE NVIDIA: NVIDIA's driver for GTX 16, RTX 20 and newer"
+    [rollback]="-=Go back to the build you had before;list=Show the builds you can go back to;latest=Return to the newest build and daily updates"
+    [toggle-updates]="status=Show whether they're on;enable=Turn them on;disable=Turn them off"
+)
+
+just_json() {
+    just --justfile "$justfile" --dump --dump-format json
+}
+
+# recipes: NAME, GROUP, USAGE, DESCRIPTION and the number of arguments a recipe
+# takes, separated by \x1f, in file order. Private recipes and aliases are left
+# out.
+recipes() {
+    local order
+    order="$(just --justfile "$justfile" --summary --unsorted)"
+    just_json | jq -r --arg order "$order" '
+        . as $root
+        | ($order | split(" "))[] as $name
+        | $root.recipes[$name] // empty
+        | select(.private | not)
+        | [ .name,
+            ([.attributes[] | objects | .group // empty][0] // "Other"),
+            ([.parameters[] | .kind as $kind | (.name | ascii_downcase) as $p
+                | (if .default == null then "<\($p)>" else "[\($p)]" end)
+                | if $kind == "singular" then . else . + "..." end] | join(" ")),
+            (.doc // ""),
+            (if any(.parameters[]; .kind != "singular") then "many" else (.parameters | length | tostring) end)
+          ] | join("\u001f")'
+}
+
+# runnable: names that run a recipe, which are recipes and their aliases.
+runnable() {
+    just_json | jq -r '(.recipes | to_entries[] | select(.value.private | not) | .key), (.aliases | keys[])'
+}
+
+# max_arguments NAME: how many arguments a recipe or alias takes ("many" for
+# no limit).
+max_arguments() {
+    just_json | jq -r --arg name "$1" '
+        (.aliases[$name].target // $name) as $recipe
+        | .recipes[$recipe].parameters
+        | if any(.[]; .kind != "singular") then "many" else (length | tostring) end'
+}
+
+header() {
+    printf '%s%s%s' "$BOLD" "$(os_pretty_name)" "$RESET"
+    if load_image_info 2>/dev/null && [[ $IMAGE_VERSION ]]; then
+        printf ' · build %s' "$IMAGE_VERSION"
+        [[ $IMAGE_TAG == latest || -z $IMAGE_TAG ]] || printf ' (%s)' "$IMAGE_TAG"
+        printf '\n'
+        if [[ $NEXT_VERSION ]]; then
+            printf 'Your next restart starts build %s.\n' "$NEXT_VERSION"
+        fi
+    else
+        printf '\n'
+    fi
+}
+
+show_help() {
+    local rows=() row name group usage description args width=0 label current=""
+    for row in "${app_rows[@]}"; do
+        IFS=$'\x1f' read -r name usage description <<<"$row"
+        rows+=("$name"$'\x1f'"Apps"$'\x1f'"$usage"$'\x1f'"$description")
+    done
+    while IFS=$'\x1f' read -r name group usage description args; do
+        usage="${usage_override[$name]-$usage}"
+        rows+=("$name"$'\x1f'"$group"$'\x1f'"$usage"$'\x1f'"$description")
+    done < <(recipes)
+    for row in "${rows[@]}"; do
+        IFS=$'\x1f' read -r name group usage description <<<"$row"
+        label="$name${usage:+ $usage}"
+        ((${#label} > width)) && width=${#label}
+    done
+
+    header
+    printf '\nRun %smonolith%s on its own to open the app catalog, or add a command:\n' "$BOLD" "$RESET"
+    # Print groups in order of first appearance, Apps first.
+    local groups=() seen=" "
+    for row in "${rows[@]}"; do
+        IFS=$'\x1f' read -r name group usage description <<<"$row"
+        [[ $seen == *" $group "* ]] || { groups+=("$group"); seen+="$group "; }
+    done
+    for current in "${groups[@]}"; do
+        printf '\n%s%s%s\n' "$BOLD" "$current" "$RESET"
+        for row in "${rows[@]}"; do
+            IFS=$'\x1f' read -r name group usage description <<<"$row"
+            [[ $group == "$current" ]] || continue
+            label="$name${usage:+ $usage}"
+            printf '  %s%s%s%s%*s  %s\n' "$ACCENT" "$name" "$RESET" "${usage:+ $usage}" \
+                $((width - ${#label})) "" "$description"
+        done
+    done
+    printf '\nThe old names mjust and ujust still work.\n'
+}
+
+# help_for NAME: the usage line of one command; commands with choices also
+# explain them.
+help_for() {
+    local name="$1" row app group usage description args target
+    for row in "${app_rows[@]}"; do
+        IFS=$'\x1f' read -r app usage description <<<"$row"
+        [[ $app == "$name" ]] || continue
+        printf 'monolith %s %s\n%s\n' "$name" "$usage" "$description"
+        return 0
+    done
+    target="$(just_json | jq -r --arg name "$name" '.aliases[$name].target // $name')"
+    while IFS=$'\x1f' read -r app group usage description args; do
+        [[ $app == "$target" ]] || continue
+        usage="${usage_override[$target]-$usage}"
+        printf 'monolith %s%s\n%s\n' "$target" "${usage:+ $usage}" "$description"
+        # The scripts behind commands with arguments explain them themselves.
+        if [[ $args != 0 && -x $MONOLITH_LIBEXEC/$target ]]; then
+            printf '\n'
+            "$MONOLITH_LIBEXEC/$target" --help
+        fi
+        return 0
+    done < <(recipes)
+    unknown "$name"
+}
+
+# inside_topgrade: is topgrade our ancestor? topgrade runs `monolith update`
+# for the apps through older copies of its drop-in, which must not start
+# topgrade again.
+inside_topgrade() {
+    local pid="$PPID" comm
+    while [[ $pid =~ ^[0-9]+$ ]] && ((pid > 1)); do
+        comm="$(cat -- "/proc/$pid/comm" 2>/dev/null)" || return 1
+        [[ $comm == topgrade ]] && return 0
+        pid="$(awk '/^PPid:/ {print $2}' "/proc/$pid/status" 2>/dev/null)" || return 1
+    done
+    return 1
+}
+
+unknown() {
+    local word="$1" suggestion
+    printf "monolith doesn't have a command called %s.\n" "$word" >&2
+    if "$software" __ids 2>/dev/null | cut -f1 | grep -qxF -- "$word"; then
+        printf "%s is an app. To install it, run: monolith install %s\n" "$word" "$word" >&2
+    elif suggestion="$({ printf '%s\n' list install remove update help; runnable; } |
+        python3 -c 'import difflib, sys
+words = sys.stdin.read().split()
+match = difflib.get_close_matches(sys.argv[1], words, n=1, cutoff=0.6)
+print(match[0]) if match else sys.exit(1)' "$word" 2>/dev/null)"; then
+        printf 'Did you mean: monolith %s\n' "$suggestion" >&2
+    fi
+    printf 'Run monolith help to see every command.\n' >&2
+    exit 1
+}
+
+# monolith __complete WORD...: what can follow WORD..., as VALUE<TAB>DESCRIPTION
+# lines. The shell filters them by what has been typed so far.
+complete_words() {
+    local name group usage description args entry entries=()
+    if (($# == 0)); then
+        for entry in "${app_rows[@]}"; do
+            IFS=$'\x1f' read -r name usage description <<<"$entry"
+            # update without app names is the system command below.
+            [[ $name == update ]] || printf '%s\t%s\n' "$name" "$description"
+        done
+        printf 'help\tShow every command\n'
+        while IFS=$'\x1f' read -r name group usage description args; do
+            printf '%s\t%s\n' "$name" "$description"
+        done < <(recipes)
+        return 0
+    fi
+    case "$1" in
+        install|remove|uninstall|update) "$software" __ids ;;
+        help)
+            (($# == 1)) || return 0
+            while IFS=$'\x1f' read -r name group usage description args; do
+                printf '%s\t%s\n' "$name" "$description"
+            done < <(recipes)
+            ;;
+        scheduler)
+            if (($# == 1)); then
+                IFS=';' read -r -a entries <<<"${choices[scheduler]}"
+                for entry in "${entries[@]}"; do
+                    [[ ${entry%%=*} == - ]] || printf '%s\t%s\n' "${entry%%=*}" "${entry#*=}"
+                done
+                printf 'lowlatency\tLow latency: the same as gaming for scx_lavd\n'
+            elif (($# == 2)); then
+                printf '%s\n' lavd bpfland cosmos flash p2dq rusty beerland
+            fi
+            ;;
+        *)
+            (($# == 1)) && [[ -n ${choices[$1]-} ]] || return 0
+            IFS=';' read -r -a entries <<<"${choices[$1]}"
+            for entry in "${entries[@]}"; do
+                [[ ${entry%%=*} == - ]] || printf '%s\t%s\n' "${entry%%=*}" "${entry#*=}"
+            done
+            ;;
+    esac
+}
+
+# monolith __menu: the System tools menu in the catalog, as
+# NAME<TAB>DESCRIPTION<TAB>CHOICES lines.
+menu_items() {
+    local name group usage description args
+    while IFS=$'\x1f' read -r name group usage description args; do
+        printf '%s\t%s\t%s\n' "$name" "$description" "${choices[$name]-}"
+    done < <(recipes)
+}
+
+run_command() {
+    local name="$1" allowed
+    shift
+    allowed="$(max_arguments "$name")"
+    if [[ $allowed != many ]] && (($# > allowed)); then
+        if ((allowed == 0)); then
+            printf "monolith %s doesn't take arguments.\n" "$name" >&2
+        else
+            printf 'monolith %s takes at most %s.\n' "$name" \
+                "$( ((allowed == 1)) && echo "one argument" || echo "$allowed arguments")" >&2
+        fi
+        printf 'Run monolith help %s to see how to use it.\n' "$name" >&2
+        exit 1
+    fi
+    exec just --justfile "$justfile" "$name" "$@"
+}
+
+main() {
+    if (($# == 0)); then
+        # Without a terminal there's no catalog to show, so explain instead.
+        if [[ -t 0 && -t 1 ]]; then
+            exec "$software"
+        fi
+        show_help
+        return 0
+    fi
+    case "$1" in
+        menu|software|monolith|monolith-software) shift; exec "$software" "$@" ;;
+        list|install|remove|uninstall) exec "$software" "$@" ;;
+        update)
+            shift
+            if (($# > 0)) || inside_topgrade; then
+                exec "$software" update "$@"
+            fi
+            run_command update
+            ;;
+        help|-h|--help)
+            if (($# > 1)); then help_for "$2"; else show_help; fi
+            ;;
+        -V|--version) header ;;
+        __complete) shift; complete_words "$@" ;;
+        __menu) menu_items ;;
+        __ids) exec "$software" __ids ;;
+        -*)
+            # just's own options, such as --show NAME, for the curious.
+            exec just --justfile "$justfile" "$@"
+            ;;
+        *)
+            if runnable | grep -qxF -- "$1"; then
+                run_command "$@"
+            fi
+            unknown "$1"
+            ;;
+    esac
+}
+
+main "$@"
