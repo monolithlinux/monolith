@@ -81,16 +81,20 @@ max_arguments() {
 }
 
 header() {
-    printf '%s%s%s' "$BOLD" "$(os_pretty_name)" "$RESET"
+    local title next="" intro
+    title="$BOLD$(os_pretty_name)$RESET"
     if load_image_info 2>/dev/null && [[ $IMAGE_VERSION ]]; then
-        printf ' · build %s' "$IMAGE_VERSION"
-        [[ $IMAGE_TAG == latest || -z $IMAGE_TAG ]] || printf ' (%s)' "$IMAGE_TAG"
-        printf '\n'
-        if [[ $NEXT_VERSION ]]; then
-            printf 'Your next restart starts build %s.\n' "$NEXT_VERSION"
-        fi
+        title+=" $SYM_DOT build $IMAGE_VERSION"
+        [[ $IMAGE_TAG == latest || -z $IMAGE_TAG ]] || title+=" ($IMAGE_TAG)"
+        [[ -z $NEXT_VERSION ]] || next="Your next restart starts build $NEXT_VERSION."
+    fi
+    intro="Run $BOLD${ACCENT}monolith$RESET on its own to open the app catalog"
+    if mark_fits small; then
+        beside small "$title" ${next:+"$next"} "$intro," "or add a command:"
     else
-        printf '\n'
+        printf '%s\n' "$title"
+        [[ -z $next ]] || printf '%s\n' "$next"
+        printf '\n%s, or add a command:\n' "$intro"
     fi
 }
 
@@ -111,7 +115,6 @@ show_help() {
     done
 
     header
-    printf '\nRun %smonolith%s on its own to open the app catalog, or add a command:\n' "$BOLD" "$RESET"
     # Print groups in order of first appearance, Apps first.
     local groups=() seen=" "
     for row in "${rows[@]}"; do
@@ -119,16 +122,16 @@ show_help() {
         [[ $seen == *" $group "* ]] || { groups+=("$group"); seen+="$group "; }
     done
     for current in "${groups[@]}"; do
-        printf '\n%s%s%s\n' "$BOLD" "$current" "$RESET"
+        printf '\n%s%s%s%s\n' "$BOLD" "$ACCENT" "$current" "$RESET"
         for row in "${rows[@]}"; do
             IFS=$'\x1f' read -r name group usage description <<<"$row"
             [[ $group == "$current" ]] || continue
             label="$name${usage:+ $usage}"
-            printf '  %s%s%s%s%*s  %s\n' "$ACCENT" "$name" "$RESET" "${usage:+ $usage}" \
+            printf '  %s%s%s%s%s%s%*s  %s\n' "$BOLD" "$name" "$RESET" "$DIM" "${usage:+ $usage}" "$RESET" \
                 $((width - ${#label})) "" "$description"
         done
     done
-    printf '\nThe old names mjust and ujust still work.\n'
+    printf '\n%s%s%s\n' "$DIM" "The old names mjust and ujust still work." "$RESET"
 }
 
 # help_for NAME: the usage line of one command; commands with choices also

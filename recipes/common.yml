@@ -401,6 +401,10 @@ modules:
         for command in status scheduler rollback edition report-bug; do
           HOME=/nonexistent "/usr/libexec/monolith/$command" --help >/dev/null
         done
+        # The Monolith mark in fastfetch, monolith help and status.
+        for size in "" -medium -small -tiny; do
+          test -s "/usr/share/fastfetch/logos/monolith$size.txt"
+        done
         # Tab completion for every name. Bash finds a completion by command name.
         for command in monolith mjust ujust; do
           test -f "/usr/share/bash-completion/completions/$command"
