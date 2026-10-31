@@ -27,15 +27,21 @@ as status, rollback and the CPU scheduler. [Monolith's commands](commands.md)
 explains them.
 
 Apps are grouped into Developer CLIs, AI coding, Gaming, Media, Crafting Apps,
-Communication and Appearance, and each one shows whether it's installed and which
-version you have. Type to filter, press Enter to open an app, then choose what to
-do: Install, Update, Repair, Adopt and update, or Remove. Esc takes you back.
+Communication and Appearance. In each category, ● marks the apps you have and ○
+the ones you don't, and the panel on the right shows the app you're on: what it
+is, its version, where it comes from and what removing it keeps. Type to filter,
+press Enter to open an app, then choose what to do: Install, Update, Repair, Adopt
+and update, or Remove. Esc takes you back.
 
 **Update installed** updates everything Monolith manages. Inside a category, it
 updates only that category.
 
 Without fzf, or with `TERM=dumb`, the dashboard uses numbered menus instead. Set
 `NO_COLOR` to turn colour off.
+
+In Ghostty, the menus show icons. Other terminals need a Nerd Font for them, so
+they're off there unless you set `MONOLITH_ICONS=1`, and `MONOLITH_ICONS=0` turns
+them off in Ghostty too.
 
 ## From the command line
 

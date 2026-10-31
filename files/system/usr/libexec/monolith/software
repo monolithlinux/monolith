@@ -9,6 +9,9 @@ set -Eeuo pipefail
 shopt -s inherit_errexit
 
 SELF="$(readlink -f -- "${BASH_SOURCE[0]}")"
+# Colors, symbols and the Monolith mark, shared with the system commands.
+# shellcheck source-path=SCRIPTDIR source=common.sh
+. "$(dirname -- "$SELF")/common.sh"
 BIN_DIR="$HOME/.local/bin"
 DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
 STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
@@ -30,7 +33,21 @@ GEAR_LEVER_SCOPE=""
 RUN_INTERRUPTED=0
 SELECTOR=numbered
 USE_COLOR=0
+USE_ICONS=0
 PICKED=""
+# For the next pick: the hint in the empty search field, and whether each
+# option is LABEL<TAB>PREVIEW<TAB>ACTION with an app's details as PREVIEW.
+PICK_GHOST=""
+PICK_PREVIEW=0
+# show_tool_details folds its lines to this width, and BRIEF leaves out the
+# longer explanations for the preview beside a list.
+DETAIL_WIDTH=80
+DETAIL_BRIEF=0
+if [ "$MONOLITH_UNICODE" -eq 1 ]; then
+    DOT_ON="●" DOT_OFF="○" POINTER="▌"
+else
+    DOT_ON="*" DOT_OFF="-" POINTER=">"
+fi
 # An update skips a healthy item that already has the newest release;
 # UP_TO_DATE records that this action did so.
 ONLY_IF_OUTDATED=0
@@ -1230,6 +1247,7 @@ kept_data() {
         deckcraft) echo "settings, recent files, and recovery files" ;;
         cadcraft) echo "settings" ;;
         fluxer|fluxer-canary) echo "sign-ins and settings" ;;
+        ghostty-themes) echo "Ghostty settings and any themes you edited" ;;
         *) echo "settings, authentication, sessions, and project files" ;;
     esac
 }
@@ -1836,11 +1854,54 @@ init_terminal_ui() {
     if [ -z "${NO_COLOR:-}" ] && [ "${TERM:-dumb}" != dumb ] && [ -t 1 ]; then
         USE_COLOR=1
     fi
+    # Nerd Font icons: Ghostty draws them with any font, but elsewhere they need
+    # a Nerd Font, and over SSH they depend on the other computer's terminal.
+    # Ghostty's SSH integration can pass TERM_PROGRAM along. MONOLITH_ICONS=1
+    # or 0 overrides that.
+    case "${MONOLITH_ICONS:-}" in
+        1) USE_ICONS=$MONOLITH_UNICODE ;;
+        0) USE_ICONS=0 ;;
+        *)
+            if [ "${TERM_PROGRAM:-}" = ghostty ]; then
+                USE_ICONS=$MONOLITH_UNICODE
+            fi
+            ;;
+    esac
+}
+
+# glyph NAME: a Nerd Font icon from Material Design Icons.
+glyph() {
+    case "$1" in
+        cli) printf '\xf3\xb0\x86\x8d' ;; # U+F018D console
+        ai) printf '\xf3\xb1\x99\xba' ;; # U+F167A robot
+        gaming) printf '\xf3\xb0\x8a\x97' ;; # U+F0297 gamepad
+        media) printf '\xf3\xb0\x90\x8c' ;; # U+F040C play
+        crafting) printf '\xf3\xb0\x8f\x98' ;; # U+F03D8 palette
+        communication) printf '\xf3\xb0\x8a\x8c' ;; # U+F028C message
+        appearance) printf '\xf3\xb0\x89\xbc' ;; # U+F027C format-paint
+        all) printf '\xf3\xb0\x80\xbb' ;; # U+F003B apps
+        update) printf '\xf3\xb0\x9a\xb0' ;; # U+F06B0 update
+        system) printf '\xf3\xb0\x92\x93' ;; # U+F0493 cog
+        exit) printf '\xf3\xb0\x88\x86' ;; # U+F0206 exit
+        search) printf '\xf3\xb0\x8d\x89' ;; # U+F0349 magnify
+    esac
+}
+
+# icon NAME: the icon and two spaces when icons are on, and nothing otherwise.
+icon() {
+    if [ "$USE_ICONS" -eq 1 ]; then
+        printf '%s%s%s  ' "$ACCENT" "$(glyph "$1")" "$RESET"
+    fi
 }
 
 fzf_color_options() {
     if [ "$USE_COLOR" -eq 1 ]; then
-        printf '%s\n' --ansi
+        # Only the terminal's own colors and dim text, so menus follow its theme,
+        # light or dark.
+        printf '%s\n' --ansi \
+            --color='fg:-1,bg:-1,bg+:-1,fg+:-1:bold,hl:12,hl+:12:bold,pointer:12,marker:12,prompt:12,spinner:12' \
+            --color='query:-1,info:-1:dim,border:-1:dim,label:-1:bold,header:-1,footer:-1,ghost:-1:dim' \
+            --color='separator:-1:dim,scrollbar:-1:dim,gutter:-1,preview-fg:-1,preview-bg:-1,preview-border:-1:dim'
     else
         printf '%s\n' --color=bw
     fi
@@ -1875,30 +1936,63 @@ choose_numbered() {
     done
 }
 
-# Print the selected "label<TAB>action" option. Returns 1 for Back, 2 when
-# nothing matched the filter, 3 when fzf failed, and 130 for Ctrl-C.
+# Print the selected "label<TAB>action" option. HEADER's first line names the
+# screen, its second has the keys (from menu_help), and any further lines go
+# above the list. Returns 1 for Back, 2 when nothing matched the filter, 3 when
+# fzf failed, and 130 for Ctrl-C.
 choose_line() {
-    local prompt="$1" header="$2" output status=0 options=()
+    local prompt="$1" header="$2" output status=0 options=() label hints="" body="" args=()
     shift 2
     if [ "$SELECTOR" != fzf ]; then
         choose_numbered "$prompt" "$header" "$@"
         return
     fi
+    label="${header%%$'\n'*}"
+    if [[ $header == *$'\n'* ]]; then
+        hints="${header#*$'\n'}"
+        if [[ $hints == *$'\n'* ]]; then
+            body="${hints#*$'\n'}"
+            hints="${hints%%$'\n'*}"
+        fi
+    fi
     mapfile -t options < <(fzf_color_options)
+    args=(
+        "${options[@]}"
+        --layout=reverse
+        --border=rounded
+        --border-label=" $label "
+        --border-label-pos=3
+        --no-multi
+        --delimiter=$'\t'
+        --with-nth=1
+        --info=inline-right
+        --pointer="$POINTER"
+        --gutter=' '
+        --wrap-sign='  '
+        --ghost="${PICK_GHOST:-Type to filter}"
+        --bind='enter:accept'
+        --bind="ctrl-c:print($QUIT_TOKEN)+accept"
+    )
+    if [ "$USE_ICONS" -eq 1 ]; then
+        args+=(--prompt="$(glyph search)  ")
+    else
+        args+=(--prompt='> ')
+    fi
+    if [ -n "$body" ]; then
+        args+=(--header-first --header="$body")
+    fi
+    if [ -n "$hints" ]; then
+        args+=(--footer="$hints")
+    fi
+    if [ "$PICK_PREVIEW" -eq 1 ]; then
+        # Bash prints the details, whatever the login shell is.
+        args+=(--height=100% --with-shell='bash -c' --preview="printf '%b' {2}"
+            --preview-window='right,50%,wrap,border-left,<40(down,45%,wrap,border-top)')
+    else
+        args+=(--height='~100%')
+    fi
     # Feed fzf without a pipeline so its own exit status is the one reported.
-    output="$(fzf \
-        "${options[@]}" \
-        --layout=reverse \
-        --border=rounded \
-        --height='~70%' \
-        --no-multi \
-        --header-first \
-        --header="$header" \
-        --delimiter=$'\t' \
-        --with-nth=1 \
-        --prompt="$prompt > " \
-        --bind='enter:accept' \
-        --bind="ctrl-c:print($QUIT_TOKEN)+accept" < <(printf '%s\n' "$@"))" || status=$?
+    output="$(fzf "${args[@]}" < <(printf '%s\n' "$@"))" || status=$?
     if [ "${output%%$'\n'*}" = "$QUIT_TOKEN" ]; then
         return 130
     fi
@@ -1917,6 +2011,7 @@ choose_line() {
 }
 
 # Select an option and store its action token in PICKED. Returns 1 for Back.
+# PICK_GHOST and PICK_PREVIEW apply to this pick only.
 pick() {
     local choice status
     while true; do
@@ -1925,6 +2020,7 @@ pick() {
         case "$status" in
             0)
                 PICKED="${choice##*$'\t'}"
+                PICK_GHOST="" PICK_PREVIEW=0
                 return 0
                 ;;
             2) ;;
@@ -1933,7 +2029,10 @@ pick() {
                 export MONOLITH_SELECTOR=numbered
                 ;;
             130) exit 130 ;;
-            *) return 1 ;;
+            *)
+                PICK_GHOST="" PICK_PREVIEW=0
+                return 1
+                ;;
         esac
     done
 }
@@ -1943,19 +2042,23 @@ pick() {
 confirm_action() {
     local question="$1" detail="${2:-}" answer status=0 header options=()
     if [ "$SELECTOR" = fzf ] && [ -t 0 ] && [ -t 1 ]; then
-        header="$question"
+        header=()
         if [ -n "$detail" ]; then
-            header="$header"$'\n'"$detail"
+            header=(--header-first --header="$detail")
         fi
         mapfile -t options < <(fzf_color_options)
         answer="$(fzf \
             "${options[@]}" \
+            "${header[@]}" \
             --layout=reverse \
             --border=rounded \
+            --border-label=" $question " \
+            --border-label-pos=3 \
             --height='~40%' \
             --no-multi \
-            --header-first \
-            --header="$header"$'\n'"Enter: confirm  ·  Esc: cancel" \
+            --info=hidden \
+            --pointer="$POINTER" \
+            --footer="${DIM}Enter${RESET} confirm   ${DIM}Esc${RESET} cancel" \
             --prompt='> ' \
             --bind='enter:accept' \
             --bind="ctrl-c:print($QUIT_TOKEN)+accept" < <(printf 'No\nYes\n'))" || status=$?
@@ -2010,15 +2113,36 @@ status_badge() {
     fi
 }
 
+# row_label TOOL [CATEGORY]: an app's line in a list. In fzf, a symbol shows
+# its state and the details sit in the preview beside the list. Numbered menus
+# have no preview, so their lines keep the description.
 row_label() {
-    local tool="$1" prefix="${2:-}"
-    printf '%-19s  %s  %-22.22s  %s%s' "$(tool_name "$tool")" "$(status_badge "${ROW_STATUS[$tool]}")" \
-        "${ROW_VERSION[$tool]}" "$prefix" "$(tool_description "$tool")"
+    local tool="$1" category="${2:-}" status="${ROW_STATUS[$1]}" state="${ROW_VERSION[$1]}" symbol color name="$BOLD"
+    if [ "$SELECTOR" != fzf ]; then
+        printf '%-19s  %s  %-22.22s  %s%s' "$(tool_name "$tool")" "$(status_badge "$status")" \
+            "$state" "${category:+$category: }" "$(tool_description "$tool")"
+        return 0
+    fi
+    state="${state#verified }"
+    state="${state#recorded }"
+    case "$status" in
+        installed) symbol="$DOT_ON" color="$GOOD" ;;
+        "needs repair") symbol="!" color="$WARN" state="needs repair" ;;
+        external) symbol="$DOT_ON" color="$ACCENT" state="outside Monolith" ;;
+        *) symbol="$DOT_OFF" color="$DIM" state="not installed" name="" ;;
+    esac
+    [ "$state" != "-" ] || state=""
+    printf '%s%s%s %s%-19s%s  %s%-22.22s%s' "$color" "$symbol" "$RESET" "$name" "$(tool_name "$tool")" "$RESET" \
+        "$DIM" "$state" "$RESET"
+    if [ -n "$category" ]; then
+        printf '  %s%s%s' "$DIM" "$category" "$RESET"
+    fi
 }
 
+# category_label ICON TITLE TOOL...: a category's line on the home screen.
 category_label() {
-    local title="$1" tool installed=0 repair=0 names="" summary
-    shift
+    local key="$1" title="$2" tool installed=0 repair=0 names="" summary color="$DIM"
+    shift 2
     for tool in "$@"; do
         case "${ROW_STATUS[$tool]}" in
             installed) installed=$((installed + 1)) ;;
@@ -2027,14 +2151,171 @@ category_label() {
         names="${names:+$names, }$(tool_name "$tool")"
     done
     summary="$installed installed"
+    if [ "$installed" -gt 0 ]; then
+        color="$GOOD"
+    fi
     if [ "$repair" -gt 0 ]; then
         summary="$summary, $repair needs repair"
+        color="$WARN"
     fi
-    printf '%-16s  %-28s  %s' "$title" "$summary" "$names"
+    printf '%s%s%-16s%s  %s%-28s%s  %s%s%s' "$(icon "$key")" "$BOLD" "$title" "$RESET" \
+        "$color" "$summary" "$RESET" "$DIM" "$names" "$RESET"
+}
+
+# menu_label ICON TITLE [TEXT]: another line on the home screen.
+menu_label() {
+    if [ -n "${3:-}" ]; then
+        printf '%s%s%-16s%s  %s%s%s' "$(icon "$1")" "$BOLD" "$2" "$RESET" "$DIM" "$3" "$RESET"
+    else
+        printf '%s%s%s%s' "$(icon "$1")" "$BOLD" "$2" "$RESET"
+    fi
+}
+
+# category_summary TOOL...: how many of these apps are installed, for the line
+# above a category's list.
+category_summary() {
+    local tool installed=0 repair=0 text
+    for tool in "$@"; do
+        case "${ROW_STATUS[$tool]}" in
+            installed) installed=$((installed + 1)) ;;
+            "needs repair") repair=$((repair + 1)) ;;
+        esac
+    done
+    if [ "$installed" -gt 0 ]; then
+        text="$GOOD$installed installed$RESET"
+    else
+        text="${DIM}0 installed$RESET"
+    fi
+    if [ "$repair" -gt 0 ]; then
+        text="$text $DIM$SYM_DOT$RESET $WARN$repair needs repair$RESET"
+    fi
+    printf ' %s' "$text"
+}
+
+# home_header: Monolith's mark beside the build and a few facts about this
+# computer. None of them needs the network or rpm-ostree, so the catalog opens
+# at once; monolith status has the full picture.
+home_header() {
+    local tool installed=0 repair=0 days date="" system apps full size=medium
+    os_release
+    for tool in "${ALL_TOOLS[@]}"; do
+        case "${ROW_STATUS[$tool]}" in
+            installed) installed=$((installed + 1)) ;;
+            "needs repair") repair=$((repair + 1)) ;;
+        esac
+    done
+    if [ -e "$MONOLITH_STAGED" ]; then
+        system="$ACCENT$SYM_UP$RESET Restart to finish the system update"
+    elif ! systemctl -q is-enabled rpm-ostreed-automatic.timer 2>/dev/null; then
+        system="$WARN$SYM_WARN$RESET Automatic system updates are off"
+    else
+        system="$GOOD$SYM_OK$RESET System up to date"
+    fi
+    if [ "$repair" -gt 0 ]; then
+        apps="$WARN$SYM_WARN$RESET $installed installed, $repair $(plural "$repair" "needs" "need") repair"
+    elif [ "$installed" -gt 0 ]; then
+        apps="$GOOD$SYM_OK$RESET $installed $(plural "$installed" app apps) installed"
+    else
+        apps="$DIM$SYM_NOTE$RESET No apps installed from here yet"
+    fi
+    if ! days="$(full_update_days)"; then
+        full="$DIM$SYM_NOTE$RESET No full update yet"
+    elif [ "$days" -ge 7 ]; then
+        full="$WARN$SYM_WARN$RESET Last full update $days days ago"
+    else
+        full="$GOOD$SYM_OK$RESET Last full update $(days_ago "$days")"
+    fi
+    if date="$(build_date "$OS_VERSION")"; then
+        date=" $SYM_DOT $(date -d "$date" '+%b %-d' 2>/dev/null || printf '%s' "$date")"
+    fi
+    # The list, search line, footer and border take 18 lines.
+    monolith_columns
+    if [ "$MONOLITH_LINES" -lt 25 ]; then
+        size=small
+    fi
+    if [ "$MONOLITH_LINES" -lt 21 ]; then
+        printf ' %s%s%s\n ' "$BOLD" "$OS_NAME" "$RESET"
+        return 0
+    fi
+    # Standard output is fzf's header here, not the terminal mark_fits checks.
+    if [ "$size" = medium ]; then
+        MONOLITH_MARK="${MONOLITH_MARK:-1}" beside medium "$BOLD$OS_NAME$RESET" \
+            "${OS_VERSION:+$DIM$OS_VERSION$date$RESET}" "" "$system" "$apps" "$full"
+    else
+        MONOLITH_MARK="${MONOLITH_MARK:-1}" beside small \
+            "$BOLD$OS_NAME$RESET${OS_VERSION:+ $DIM$SYM_DOT $OS_VERSION$RESET}" "$system" "$apps"
+    fi
+    printf ' '
+}
+
+# plural COUNT ONE MANY
+plural() {
+    if [ "$1" -eq 1 ]; then printf '%s' "$2"; else printf '%s' "$3"; fi
 }
 
 menu_help() {
-    printf '%s\n%s' "$1" "Enter: ${2:-open}  ·  Esc: ${3:-back}  ·  Type to filter  ·  Ctrl-C: quit"
+    printf '%s\n%s' "$1" "${DIM}Enter${RESET} ${2:-open}   ${DIM}Esc${RESET} ${3:-back}   ${DIM}Ctrl-C${RESET} quit"
+}
+
+# preview_text TEXT: TEXT as a single field for fzf's preview, which prints it
+# with printf %b.
+preview_text() {
+    local text="$1"
+    text="${text//\\/\\\\}"
+    text="${text//$'\e'/\\033}"
+    text="${text//$'\t'/ }"
+    text="${text//$'\n'/\\n}"
+    printf '%s' "$text"
+}
+
+# fold_words WIDTH TEXT: set FOLDED to TEXT's lines, broken at spaces to fit
+# WIDTH columns. A longer word gets a line to itself.
+fold_words() {
+    local width="$1" word line="" words=()
+    FOLDED=()
+    read -r -a words <<<"$2"
+    for word in "${words[@]}"; do
+        if [ -z "$line" ]; then
+            line="$word"
+        elif [ $((${#line} + 1 + ${#word})) -le "$width" ]; then
+            line="$line $word"
+        else
+            FOLDED+=("$line")
+            line="$word"
+        fi
+    done
+    FOLDED+=("$line")
+}
+
+# detail KEY VALUE: a line of an app's details. Paths in your home folder
+# start with ~.
+detail() {
+    local i value="$2"
+    if [ -n "${HOME:-}" ] && [ "$HOME" != / ]; then
+        value="${value//"$HOME"\//\~/}"
+    fi
+    fold_words $((DETAIL_WIDTH - 10)) "$value"
+    printf '%s%-9s%s %s\n' "$ACCENT" "$1" "$RESET" "${FOLDED[0]}"
+    for ((i = 1; i < ${#FOLDED[@]}; i++)); do
+        printf '%10s%s\n' '' "${FOLDED[i]}"
+    done
+}
+
+# removal_detail TOOL: what removing an installed app keeps.
+removal_detail() {
+    case "${ROW_STATUS[$1]}" in
+        installed|"needs repair") detail Removing "keeps your $(kept_data "$1")" ;;
+    esac
+}
+
+# status_text TOOL: the state, with the symbol its list line shows.
+status_text() {
+    case "${ROW_STATUS[$1]}" in
+        installed) printf '%s%s%s installed' "$GOOD" "$DOT_ON" "$RESET" ;;
+        "needs repair") printf '%s!%s needs repair' "$WARN" "$RESET" ;;
+        external) printf '%s%s%s installed outside Monolith' "$ACCENT" "$DOT_ON" "$RESET" ;;
+        *) printf '%s%s%s %s' "$DIM" "$DOT_OFF" "$RESET" "${ROW_STATUS[$1]}" ;;
+    esac
 }
 
 # Run actions from the menu, show their results once, and keep the menu.
@@ -2061,24 +2342,28 @@ menu_update() {
 show_gear_lever_app_details() {
     local tool="$1" path
     if [ -n "${APP_ERROR[$tool]}" ]; then
-        printf '\n%s\n' "${APP_ERROR[$tool]}"
+        printf '\n%s\n\n' "${APP_ERROR[$tool]}"
     fi
     if [ -n "${APP_VERSION[$tool]}" ]; then
-        printf 'Last verified version: %s\n' "${APP_VERSION[$tool]}"
+        detail Version "${APP_VERSION[$tool]} (last verified)"
     fi
     if [ -n "${APP_SOURCE[$tool]}" ]; then
-        printf 'Source:   %s\n' "${APP_SOURCE[$tool]}"
+        detail Source "${APP_SOURCE[$tool]}"
     fi
     case "${APP_CHANNEL[$tool]}" in
-        beta-bridge) printf 'Releases: 2.24.0 beta series until a compatible stable exists\n' ;;
-        stable) printf 'Releases: stable\n' ;;
-        preview) printf 'Releases: Preview; the launcher updates itself\n' ;;
+        beta-bridge) detail Releases "2.24.0 beta series until a compatible stable exists" ;;
+        stable) detail Releases "stable" ;;
+        preview) detail Releases "Preview; the launcher updates itself" ;;
     esac
     if [ -n "${APP_APPIMAGE[$tool]}" ]; then
-        printf 'AppImage: %s\n' "${APP_APPIMAGE[$tool]}"
+        detail AppImage "${APP_APPIMAGE[$tool]}"
     fi
     if [ -n "${APP_DESKTOP_ID[$tool]}" ]; then
-        printf 'Launcher: %s (Gear Lever)\n' "${APP_DESKTOP_ID[$tool]}"
+        detail Launcher "${APP_DESKTOP_ID[$tool]} (Gear Lever)"
+    fi
+    removal_detail "$tool"
+    if [ "$DETAIL_BRIEF" -eq 1 ]; then
+        return 0
     fi
     if [ -n "${APP_CONFLICTS[$tool]}" ]; then
         printf '\nResolve these %s integrations in Gear Lever, then return here:\n' "$(tool_name "$tool")"
@@ -2101,20 +2386,24 @@ show_flatpak_app_details() {
     id="$(flatpak_app_id "$tool")"
     case "$version" in
         -) ;;
-        recorded\ *) printf 'Last recorded version: %s\n' "${version#recorded }" ;;
-        *) printf 'Version:  %s\n' "$version" ;;
+        recorded\ *) detail Version "${version#recorded } (last recorded)" ;;
+        *) detail Version "$version" ;;
     esac
     if release="$(flatpak_bundle_release "$tool")"; then
-        printf 'Source:   GitHub, %s (SHA256-verified bundle)\n' "${release%%$'\t'*}"
-        printf 'Updates:  only through Monolith, such as monolith update\n'
+        detail Source "GitHub, ${release%%$'\t'*} (SHA256-verified bundle)"
+        detail Updates "only through Monolith, such as monolith update"
     else
-        printf 'Source:   %s (%s)\n' "$(flatpak_app_source "$tool")" "$id"
+        detail Source "$(flatpak_app_source "$tool") ($id)"
     fi
     case "${FLATPAK_SCOPE[$tool]}" in
-        user) printf 'Scope:    your account (per-user Flatpak)\n' ;;
-        system) printf 'Scope:    every account (system-wide Flatpak, not managed by Monolith)\n' ;;
+        user) detail Scope "your account (per-user Flatpak)" ;;
+        system) detail Scope "every account (system-wide Flatpak, not managed by Monolith)" ;;
     esac
-    printf 'Data:     %s\n' "$HOME/.var/app/$id"
+    detail Data "$HOME/.var/app/$id"
+    removal_detail "$tool"
+    if [ "$DETAIL_BRIEF" -eq 1 ]; then
+        return 0
+    fi
     case "${ROW_STATUS[$tool]}:${FLATPAK_SCOPE[$tool]}" in
         "needs repair:system")
             printf '\n%s is no longer installed for your account, and a system-wide copy\n' "$name"
@@ -2155,12 +2444,19 @@ show_flatpak_app_details() {
     esac
 }
 
+# show_tool_details TOOL: what an app is and how Monolith handles it, folded
+# to DETAIL_WIDTH. The preview beside a list sets DETAIL_BRIEF.
 show_tool_details() {
-    local tool="$1" status="${ROW_STATUS[$1]}" version="${ROW_VERSION[$1]}" command path
-    printf '%s (%s)\n' "$(tool_name "$tool")" "$tool"
-    printf 'Category: %s\n' "$(tool_category "$tool")"
-    printf 'About:    %s\n' "$(tool_description "$tool")"
-    printf 'Status:   %s\n' "$status"
+    local tool="$1" status="${ROW_STATUS[$1]}" version="${ROW_VERSION[$1]}" command path description line
+    printf '%s%s%s %s(%s)%s\n' "$BOLD" "$(tool_name "$tool")" "$RESET" "$DIM" "$tool" "$RESET"
+    description="$(tool_description "$tool")"
+    fold_words "$DETAIL_WIDTH" "${description^}"
+    for line in "${FOLDED[@]}"; do
+        printf '%s%s%s\n' "$DIM" "$line" "$RESET"
+    done
+    printf '\n'
+    detail Category "$(tool_category "$tool")"
+    detail Status "$(status_text "$tool")"
     if is_gear_lever_app "$tool"; then
         show_gear_lever_app_details "$tool"
         return 0
@@ -2171,33 +2467,35 @@ show_tool_details() {
     case "$tool" in
         ghostty-themes)
             if [ "$version" != "-" ]; then
-                printf 'Bundle:   %s\n' "$version"
+                detail Bundle "$version"
             fi
-            printf 'Location: %s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/ghostty/themes"
+            detail Location "${XDG_CONFIG_HOME:-$HOME/.config}/ghostty/themes"
+            removal_detail "$tool"
             return 0
             ;;
     esac
     case "$version" in
         -) ;;
-        recorded\ *) printf 'Last recorded version: %s\n' "${version#recorded }" ;;
-        *) printf 'Version:  %s\n' "$version" ;;
+        recorded\ *) detail Version "${version#recorded } (last recorded)" ;;
+        *) detail Version "$version" ;;
     esac
     if has_marker "$tool"; then
         path="$(tool_root "$tool")"
         if [ -e "$path" ]; then
-            printf 'Location: %s\n' "$path"
+            detail Location "$path"
         else
-            printf 'Location: %s (missing)\n' "$path"
+            detail Location "$path (missing)"
         fi
         for command in $(tool_commands "$tool"); do
-            printf 'Command:  %s\n' "$BIN_DIR/$command"
+            detail Command "$BIN_DIR/$command"
         done
     else
         path="$(external_path "$tool")"
         if [ -n "$path" ]; then
-            printf 'Found at: %s (not managed by Monolith)\n' "$path"
+            detail "Found at" "$path (not managed by Monolith)"
         fi
     fi
+    removal_detail "$tool"
 }
 
 manage_tool() {
@@ -2207,6 +2505,8 @@ manage_tool() {
         refresh_versions "$tool"
         status="${ROW_STATUS[$tool]}"
         clear_screen
+        monolith_columns
+        DETAIL_WIDTH=$((MONOLITH_COLUMNS < 80 ? MONOLITH_COLUMNS : 80))
         show_tool_details "$tool"
         options=()
         case "$status" in
@@ -2289,7 +2589,7 @@ manage_tool() {
 }
 
 manage_category() {
-    local title="$1" tool prefix=""
+    local title="$1" tool category="" header
     shift
     local tools=("$@") options=()
 
@@ -2297,17 +2597,40 @@ manage_category() {
         refresh_status "${tools[@]}"
         refresh_versions "${tools[@]}"
         options=()
-        for tool in "${tools[@]}"; do
-            if [ "$title" = "All applications" ]; then
-                prefix="$(tool_category "$tool"): "
+        header="$(menu_help "Monolith Software › $title" details)"
+        if [ "$SELECTOR" = fzf ]; then
+            # The list beside the preview is half as wide, so these keys are shorter.
+            header="Monolith Software › $title"$'\n'"${DIM}Enter${RESET} install, update or remove   ${DIM}Esc${RESET} back"
+            # Each line carries its app's details for the preview beside the list.
+            monolith_columns
+            DETAIL_WIDTH=$(((MONOLITH_COLUMNS - 4) / 2 - 2))
+            if [ "$DETAIL_WIDTH" -lt 40 ]; then
+                DETAIL_WIDTH=$((MONOLITH_COLUMNS - 6))
             fi
-            options+=("$(row_label "$tool" "$prefix")"$'\t'"tool:$tool")
-        done
-        options+=("Update installed items"$'\t'"update")
-        options+=("Back"$'\t'"back")
+            for tool in "${tools[@]}"; do
+                if [ "$title" = "All applications" ]; then
+                    category="$(tool_category "$tool")"
+                fi
+                options+=("$(row_label "$tool" "$category")"$'\t'"$(preview_text "$(DETAIL_BRIEF=1 show_tool_details "$tool")")"$'\t'"tool:$tool")
+            done
+            options+=("  Update installed items"$'\t'"$(preview_text "Updates the apps in this list that Monolith installed.")"$'\t'"update")
+            options+=("  ${DIM}Back${RESET}"$'\t\t'"back")
+            header="$header"$'\n'"$(category_summary "${tools[@]}")"
+            PICK_GHOST="Search $title"
+            PICK_PREVIEW=1
+        else
+            for tool in "${tools[@]}"; do
+                if [ "$title" = "All applications" ]; then
+                    category="$(tool_category "$tool")"
+                fi
+                options+=("$(row_label "$tool" "$category")"$'\t'"tool:$tool")
+            done
+            options+=("Update installed items"$'\t'"update")
+            options+=("Back"$'\t'"back")
+        fi
 
         clear_screen
-        pick "$title" "$(menu_help "Monolith Software › $title" details)" "${options[@]}" || return 0
+        pick "$title" "$header" "${options[@]}" || return 0
         case "$PICKED" in
             back) return 0 ;;
             update) menu_update "${tools[@]}" ;;
@@ -2317,7 +2640,7 @@ manage_category() {
 }
 
 interactive_menu() {
-    local options=() tool marked
+    local options=() tool marked header
     [ -t 0 ] && [ -t 1 ] || die "interactive mode needs a terminal; use list, install, remove, or update"
 
     while true; do
@@ -2329,20 +2652,25 @@ interactive_menu() {
             fi
         done
         options=(
-            "$(category_label "Developer CLIs" "${CLI_TOOLS[@]}")"$'\t'"cli"
-            "$(category_label "AI coding" "${AI_TOOLS[@]}")"$'\t'"ai"
-            "$(category_label "Gaming" "${GAMING_TOOLS[@]}")"$'\t'"gaming"
-            "$(category_label "Media" "${MEDIA_TOOLS[@]}")"$'\t'"media"
-            "$(category_label "Crafting Apps" "${CRAFTING_TOOLS[@]}")"$'\t'"crafting"
-            "$(category_label "Communication" "${COMMUNICATION_TOOLS[@]}")"$'\t'"communication"
-            "$(category_label "Appearance" "${APPEARANCE_TOOLS[@]}")"$'\t'"appearance"
-            "All applications"$'\t'"all"
-            "Update installed ($marked managed)"$'\t'"update"
-            "$(printf '%-16s  %s' "System tools" "Status, updates, scheduler, rollback and more")"$'\t'"system"
-            "Exit"$'\t'"exit"
+            "$(category_label cli "Developer CLIs" "${CLI_TOOLS[@]}")"$'\t'"cli"
+            "$(category_label ai "AI coding" "${AI_TOOLS[@]}")"$'\t'"ai"
+            "$(category_label gaming "Gaming" "${GAMING_TOOLS[@]}")"$'\t'"gaming"
+            "$(category_label media "Media" "${MEDIA_TOOLS[@]}")"$'\t'"media"
+            "$(category_label crafting "Crafting Apps" "${CRAFTING_TOOLS[@]}")"$'\t'"crafting"
+            "$(category_label communication "Communication" "${COMMUNICATION_TOOLS[@]}")"$'\t'"communication"
+            "$(category_label appearance "Appearance" "${APPEARANCE_TOOLS[@]}")"$'\t'"appearance"
+            "$(menu_label all "All applications")"$'\t'"all"
+            "$(menu_label update "Update installed" "$marked managed by Monolith")"$'\t'"update"
+            "$(menu_label system "System tools" "Status, updates, scheduler, rollback and more")"$'\t'"system"
+            "$(icon exit)${DIM}Exit${RESET}"$'\t'"exit"
         )
+        header="$(menu_help "Monolith Software" open exit)"
+        if [ "$SELECTOR" = fzf ]; then
+            header="$header"$'\n'"$(home_header)"
+        fi
         clear_screen
-        pick "Monolith Software" "$(menu_help "Monolith Software" open exit)" "${options[@]}" || return 0
+        PICK_GHOST="Search apps and tools"
+        pick "Monolith Software" "$header" "${options[@]}" || return 0
         case "$PICKED" in
             cli) manage_category "Developer CLIs" "${CLI_TOOLS[@]}" ;;
             ai) manage_category "AI coding" "${AI_TOOLS[@]}" ;;
@@ -2370,7 +2698,7 @@ system_menu() {
         choices_of=()
         while IFS=$'\t' read -r name description choices; do
             [ -n "$name" ] || continue
-            options+=("$(printf '%-24s  %s' "$name" "$description")"$'\t'"command:$name")
+            options+=("$(printf '%s%-24s%s  %s%s%s' "$BOLD" "$name" "$RESET" "$DIM" "$description" "$RESET")"$'\t'"command:$name")
             choices_of[$name]="$choices"
         done < <("$MONOLITH_COMMAND" __menu 2>/dev/null)
         options+=("Back"$'\t'"back")
