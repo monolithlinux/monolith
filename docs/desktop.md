@@ -18,6 +18,21 @@ points. The first time you open Ghostty, Monolith creates its defaults in
 kept as it is. Your existing shell settings and the tools you installed keep
 working.
 
+### The greeting
+
+New terminals start with Monolith's logo, your build and a tip. When an update is
+waiting for a restart, or you haven't run `monolith update` for a week, it says that
+instead of the tip.
+
+To turn it off, run:
+
+```
+set -U fish_greeting
+```
+
+`set -e -U fish_greeting` brings it back. You can also put your own text in that
+variable, or write your own `fish_greeting` function.
+
 ### No Konsole
 
 Konsole isn't included. If you want it, install

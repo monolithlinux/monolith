@@ -51,6 +51,7 @@ jobs:
           cd "$GITHUB_WORKSPACE"
           PATH="$RUNNER_TEMP/bin:$PATH" tests/monolith-command.sh
           tests/monolith-system-commands.sh
+          PATH="$RUNNER_TEMP/bin:$PATH" tests/monolith-greeting.sh
       - name: Test edition selection
         run: bash tests/pick-editions.sh
       - name: Test Monolith News

@@ -398,10 +398,10 @@ modules:
             auto-update; do
           HOME=/nonexistent /usr/bin/monolith help "$command" >/dev/null
         done
-        for command in status scheduler rollback edition report-bug; do
+        for command in status scheduler rollback edition report-bug greeting; do
           HOME=/nonexistent "/usr/libexec/monolith/$command" --help >/dev/null
         done
-        # The Monolith mark in fastfetch, monolith help and status.
+        # The Monolith mark in fastfetch, monolith help and status, and the greeting.
         for size in "" -medium -small -tiny; do
           test -s "/usr/share/fastfetch/logos/monolith$size.txt"
         done
@@ -447,6 +447,8 @@ modules:
         rm -rf "$tmpdir"
         test -f /usr/share/fish/vendor_functions.d/fish_prompt.fish
         test -f /usr/share/fish/vendor_conf.d/pure.fish
+        # Pure shares the folder with Monolith's greeting and must not replace it.
+        grep -q /usr/libexec/monolith/greeting /usr/share/fish/vendor_functions.d/fish_greeting.fish
       - |
         # Install the shared Monolith logo under the os-release icon name.
         set -euxo pipefail
