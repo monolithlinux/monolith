@@ -4,12 +4,13 @@
         "type": "file",
         "source": "/usr/share/fastfetch/logos/monolith.txt",
         "color": {
-            "1": "94",
-            "2": "47",
-            "3": "95",
-            "4": "0",
-            "5": "8",
-            "6": "55"
+            "1": "default",
+            "2": "light_blue"
+        },
+        "padding": {
+            "top": 1,
+            "left": 2,
+            "right": 4
         }
     },
     "display": {

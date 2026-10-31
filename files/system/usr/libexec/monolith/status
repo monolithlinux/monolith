@@ -20,11 +20,52 @@ EOF
     *) die "monolith status doesn't take arguments." ;;
 esac
 
-problems=()
-tips=()
-row() { printf '  %-12s %s\n' "$1" "$2"; }
+# row LEVEL KEY VALUE [NOTE COMMAND]...: one line of the card. LEVEL is ok,
+# warn (needs attention), wait (happens at the next restart) or note. Each
+# NOTE and COMMAND pair goes below the line; either can be empty.
+rows=()
+warnings=0
+row() {
+    local entry="$1"$'\x1f'"$2"$'\x1f'"$3"
+    [[ $1 != warn ]] || warnings=$((warnings + 1))
+    shift 3
+    while (($# >= 2)); do
+        entry+=$'\x1f'"$1"$'\x1e'"$2"
+        shift 2
+    done
+    rows+=("$entry")
+}
 
-printf '%s%s%s\n\n' "$BOLD" "$(os_pretty_name)" "$RESET"
+# hint TEXT COLOR: a line under a row, lined up with the values, or further
+# left when it wouldn't fit there.
+hint() {
+    local indent=18
+    if ((indent + ${#1} > MONOLITH_COLUMNS && ${#1} + 4 <= MONOLITH_COLUMNS)); then
+        indent=4
+    fi
+    printf '%*s%s%s%s\n' "$indent" '' "$2" "$1" "$RESET"
+}
+
+print_rows() {
+    local entry pair note command symbol color fields=()
+    for entry in "${rows[@]}"; do
+        IFS=$'\x1f' read -r -a fields <<<"$entry"
+        case "${fields[0]}" in
+            ok) symbol="$SYM_OK" color="$GOOD" ;;
+            warn) symbol="$SYM_WARN" color="$WARN$BOLD" ;;
+            wait) symbol="$SYM_UP" color="$ACCENT" ;;
+            *) symbol="$SYM_NOTE" color="$DIM" ;;
+        esac
+        printf '  %s%s%s %s%-13s%s %s\n' "$color" "$symbol" "$RESET" "$BOLD" "${fields[1]}" "$RESET" "${fields[2]}"
+        for pair in "${fields[@]:3}"; do
+            note="${pair%%$'\x1e'*}" command="${pair#*$'\x1e'}"
+            [[ -z $note ]] || hint "$note" "$DIM"
+            [[ -z $command ]] || hint "$SYM_TO $command" "$ACCENT"
+        done
+    done
+}
+
+monolith_columns
 
 # The build, and whether updates reach it.
 if load_image_info; then
@@ -37,35 +78,33 @@ if load_image_info; then
         yes) source_text+=", signed" ;;
         no) source_text+=", not signed" ;;
     esac
-    row Build "${IMAGE_VERSION:-unknown} from $source_text"
-    if [[ $IMAGE_SIGNED == no && $IMAGE_EDITION ]]; then
-        problems+=("You're on the unsigned image, so updates aren't checked against Monolith's signature. Switch to the signed one:
-    rpm-ostree rebase ostree-image-signed:docker://$IMAGE_NAME:${IMAGE_TAG:-latest}")
-    fi
+    build="${IMAGE_VERSION:-unknown} from $source_text"
     if [[ $IMAGE_EDITION && $IMAGE_TAG =~ ^[0-9]{8}$ ]]; then
-        row Updates "paused on the build from $(nice_date "$IMAGE_TAG")"
-        problems+=("Updates are paused because you went back to the build from $(nice_date "$IMAGE_TAG"). When you're ready for the newest build:
-    monolith rollback latest")
+        row warn Updates "paused on the build from $(nice_date "$IMAGE_TAG")" \
+            "When you're ready for the newest build:" "monolith rollback latest"
     elif [[ $IMAGE_EDITION && $IMAGE_TAG == pr-* ]]; then
-        row Updates "test build from pull request ${IMAGE_TAG#pr-}"
-        problems+=("You're on a test build. To return to the newest regular build:
-    monolith rollback latest")
+        row warn Updates "test build from pull request ${IMAGE_TAG#pr-}" \
+            "To return to the newest regular build:" "monolith rollback latest"
     elif [[ $NEXT_VERSION && $STAGED == yes ]]; then
-        row Updates "build $NEXT_VERSION is downloaded; restart to use it"
+        row wait Updates "build $NEXT_VERSION is downloaded; restart to use it"
     elif [[ $NEXT_VERSION ]]; then
-        row Updates "your next restart starts build $NEXT_VERSION"
+        row wait Updates "your next restart starts build $NEXT_VERSION"
     else
-        row Updates "up to date as of the last check"
+        row ok Updates "up to date as of the last check"
     fi
-    [[ -z ${LAYERED-} ]] || row Layered "${LAYERED// /, }"
+    if [[ $IMAGE_SIGNED == no && $IMAGE_EDITION ]]; then
+        row warn Signature "updates aren't checked against Monolith's signature" \
+            "Switch to the signed image:" "rpm-ostree rebase ostree-image-signed:docker://$IMAGE_NAME:${IMAGE_TAG:-latest}"
+    fi
+    [[ -z ${LAYERED-} ]] || row note Layered "${LAYERED// /, }"
 else
-    row Build "unknown, rpm-ostree didn't answer"
+    build="unknown, rpm-ostree didn't answer"
 fi
 
 if systemctl -q is-enabled rpm-ostreed-automatic.timer 2>/dev/null; then
-    row "Auto updates" "on, daily"
+    row ok "Auto updates" "on, daily"
 else
-    row "Auto updates" "off (turn them on with: monolith toggle-updates enable)"
+    row note "Auto updates" "off" "" "monolith toggle-updates enable"
 fi
 
 # Secure Boot and Monolith's key, which signs the kernel and NVIDIA driver.
@@ -77,62 +116,51 @@ case "$key" in
     *"is not enrolled"*) key=missing ;;
     *) key=unknown ;;
 esac
+enroll="Restart, choose Enroll MOK, and type the password monolith."
 case "$sb" in
     *"SecureBoot enabled"*)
         if [[ $key == pending ]]; then
-            row "Secure Boot" "on; Monolith's key waits to be enrolled"
+            row warn "Secure Boot" "on; Monolith's key waits to be enrolled" "$enroll" ""
         else
-            row "Secure Boot" "on"
+            row ok "Secure Boot" "on"
         fi
         ;;
     *"SecureBoot disabled"*)
         case "$key" in
-            enrolled) row "Secure Boot" "off; Monolith's key is enrolled, so you can turn it on" ;;
-            pending) row "Secure Boot" "off; Monolith's key waits to be enrolled" ;;
-            *) row "Secure Boot" "off (before you turn it on: monolith enroll-secure-boot-key)" ;;
+            enrolled) row note "Secure Boot" "off; Monolith's key is enrolled, so you can turn it on" ;;
+            pending) row warn "Secure Boot" "off; Monolith's key waits to be enrolled" "$enroll" "" ;;
+            *) row note "Secure Boot" "off" "Before you turn it on:" "monolith enroll-secure-boot-key" ;;
         esac
         ;;
-    *) row "Secure Boot" "not available on this computer" ;;
+    *) row note "Secure Boot" "not available on this computer" ;;
 esac
-if [[ $key == pending ]]; then
-    problems+=("Monolith's Secure Boot key isn't enrolled yet. Restart, choose Enroll MOK in the MokManager screen, and type the password monolith.")
-fi
 
 # The NVIDIA driver, where it matters.
 nvidia_gpu=no
 has_nvidia_gpu && nvidia_gpu=yes
 if [[ -r $MONOLITH_SYSFS/module/nvidia/version ]]; then
-    row NVIDIA "driver $(<"$MONOLITH_SYSFS/module/nvidia/version") is running"
+    row ok NVIDIA "driver $(<"$MONOLITH_SYSFS/module/nvidia/version") is running"
 elif [[ ${IMAGE_EDITION-} == kde-nvidia && $nvidia_gpu == yes ]]; then
-    row NVIDIA "the driver isn't running"
-    problems+=("NVIDIA's driver didn't load. Its messages from this boot:
-    journalctl -b -k --grep=nvidia
-Cards older than the GTX 16 series need the KDE edition: monolith edition kde")
+    row warn NVIDIA "the driver didn't load" \
+        "Its messages from this boot:" "journalctl -b -k --grep=nvidia" \
+        "Cards older than the GTX 16 series need the KDE edition:" "monolith edition kde"
 elif [[ ${IMAGE_EDITION-} == kde-nvidia ]]; then
-    row NVIDIA "no NVIDIA card found"
-    problems+=("This is the NVIDIA edition, but this computer has no NVIDIA card. The KDE edition fits it better:
-    monolith edition kde")
+    row warn NVIDIA "no NVIDIA card found" \
+        "The KDE edition fits this computer better:" "monolith edition kde"
 elif [[ $nvidia_gpu == yes ]]; then
-    row NVIDIA "card found, running on Nouveau/NVK"
-    tips+=("For NVIDIA's own driver on a GTX 16, RTX 20 or newer card, switch editions: monolith edition kde-nvidia")
+    row note NVIDIA "card found, running on Nouveau/NVK" \
+        "For NVIDIA's own driver on a GTX 16, RTX 20 or newer card:" "monolith edition kde-nvidia"
 fi
 
 # The last full update, which topgrade records for the login reminder.
-record="${XDG_STATE_HOME:-$HOME/.local/state}/monolith/update-reminder/last-update"
-if [[ -e $record ]]; then
-    days=$((($(date +%s) - $(stat -c %Y -- "$record")) / 86400))
-    case "$days" in
-        0) when=today ;;
-        1) when=yesterday ;;
-        *) when="$days days ago" ;;
-    esac
-    row "Full update" "$when"
+if days="$(full_update_days)"; then
     if ((days >= 7)); then
-        problems+=("Your apps, containers and dev tools haven't been updated for $days days. Update everything:
-    monolith update")
+        row warn "Full update" "$(days_ago "$days")" "Update your apps, containers and dev tools:" "monolith update"
+    else
+        row ok "Full update" "$(days_ago "$days")"
     fi
 else
-    row "Full update" "not run yet (monolith update updates everything)"
+    row note "Full update" "not run yet" "" "monolith update"
 fi
 
 # The CPU scheduler.
@@ -152,21 +180,20 @@ if [[ -r $MONOLITH_SYSFS/kernel/sched_ext/state ]]; then
             3) name+=" in low latency mode" ;;
             4) name+=" in server mode" ;;
         esac
-        row Scheduler "$name"
+        row ok Scheduler "$name"
     else
-        row Scheduler "the kernel's own (try: monolith scheduler gaming)"
+        row note Scheduler "the kernel's own" "" "monolith scheduler gaming"
     fi
 fi
 
-if ((${#problems[@]})); then
-    printf '\n%sNeeds attention%s\n' "$WARN$BOLD" "$RESET"
-    for problem in "${problems[@]}"; do
-        printf '%s\n' "$problem" | sed '1s/^/  • /; 1!s/^/    /'
-    done
+if ((warnings == 0)); then
+    verdict="$GOOD$SYM_OK Everything looks fine$RESET"
+elif ((warnings == 1)); then
+    verdict="$WARN$BOLD$SYM_WARN 1 thing needs your attention$RESET"
 else
-    printf '\n%sEverything looks fine.%s\n' "$GOOD" "$RESET"
+    verdict="$WARN$BOLD$SYM_WARN $warnings things need your attention$RESET"
 fi
-for tip in "${tips[@]}"; do
-    printf '\nTip: %s\n' "$tip"
-done
-((${#problems[@]} == 0))
+beside small "$BOLD$(os_pretty_name)$RESET" "$DIM$build$RESET" "$verdict"
+printf '\n'
+print_rows
+((warnings == 0))

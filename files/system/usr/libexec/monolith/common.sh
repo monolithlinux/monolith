@@ -15,6 +15,10 @@ MONOLITH_SYSFS="${MONOLITH_SYSFS:-/sys}"
 MONOLITH_OS_RELEASE="${MONOLITH_OS_RELEASE:-/usr/lib/os-release}"
 MONOLITH_REGISTRY="${MONOLITH_REGISTRY:-https://ghcr.io}"
 MONOLITH_MOK_KEY="${MONOLITH_MOK_KEY:-/etc/pki/akmods/certs/akmods-monolith.der}"
+# ostree keeps this file while a downloaded update waits for the next restart.
+MONOLITH_STAGED="${MONOLITH_STAGED:-/run/ostree/staged-deployment}"
+# topgrade touches this after a full update, for the login reminder.
+MONOLITH_UPDATE_RECORD="${XDG_STATE_HOME:-$HOME/.local/state}/monolith/update-reminder/last-update"
 # Keep in sync with ALL in .github/workflows/pick-editions.sh.
 MONOLITH_EDITIONS=(kde kde-nvidia)
 MONOLITH_IMAGE_PREFIX=ghcr.io/monolithlinux
@@ -23,6 +27,99 @@ BOLD="" DIM="" RESET="" ACCENT="" GOOD="" WARN=""
 if [[ -t 1 && -z ${NO_COLOR-} && ${TERM:-dumb} != dumb ]]; then
     BOLD=$'\e[1m' DIM=$'\e[2m' RESET=$'\e[0m' ACCENT=$'\e[94m' GOOD=$'\e[32m' WARN=$'\e[33m'
 fi
+
+# Symbols and the Monolith mark need a UTF-8 terminal other than the Linux
+# console, whose font lacks most of them. Elsewhere they fall back to ASCII.
+MONOLITH_UNICODE=0
+case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
+    *[Uu][Tt][Ff]-8* | *[Uu][Tt][Ff]8*)
+        case "${TERM:-dumb}" in
+            dumb | linux | vt[0-9]*) ;;
+            *) MONOLITH_UNICODE=1 ;;
+        esac
+        ;;
+esac
+if ((MONOLITH_UNICODE)); then
+    SYM_OK="✓" SYM_WARN="!" SYM_UP="↑" SYM_NOTE="•" SYM_TO="→" SYM_DOT="·"
+else
+    SYM_OK="+" SYM_WARN="!" SYM_UP="^" SYM_NOTE="-" SYM_TO="->" SYM_DOT="-"
+fi
+
+# The Monolith mark, in fastfetch's logo format: $1 starts the outer slabs and
+# $2 the middle one. monolith-tiny.txt, -small and -medium are 2, 3 and 6 rows
+# tall; monolith.txt is the large one fastfetch shows.
+MONOLITH_LOGOS="${MONOLITH_LOGOS:-${BASH_SOURCE[0]%/*}/../../share/fastfetch/logos}"
+MARK_OUTER="" MARK_MIDDLE=""
+if [[ $RESET ]]; then
+    # The terminal's own text color keeps the mark visible on light themes too.
+    MARK_OUTER=$'\e[39m' MARK_MIDDLE=$'\e[94m'
+fi
+
+# monolith_columns: set MONOLITH_COLUMNS and MONOLITH_LINES to the terminal's
+# size, or 80 by 24.
+monolith_columns() {
+    local rows="" cols=""
+    read -r rows cols < <({ stty size </dev/tty; } 2>/dev/null) || true
+    MONOLITH_COLUMNS=80 MONOLITH_LINES=24
+    if [[ ${COLUMNS-} =~ ^[1-9][0-9]*$ ]]; then
+        MONOLITH_COLUMNS=$COLUMNS
+    elif [[ $cols =~ ^[1-9][0-9]*$ ]]; then
+        MONOLITH_COLUMNS=$cols
+    fi
+    if [[ ${LINES-} =~ ^[1-9][0-9]*$ ]]; then
+        MONOLITH_LINES=$LINES
+    elif [[ $rows =~ ^[1-9][0-9]*$ ]]; then
+        MONOLITH_LINES=$rows
+    fi
+}
+
+# mark_fits SIZE: can the mark of SIZE go beside text here? Only on a UTF-8
+# terminal with room for it. MONOLITH_MARK=1 or 0 overrides that.
+MARK_ROWS=()
+MARK_WIDTH=0
+mark_fits() {
+    local file="$MONOLITH_LOGOS/monolith-$1.txt" line plain
+    MARK_ROWS=()
+    MARK_WIDTH=0
+    case "${MONOLITH_MARK-}" in
+        0) return 1 ;;
+        1) ((MONOLITH_UNICODE)) || return 1 ;;
+        *) [[ -t 1 ]] && ((MONOLITH_UNICODE)) || return 1 ;;
+    esac
+    [[ -r $file ]] || return 1
+    mapfile -t MARK_ROWS <"$file"
+    for line in "${MARK_ROWS[@]}"; do
+        plain="${line//\$[12]/}"
+        ((${#plain} > MARK_WIDTH)) && MARK_WIDTH=${#plain}
+    done
+    monolith_columns
+    ((MONOLITH_COLUMNS >= MARK_WIDTH + 50)) || { MARK_ROWS=(); return 1; }
+}
+
+# beside SIZE LINE...: print the LINEs with the mark of SIZE on their left when
+# it fits, and on their own otherwise.
+beside() {
+    local size="$1" i count line plain
+    shift
+    local lines=("$@")
+    mark_fits "$size" || MARK_ROWS=()
+    count=${#lines[@]}
+    ((${#MARK_ROWS[@]} > count)) && count=${#MARK_ROWS[@]}
+    for ((i = 0; i < count; i++)); do
+        if ((${#MARK_ROWS[@]})); then
+            line="${MARK_ROWS[i]-}"
+            plain="${line//\$[12]/}"
+            line="${line//\$1/$MARK_OUTER}"
+            line="${line//\$2/$MARK_MIDDLE}"
+            if [[ -z ${lines[i]-} ]]; then
+                printf ' %s%s\n' "$line" "$RESET"
+                continue
+            fi
+            printf ' %s%s%*s   ' "$line" "$RESET" $((MARK_WIDTH - ${#plain})) ''
+        fi
+        printf '%s\n' "${lines[i]-}"
+    done
+}
 
 die() {
     printf '%s\n' "$*" >&2
@@ -44,6 +141,32 @@ os_pretty_name() {
     # shellcheck disable=SC1090
     [[ -r $MONOLITH_OS_RELEASE ]] && . "$MONOLITH_OS_RELEASE"
     printf '%s\n' "${PRETTY_NAME:-Monolith}"
+}
+
+# os_release: set OS_NAME and OS_VERSION, the build, from os-release. Quick
+# enough for every new terminal, unlike rpm-ostree.
+os_release() {
+    local PRETTY_NAME="" OSTREE_VERSION=""
+    # shellcheck disable=SC1090
+    [[ -r $MONOLITH_OS_RELEASE ]] && . "$MONOLITH_OS_RELEASE"
+    OS_NAME="${PRETTY_NAME:-Monolith}"
+    OS_VERSION="$OSTREE_VERSION"
+}
+
+# full_update_days: how many days ago `monolith update` last finished. Fails
+# when it hasn't run yet.
+full_update_days() {
+    [[ -e $MONOLITH_UPDATE_RECORD ]] || return 1
+    printf '%s\n' $((($(date +%s) - $(stat -c %Y -- "$MONOLITH_UPDATE_RECORD")) / 86400))
+}
+
+# days_ago DAYS: today, yesterday or "3 days ago".
+days_ago() {
+    case "$1" in
+        0) printf 'today\n' ;;
+        1) printf 'yesterday\n' ;;
+        *) printf '%s days ago\n' "$1" ;;
+    esac
 }
 
 # load_image_info: read the deployments from rpm-ostree. Sets

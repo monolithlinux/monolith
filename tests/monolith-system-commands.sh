@@ -161,84 +161,122 @@ for script in status scheduler rollback edition report-bug; do
 done
 
 # status ---------------------------------------------------------------------
+# Plain ASCII symbols unless a test asks for UTF-8.
+export LC_ALL=C
 reset
 out="$(run status)" || fail "a healthy computer needs attention: $out"
 has "$out" 'Monolith KDE (NVIDIA)'
-has "$out" 'Build        44.20261029.0 from kde-nvidia:latest, signed'
-has "$out" 'Updates      up to date'
-has "$out" 'Secure Boot  on'
-has "$out" 'NVIDIA       driver 615.78.08 is running'
-has "$out" 'Full update  yesterday'
-has "$out" "Scheduler    the kernel's own (try: monolith scheduler gaming)"
-has "$out" 'Everything looks fine.'
+has "$out" '44.20261029.0 from kde-nvidia:latest, signed'
+has "$out" '+ Everything looks fine'
+has "$out" '  + Updates       up to date'
+has "$out" '  + Secure Boot   on'
+has "$out" '  + NVIDIA        driver 615.78.08 is running'
+has "$out" '  + Full update   yesterday'
+has "$out" "  - Scheduler     the kernel's own"
+has "$out" '                  -> monolith scheduler gaming'
+lacks "$out" '█'
+
+# With UTF-8 the symbols change, and Monolith's mark goes beside the summary
+# when there's room for it.
+out="$(LC_ALL=C.UTF-8 TERM=xterm-256color run status)" || fail "$out"
+has "$out" '  ✓ Updates'
+has "$out" '                  → monolith scheduler gaming'
+lacks "$out" '█'
+out="$(LC_ALL=C.UTF-8 TERM=xterm-256color MONOLITH_MARK=1 COLUMNS=80 run status)" || fail "$out"
+[ "$(sed -n 1p <<<"$out")" = ' █▄      ▄█   Monolith KDE (NVIDIA)' ] || fail "no mark: $out"
+has "$out" ' ██ ▐██▌ ██   ✓ Everything looks fine'
+out="$(LC_ALL=C.UTF-8 TERM=xterm-256color MONOLITH_MARK=1 COLUMNS=50 run status)" || fail "$out"
+lacks "$out" '█'
+out="$(LC_ALL=C MONOLITH_MARK=1 COLUMNS=80 run status)" || fail "$out"
+lacks "$out" '█'
 
 reset
 deployments unsigned kde latest 44.20261029.0
 no_nvidia
 out="$(run status)" && fail 'an unsigned image passed'
 has "$out" 'from kde:latest, not signed'
-has "$out" 'rpm-ostree rebase ostree-image-signed:docker://ghcr.io/monolithlinux/kde:latest'
-lacks "$out" '  NVIDIA  '
+has "$out" '! 1 thing needs your attention'
+has "$out" '  ! Signature'
+has "$out" '-> rpm-ostree rebase ostree-image-signed:docker://ghcr.io/monolithlinux/kde:latest'
+lacks "$out" ' NVIDIA  '
+touch -d '10 days ago' "$XDG_STATE_HOME/monolith/update-reminder/last-update"
+out="$(run status)" && fail 'an unsigned image with an old update passed'
+has "$out" '! 2 things need your attention'
 
 reset
 deployments signed kde-nvidia 20261027 44.20261027.0
 out="$(run status)" && fail 'paused updates passed'
-has "$out" 'Updates      paused on the build from Tue, Oct 27, 2026'
-has "$out" 'monolith rollback latest'
+has "$out" '  ! Updates       paused on the build from Tue, Oct 27, 2026'
+has "$out" "When you're ready for the newest build:"
+has "$out" '-> monolith rollback latest'
 
 reset
 deployments signed kde-nvidia latest 44.20261029.0 44.20261030.0 44.20261028.0 'htop nvtop'
 out="$(run status)" || fail "a downloaded update needs attention: $out"
-has "$out" 'build 44.20261030.0 is downloaded; restart to use it'
-has "$out" 'Layered      htop, nvtop'
+has "$out" '  ^ Updates       build 44.20261030.0 is downloaded; restart to use it'
+has "$out" '  - Layered       htop, nvtop'
 
 reset
 rm -rf "$sys/module/nvidia"
 out="$(run status)" && fail 'a missing NVIDIA driver passed'
-has "$out" "NVIDIA's driver didn't load"
-has "$out" 'journalctl -b -k --grep=nvidia'
+has "$out" "  ! NVIDIA        the driver didn't load"
+has "$out" '-> journalctl -b -k --grep=nvidia'
+has "$out" '-> monolith edition kde'
 
 reset
 deployments signed kde latest 44.20261029.0
 rm -rf "$sys/module/nvidia"
 out="$(run status)" || fail "an NVIDIA card on the KDE edition needs attention: $out"
-has "$out" 'NVIDIA       card found, running on Nouveau/NVK'
-has "$out" 'Tip: For NVIDIA'
-has "$out" 'monolith edition kde-nvidia'
+has "$out" '  - NVIDIA        card found, running on Nouveau/NVK'
+has "$out" "For NVIDIA's own driver on a GTX 16, RTX 20 or newer card:"
+has "$out" '-> monolith edition kde-nvidia'
 
 reset
 no_nvidia
 out="$(run status)" && fail 'the NVIDIA edition without a card passed'
-has "$out" 'monolith edition kde'
+has "$out" 'no NVIDIA card found'
+has "$out" '-> monolith edition kde'
 
 reset
 touch -d '10 days ago' "$XDG_STATE_HOME/monolith/update-reminder/last-update"
 out="$(run status)" && fail 'an old update passed'
-has "$out" 'Full update  10 days ago'
-has "$out" "haven't been updated for 10 days"
+has "$out" '  ! Full update   10 days ago'
+has "$out" 'Update your apps, containers and dev tools:'
+has "$out" '-> monolith update'
 
 reset
 out="$(SB_STATE='SecureBoot disabled' KEY_STATE='is not enrolled' run status)" ||
     fail "Secure Boot off needs attention: $out"
-has "$out" 'off (before you turn it on: monolith enroll-secure-boot-key)'
+has "$out" '  - Secure Boot   off'
+has "$out" 'Before you turn it on:'
+has "$out" '-> monolith enroll-secure-boot-key'
 out="$(SB_STATE='SecureBoot disabled' KEY_STATE='is already enrolled' run status)" || fail "$out"
 has "$out" "off; Monolith's key is enrolled, so you can turn it on"
 out="$(KEY_STATE='is already in the enrollment request' run status)" && fail 'a waiting key enrollment passed'
+has "$out" "on; Monolith's key waits to be enrolled"
 has "$out" 'choose Enroll MOK'
 
 reset
 echo enabled >"$sys/kernel/sched_ext/state"
 echo lavd >"$sys/kernel/sched_ext/root/ops"
 out="$(run status)" || fail "$out"
-has "$out" 'Scheduler    scx_lavd in gaming mode'
+has "$out" '  + Scheduler     scx_lavd in gaming mode'
 out="$(UPDATES_OFF=1 run status)" || fail "$out"
-has "$out" 'Auto updates off (turn them on with: monolith toggle-updates enable)'
+has "$out" '  - Auto updates  off'
+has "$out" '-> monolith toggle-updates enable'
+
+# Long fix commands move left when a narrow terminal has no room for them.
+reset
+deployments unsigned kde latest 44.20261029.0
+out="$(COLUMNS=60 run status)" || true
+has "$out" $'\n    -> rpm-ostree rebase'
 
 reset
 rm "$test_root/status.json"
 out="$(run status)" || true
-has "$out" "Build        unknown, rpm-ostree didn't answer"
+has "$out" "unknown, rpm-ostree didn't answer"
 run status extra >/dev/null && fail 'status took an argument'
+unset LC_ALL
 
 # scheduler ------------------------------------------------------------------
 config="$etc/scx_loader/config.toml"

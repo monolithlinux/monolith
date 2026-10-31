@@ -1,0 +1,48 @@
+#!/usr/bin/bash
+# The greeting in new fish terminals: Monolith's mark, the build, anything that
+# waits for you, and a tip. Every new terminal waits for it, so it only reads
+# local files. Turn it off with: set -U fish_greeting
+set -euo pipefail
+# shellcheck source-path=SCRIPTDIR source=common.sh
+. "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/common.sh"
+
+case "${1-}" in
+    -h|--help)
+        cat <<'EOF'
+Usage: /usr/libexec/monolith/greeting
+
+Prints the greeting fish shows in new terminals. Turn it off with:
+    set -U fish_greeting
+EOF
+        exit 0
+        ;;
+esac
+
+os_release
+title="$BOLD$OS_NAME$RESET"
+[[ -z $OS_VERSION ]] || title+="$DIM $SYM_DOT $OS_VERSION$RESET"
+
+# One more line: what waits for you, or else a tip. Tips stay short enough to
+# fit beside the mark in an 80-column terminal.
+tips=(
+    "monolith status|checks updates, Secure Boot and drivers."
+    "monolith rollback|goes back to the build before an update."
+    "monolith scheduler gaming|turns on a gaming CPU scheduler."
+    "monolith|on its own opens the app catalog."
+    "monolith update|updates everything, apps included."
+    "monolith report-bug|starts a bug report with your details."
+    "monolith help|lists every command."
+    "set -U fish_greeting|turns this greeting off."
+)
+days="$(full_update_days)" || days=0
+if [[ -e $MONOLITH_STAGED ]]; then
+    second="$ACCENT$SYM_UP$RESET An update is ready. Restart to use it."
+elif ((days >= 7)); then
+    second="$WARN$SYM_WARN$RESET Last full update $days days ago: $ACCENT${BOLD}monolith update$RESET"
+else
+    tip="${tips[RANDOM % ${#tips[@]}]}"
+    second="${DIM}Tip:$RESET $ACCENT${tip%%|*}$RESET ${tip#*|}"
+fi
+
+beside tiny "$title" "$second"
+printf '\n'

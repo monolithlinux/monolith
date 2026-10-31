@@ -28,6 +28,28 @@
 #   files/kde/usr/bin/monolith-news --preview news/announcements.toml
 
 [[announcements]]
+id = "2026-10-30-monolith-look"
+date = 2026-10-30
+title = "monolith and fastfetch have a new look"
+category = "System"
+body = """
+Run `fastfetch` and you'll see Monolith's logo drawn in your terminal. The
+same logo now sits at the top of `monolith status` and `monolith help`, and in
+the app catalog next to your build and a few quick facts.
+
+In the catalog, ● marks the apps you have and ○ the ones you don't. The app
+you're on shows its details on the right, including what removing it keeps.
+
+New terminals now greet you with the logo and a tip, or tell you when an update
+is waiting for a restart. To turn that off, run `set -U fish_greeting`.
+"""
+note = "Don't see it yet? Update Monolith and restart first."
+links = [
+  { label = "The greeting", url = "https://github.com/monolithlinux/monolith/blob/main/docs/desktop.md#the-greeting" },
+  { label = "The app catalog", url = "https://github.com/monolithlinux/monolith/blob/main/docs/software.md" },
+]
+
+[[announcements]]
 id = "2026-10-30-monolith-command"
 date = 2026-10-30
 title = "mjust is now part of the monolith command"
