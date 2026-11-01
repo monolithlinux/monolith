@@ -57,6 +57,9 @@ RECORD = STATE_HOME / "monolith/update-reminder/last-update"
 CATALOG_STATE = STATE_HOME / "monolith/software"
 FLATPAK_USER = Path(os.environ.get("FLATPAK_USER_DIR") or DATA_HOME / "flatpak")
 FLATPAK_SYSTEM = Path(os.environ.get("FLATPAK_SYSTEM_DIR") or "/var/lib/flatpak")
+# Where Homebrew lives on Linux, for when brew isn't on PATH. HOMEBREW_PREFIX,
+# which `brew shellenv` sets, can point somewhere else.
+HOMEBREW = Path(os.environ.get("HOMEBREW_PREFIX") or "/home/linuxbrew/.linuxbrew")
 RELEASE_NOTES = "https://github.com/monolithlinux/monolith/releases/latest"
 GEAR_LEVER = "it.mijorus.gearlever"
 PROTONPLUS = "com.vysp3r.ProtonPlus"
@@ -1241,8 +1244,8 @@ def gh_commands(session):
 
 
 def brew_commands(session):
-    brew = session.which("brew") or next(
-        (p for p in ("/home/linuxbrew/.linuxbrew/bin/brew",) if os.access(p, os.X_OK)), None)
+    fallback = HOMEBREW / "bin/brew"
+    brew = session.which("brew") or (str(fallback) if os.access(fallback, os.X_OK) else None)
     return [[brew, "update"], [brew, "upgrade"]] if brew else None
 
 

@@ -121,6 +121,9 @@ case "$1 $2" in
 esac''',
 }
 
+# What the stand-ins and the terminal tests run besides the stand-ins.
+UTILS = ("cat", "sleep", "touch", "stty")
+
 CATALOG = r'''
 [ "$1" = update ] || exit 0
 printf '\n(1/2) Sidra — Update\n'
@@ -139,11 +142,19 @@ class World:
         self.root = Path(tempfile.mkdtemp(prefix="monolith-update-test."))
         self.home = self.root / "home"
         self.bin = self.root / "bin"
+        self.utils = self.root / "utils"
         self.scenario = self.root / "scenario"
         self.calls_file = self.root / "calls"
         libexec = self.root / "usr/libexec/monolith"
-        for path in (self.home, self.bin, self.scenario, libexec):
+        for path in (self.home, self.bin, self.utils, self.scenario, libexec):
             path.mkdir(parents=True)
+        # PATH holds only the stand-ins and the few commands they use, so a
+        # real program on this machine, such as rustup in /usr/bin, can't run.
+        for name in UTILS:
+            found = shutil.which(name)
+            if not found:
+                raise SystemExit(f"the tests need {name}")
+            (self.utils / name).symlink_to(found)
         self.update = libexec / "update"
         shutil.copy(SOURCE, self.update)
         self.write(libexec / "software", "#!/bin/bash\n" + CATALOG, mode=0o755)
@@ -191,10 +202,12 @@ class World:
 
     def env(self, **extra):
         env = {
-            "PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "CALLS": str(self.calls_file),
+            "PATH": f"{self.bin}:{self.utils}", "HOME": str(self.home), "CALLS": str(self.calls_file),
             "SCENARIO": str(self.scenario), "MONOLITH_OS_RELEASE": str(self.root / "os-release"),
             "MONOLITH_LOGOS": str(LOGOS), "MONOLITH_OSTREE_BOOTED": str(self.root / "ostree-booted"),
             "FLATPAK_SYSTEM_DIR": str(self.root / "var/lib/flatpak"), "MONOLITH_UPDATE_POLL": "0.05",
+            # GitHub's runners have Homebrew in its usual place.
+            "HOMEBREW_PREFIX": str(self.root / "linuxbrew"),
             "LANG": "C.UTF-8", "TERM": "xterm-256color", "SHELL": "/bin/bash",
         }
         env.update(extra)
@@ -353,6 +366,18 @@ def steps_that_dont_apply_are_left_out(w):
     os.remove(w.root / "ostree-booted")
     code, out, _ = w.run()
     expect(ran(out) == ["Flatpaks", "Firmware"], f"ran {ran(out)}", out)
+
+
+@test
+def homebrew_outside_path(w):
+    # brew isn't always on PATH, so Homebrew's own place counts too.
+    w.write(w.root / "linuxbrew/bin/brew", '#!/bin/bash\nprintf "%s\\n" "brew $*" >>"$CALLS"\n'
+            'echo "Already up-to-date."\n', mode=0o755)
+    code, out, _ = w.run("--only", "brew")
+    expect(code == 0 and ran(out) == ["Homebrew"], f"exit {code}, ran {ran(out)}", out)
+    calls = w.calls()
+    expect(calls[-2:] == ["brew update", "brew upgrade"], "brew didn't update and upgrade", "\n".join(calls))
+    has(out, "Up to date")
 
 
 @test
