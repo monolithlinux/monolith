@@ -365,9 +365,9 @@ modules:
         # Help must not need or touch a home directory.
         HOME=/nonexistent /usr/libexec/monolith/software help >/dev/null
         HOME=/nonexistent python3 -B /usr/libexec/monolith/gear-lever-app --help >/dev/null
-        # Programs the catalog and the system commands run.
+        # Programs the catalog, the updater and the system commands run.
         for command in fzf python3 curl flock readelf flatpak jq just lspci mokutil xdg-open busctl \
-            topgrade; do
+            topgrade rpm-ostree fwupdmgr distrobox podman; do
           command -v "$command" >/dev/null
         done
         # Node.js 24 with full locale data, and npm installing global packages
@@ -383,6 +383,10 @@ modules:
           systemd-tmpfiles --user --create /usr/share/user-tmpfiles.d/monolith-topgrade.conf
         test -f "$(readlink "$home/.config/topgrade.d/monolith.toml")"
         rm -rf "$home"
+        # monolith update explains itself without needing or touching a home
+        # directory.
+        test -x /usr/libexec/monolith/update
+        HOME=/nonexistent python3 -B /usr/libexec/monolith/update --help >/dev/null
         # Monolith's system commands, which replace the old base's ujust. mjust and
         # ujust are old names for monolith, and old command names still work.
         help="$(HOME=/nonexistent /usr/bin/monolith help)"

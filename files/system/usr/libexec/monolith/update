@@ -1,0 +1,1913 @@
+#!/usr/bin/python3
+"""Bring Monolith, your apps and your tools up to date.
+
+This is `monolith update`, which `update` on its own runs too. `monolith update
+APP...` goes to the catalog instead, so it never reaches this script.
+
+Each step runs on its own, with no terminal attached, and one failing doesn't
+stop the rest. Their full output goes to ~/.local/state/monolith/update/. On a
+terminal the update plays the Sunrise: Monolith's mark rises out of the ground
+and the sun comes up behind it as the steps finish. Piped output, NO_COLOR and
+the Linux console get plain lines, and MONOLITH_MOTION=0 keeps the picture
+still. A run that gets through every step is recorded for the login reminder,
+`monolith status` and the greeting.
+
+Tests point these at stand-ins: MONOLITH_OS_RELEASE, MONOLITH_LOGOS,
+MONOLITH_OSTREE_BOOTED, FLATPAK_USER_DIR, FLATPAK_SYSTEM_DIR, and
+MONOLITH_UPDATE_POLL, the seconds between checks while waiting.
+"""
+import ast
+import codecs
+import configparser
+import datetime
+import json
+import math
+import os
+import random
+import re
+import selectors
+import shlex
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import termios
+import time
+import tomllib
+import traceback
+import unicodedata
+from pathlib import Path
+
+LIBEXEC = Path(__file__).resolve().parent
+SOFTWARE = LIBEXEC / "software"
+LOGOS = Path(os.environ.get("MONOLITH_LOGOS") or LIBEXEC.parent.parent / "share/fastfetch/logos")
+OS_RELEASE = Path(os.environ.get("MONOLITH_OS_RELEASE") or "/usr/lib/os-release")
+OSTREE_BOOTED = Path(os.environ.get("MONOLITH_OSTREE_BOOTED") or "/run/ostree-booted")
+POLL = float(os.environ.get("MONOLITH_UPDATE_POLL") or 3)
+HOME = Path.home()
+STATE_HOME = Path(os.environ.get("XDG_STATE_HOME") or HOME / ".local/state")
+CONFIG_HOME = Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config")
+DATA_HOME = Path(os.environ.get("XDG_DATA_HOME") or HOME / ".local/share")
+CONFIG = CONFIG_HOME / "monolith/update.toml"
+LOG_DIR = STATE_HOME / "monolith/update"
+# The login reminder, `monolith status` and the greeting read this file's time.
+RECORD = STATE_HOME / "monolith/update-reminder/last-update"
+CATALOG_STATE = STATE_HOME / "monolith/software"
+FLATPAK_USER = Path(os.environ.get("FLATPAK_USER_DIR") or DATA_HOME / "flatpak")
+FLATPAK_SYSTEM = Path(os.environ.get("FLATPAK_SYSTEM_DIR") or "/var/lib/flatpak")
+RELEASE_NOTES = "https://github.com/monolithlinux/monolith/releases/latest"
+GEAR_LEVER = "it.mijorus.gearlever"
+PROTONPLUS = "com.vysp3r.ProtonPlus"
+KEEP_LOGS = 10
+FPS = 15
+FLARE = 1.3  # seconds the sunburst plays at the end
+
+HELP = """\
+Usage: monolith update [--list] [--only STEPS] [--skip STEPS]
+       monolith update APP...
+
+Updates Monolith, your Flatpaks, the apps from the catalog, Proton tools,
+AppImages, Distrobox containers, and the developer tools you've installed,
+one step at a time. A step that fails doesn't stop the others. Running
+update on its own does the same.
+
+  --list          show the steps it would run here, then stop
+  --only STEPS    run only these steps, separated by commas
+  --skip STEPS    leave these steps out
+  APP...          update only these apps from the catalog
+
+Your settings go in ~/.config/monolith/update.toml:
+
+  skip = ["distrobox"]
+
+  [commands]
+  "Dotfiles" = "git -C ~/dotfiles pull"
+
+Each run's full output is kept in ~/.local/state/monolith/update/."""
+
+OK, WARN, FAIL, STOPPED, NOT_RUN = "ok", "warn", "fail", "stopped", "not run"
+
+UNICODE_SYMBOLS = dict(ok="✓", warn="!", fail="✗", wait="○", stop="○", to="→", dot="·", more="…",
+                       sub="╰", bar="━", half="╸")
+ASCII_SYMBOLS = dict(ok="+", warn="!", fail="x", wait="-", stop="-", to="->", dot="-", more="...",
+                     sub="`", bar="=", half="-")
+SYM = dict(UNICODE_SYMBOLS)
+
+
+class Usage(Exception):
+    """A mistake on the command line or in the settings; the message says what."""
+
+
+# --- text ---------------------------------------------------------------------------------
+
+ESCAPE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])")
+CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+
+
+def plain(text):
+    """A line from a program, without color codes and control characters."""
+    return CONTROL.sub("", ESCAPE.sub("", text.replace("\t", " "))).strip()
+
+
+def char_width(ch):
+    if unicodedata.combining(ch) or unicodedata.category(ch) in ("Mn", "Me", "Cf"):
+        return 0
+    return 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+
+
+def width(text):
+    return sum(char_width(ch) for ch in ESCAPE.sub("", text))
+
+
+def clip(text, limit):
+    """Cut text that may hold color codes to at most `limit` columns, so the
+    terminal never wraps it."""
+    out, used, i, styled = [], 0, 0, False
+    while i < len(text):
+        match = ESCAPE.match(text, i)
+        if match:
+            out.append(match.group(0))
+            styled = True
+            i = match.end()
+            continue
+        w = char_width(text[i])
+        if used + w > limit:
+            break
+        out.append(text[i])
+        used += w
+        i += 1
+    if styled:
+        out.append("\x1b[0m")
+    return "".join(out)
+
+
+def fit(text, limit):
+    """Shorten plain text to `limit` columns, ending in an ellipsis when cut."""
+    if width(text) <= limit:
+        return text
+    more = SYM["more"]
+    if limit <= width(more):
+        return clip(text, max(0, limit))
+    return clip(text, limit - width(more)).rstrip() + more
+
+
+def pad(text, size):
+    return text + " " * max(0, size - width(text))
+
+
+def clock(seconds):
+    seconds = int(max(0, seconds))
+    hours, rest = divmod(seconds, 3600)
+    minutes, seconds = divmod(rest, 60)
+    return f"{hours}:{minutes:02d}:{seconds:02d}" if hours else f"{minutes}:{seconds:02d}"
+
+
+def plural(count, one, many=None):
+    return f"{count} {one if count == 1 else many or one + 's'}"
+
+
+def tilde(path):
+    path, home = str(path), str(HOME)
+    return "~" + path[len(home):] if path == home or path.startswith(home + "/") else path
+
+
+def ease(x):
+    x = min(1.0, max(0.0, x))
+    return 1 - (1 - x) ** 3
+
+
+def smooth(x):
+    x = min(1.0, max(0.0, x))
+    return x * x * (3 - 2 * x)
+
+
+def last_error(lines):
+    """The line most likely to explain a failure."""
+    for line in reversed(lines):
+        if re.search(r"\b(error|failed|fatal|denied|not authorized)\b", line, re.I):
+            return re.sub(r"^(error|fatal):\s*", "", line, flags=re.I)
+    return lines[-1] if lines else ""
+
+
+def os_release():
+    values = {}
+    try:
+        text = OS_RELEASE.read_text(encoding="utf-8")
+    except OSError:
+        return values
+    for line in text.splitlines():
+        key, sep, value = line.partition("=")
+        if not sep or not key.strip().isidentifier():
+            continue
+        try:
+            words = shlex.split(value)
+        except ValueError:
+            words = [value.strip().strip("\"'")]
+        values[key.strip()] = words[0] if words else ""
+    return values
+
+
+def nice_date(yyyymmdd):
+    try:
+        day = datetime.datetime.strptime(yyyymmdd, "%Y%m%d")
+    except ValueError:
+        return yyyymmdd
+    return f"{day:%a}, {day:%b} {day.day}, {day.year}"
+
+
+def terminal_size():
+    try:
+        size = os.get_terminal_size(sys.stdout.fileno())
+        return max(1, size.columns), max(1, size.lines)
+    except OSError:
+        return 80, 24
+
+
+# --- the look -----------------------------------------------------------------------------
+
+class Look:
+    """What this terminal can show, by the same rules as the other monolith commands."""
+
+    def __init__(self, stream):
+        term = os.environ.get("TERM") or "dumb"
+        locale = os.environ.get("LC_ALL") or os.environ.get("LC_CTYPE") or os.environ.get("LANG") or ""
+        self.tty = stream.isatty()
+        self.color = self.tty and not os.environ.get("NO_COLOR") and term != "dumb"
+        self.unicode = (bool(re.search(r"utf-?8", locale, re.I)) and term not in ("dumb", "linux")
+                        and not term.startswith("vt"))
+        self.motion = os.environ.get("MONOLITH_MOTION") != "0"
+        self.live = self.color and self.unicode
+
+
+class Paint:
+    """Only the terminal's own 16 colors, so the look follows its theme."""
+
+    def __init__(self, on):
+        code = (lambda value: f"\x1b[{value}m") if on else (lambda value: "")
+        self.reset, self.bold, self.dim = code("0"), code("1"), code("2")
+        self.accent, self.good, self.warn, self.bad = code("94"), code("32"), code("33"), code("31")
+
+
+# The fastfetch logos are drawn with quadrant blocks. Reading them back as
+# pixels lets the sun pass behind the slabs.
+QUAD = {
+    " ": (0, 0, 0, 0), "▘": (1, 0, 0, 0), "▝": (0, 1, 0, 0), "▖": (0, 0, 1, 0),
+    "▗": (0, 0, 0, 1), "▀": (1, 1, 0, 0), "▄": (0, 0, 1, 1), "▌": (1, 0, 1, 0),
+    "▐": (0, 1, 0, 1), "▚": (1, 0, 0, 1), "▞": (0, 1, 1, 0), "▛": (1, 1, 1, 0),
+    "▜": (1, 1, 0, 1), "▙": (1, 0, 1, 1), "▟": (0, 1, 1, 1), "█": (1, 1, 1, 1),
+}
+GLYPH = {bits: ch for ch, bits in QUAD.items()}
+# Pixel inks: (foreground, background). The outer slabs use the terminal's own
+# text color, which has no background form, so they always take the foreground.
+INK = {"outer": ("39", None), "middle": ("94", "104"), "sun": ("93", "103")}
+PRIORITY = ("outer", "middle", "sun")
+
+
+def load_mark(path):
+    rows = []
+    for line in Path(path).read_text(encoding="utf-8").splitlines():
+        cells, ink, i = [], "outer", 0
+        while i < len(line):
+            if line[i] == "$" and i + 1 < len(line) and line[i + 1].isdigit():
+                ink = "outer" if line[i + 1] == "1" else "middle"
+                i += 2
+                continue
+            cells.append((line[i], ink))
+            i += 1
+        rows.append(cells)
+    pixels = {}
+    for y, row in enumerate(rows):
+        for x, (ch, ink) in enumerate(row):
+            for k, on in enumerate(QUAD.get(ch, (0, 0, 0, 0))):
+                if on:
+                    pixels[(2 * x + k % 2, 2 * y + k // 2)] = ink
+    if not pixels or not any(ink == "middle" for ink in pixels.values()):
+        raise ValueError(f"{path} isn't Monolith's mark")
+    return max(len(row) for row in rows), len(rows), pixels
+
+
+def cell(quad):
+    """Four pixel inks as one glyph with a foreground and a background."""
+    inks = [q for q in quad if q]
+    fg = next(p for p in PRIORITY if p in inks)
+    rest = [q for q in quad if q != fg]
+    bg = None
+    if rest:
+        bg = max(sorted(set(rest), key=lambda q: (q is None, str(q))), key=rest.count)
+    bits = tuple(1 if q == fg else 0 for q in quad)
+    style = INK[fg][0] + (";" + INK[bg][1] if bg else "")
+    return style, GLYPH[bits]
+
+
+def paint_row(cells):
+    """(style, character) cells as one line, switching styles only where they change."""
+    out, current = [], None
+    for style, ch in cells:
+        if style != current:
+            out.append(f"\x1b[0;{style}m" if style else "\x1b[0m")
+            current = style
+        out.append(ch)
+    out.append("\x1b[0m")
+    return "".join(out)
+
+
+class Scene:
+    """Monolith's mark under a sky. The sun rises from behind the middle slab
+    with the update's progress and ends high in the V between the outer slabs."""
+
+    SIZES = {
+        # logo, columns, rows of sky, sun radius in pixels, where the sun ends.
+        # The sun is narrower than the middle slab and ends with sky below it;
+        # one sitting right on the slab reads as a head or a candle flame.
+        "large": ("monolith.txt", 38, 4, 8.0, 0.4),
+        "medium": ("monolith-medium.txt", 20, 2, 3.5, 0.4),
+    }
+
+    def __init__(self, size):
+        logo, self.cols, self.sky, self.rx, end = self.SIZES[size]
+        self.mw, self.mh, self.mark = load_mark(LOGOS / logo)
+        self.ox = (self.cols - self.mw) // 2
+        self.ground = self.sky + self.mh
+        self.rows = self.ground + 1
+        # Quadrant pixels are about twice as tall as they are wide.
+        self.ry = self.rx * 0.47
+        self.cx = 2 * self.ox + self.mw
+        top = min(y for (_x, y), ink in self.mark.items() if ink == "middle")
+        self.cy_end = 2 * self.sky + end
+        self.cy_start = 2 * self.sky + top + self.ry + 1.0
+        rng = random.Random(11)
+        self.stars = {}
+        for y in range(self.ground):
+            for x in range(self.cols):
+                if rng.random() < 0.075:
+                    self.stars[(x, y)] = (rng.uniform(0, 6.3), rng.uniform(0.8, 2.0), rng.random() < 0.2)
+
+    def frame(self, t, rise=1.0, progress=0.0, flare=None):
+        px = {}
+        # The sun rises with the mark at first, hidden behind the middle slab,
+        # then climbs evenly with the update's progress.
+        lift = round((1 - ease(rise)) * 2 * self.mh)
+        cy = self.cy_start + (self.cy_end - self.cy_start) * smooth(progress) + lift
+        rays = self.rays(cy, flare) if flare is not None else {}
+        floor = 2 * self.ground
+        for y in range(int(cy - self.ry) - 1, int(cy + self.ry) + 2):
+            for x in range(int(self.cx - self.rx) - 1, int(self.cx + self.rx) + 2):
+                if 0 <= y < floor and ((x + 0.5 - self.cx) / self.rx) ** 2 + ((y + 0.5 - cy) / self.ry) ** 2 <= 1:
+                    px[(x, y)] = "sun"
+        for (x, y), ink in self.mark.items():
+            yy = y + 2 * self.sky + lift
+            if yy < floor:
+                px[(x + 2 * self.ox, yy)] = ink
+        lines = []
+        for row in range(self.rows):
+            cells = []
+            for col in range(self.cols):
+                if row == self.ground:
+                    cells.append(self.ground_cell(col, rise, progress))
+                    continue
+                quad = [px.get((2 * col + k % 2, 2 * row + k // 2)) for k in range(4)]
+                if any(quad):
+                    cells.append(cell(quad))
+                elif (col, row) in rays:
+                    cells.append(rays[(col, row)])
+                else:
+                    cells.append(self.sky_cell(col, row, t, cy, rise, progress, flare))
+            lines.append(paint_row(cells))
+        return lines
+
+    def rays(self, cy, flare):
+        """A sunburst: six rays that grow outwards and fade, one cell per row
+        (or per column, for the flat ones) so none comes out doubled. None
+        points straight up, because the sun's centre falls between two columns."""
+        cells = {}
+        reach = 1.3 + 2.4 * flare
+        style = "1;33" if flare < 0.45 else "33" if flare < 0.75 else "2;33"
+        for ray in (15, 45, 75, 105, 135, 165):
+            a = math.radians(ray)
+            ch = "─" if ray in (15, 165) else "│" if ray in (75, 105) else "╱" if ray < 90 else "╲"
+            # Along the ray, t pixels out: x = cx + t cos a, y = cy - t sin a / 2.1
+            # (a cell is about 2.1 times as tall as it is wide). The sun is a unit
+            # circle in (x - cx) / rx, (y - cy) / ry.
+            per_t = math.hypot(math.cos(a) / self.rx, math.sin(a) / (2.1 * self.ry))
+            near, far = (reach - 0.55) / per_t, reach / per_t
+            if 30 < ray < 150:
+                for row in range(self.ground):
+                    t = (cy - (2 * row + 1)) * 2.1 / math.sin(a)
+                    if near <= t <= far:
+                        cells[(round((self.cx + t * math.cos(a) - 1) / 2), row)] = (style, ch)
+            else:
+                for col in range(self.cols):
+                    t = ((2 * col + 1) - self.cx) / math.cos(a)
+                    if near <= t <= far:
+                        cells[(col, round((cy - t * math.sin(a) / 2.1 - 1) / 2))] = (style, ch)
+        return cells
+
+    def ground_cell(self, col, rise, progress):
+        left, right = self.ox - 3, self.ox + self.mw + 3
+        if not left <= col < right or rise <= 0:
+            return "", " "
+        # Sunlight spreads along the ground from the middle as the sun rises.
+        lit = (0.5 + 0.5 * self.mw) * smooth(progress)
+        off = abs(col + 0.5 - (self.ox + self.mw / 2))
+        if off < lit * 0.55:
+            return "33", "▔"
+        if off < lit:
+            return "2;33", "▔"
+        edge = min(col - left, right - 1 - col)
+        return ("90" if edge >= 3 else "2;90"), "▔"
+
+    def sky_cell(self, col, row, t, cy, rise, progress, flare):
+        dx = (2 * col + 1 - self.cx) / self.rx
+        dy = (2 * row + 1 - cy) / self.ry
+        d = math.hypot(dx, dy)
+        star = self.stars.get((col, row))
+        if star and d > 1.6:
+            phase, speed, big = star
+            night = smooth(rise) * (1 - 0.8 * smooth(progress)) * (1 - (flare or 0))
+            glow = (0.5 + 0.5 * math.sin(phase + speed * t)) * night
+            if glow < 0.18:
+                return "", " "
+            if glow < 0.42:
+                return "2", "·"
+            if glow < 0.7:
+                return "", "·"
+            if big:
+                return ("1", "✶") if glow > 0.85 else ("", "⋆")
+            return "", ("∙" if glow < 0.85 else "•")
+        return "", " "
+
+
+def spinner(t, motion):
+    """Three bars shaped like the mark, two tall around a short one, breathing."""
+    if not motion:
+        return "▆▃▆"
+    bars = "▁▂▃▄▅▆▇█"
+    out = ""
+    for i, base in enumerate((5.5, 2.5, 5.5)):
+        h = base + math.sin(t * 5.2 - i * 1.1)
+        out += bars[max(0, min(7, round(h) - 1))]
+    return out
+
+
+def progress_bar(fraction, size, paint):
+    filled = max(0.0, min(1.0, fraction)) * size
+    whole = int(filled)
+    half = whole < size and filled - whole >= 0.5
+    rest = size - whole - (1 if half else 0)
+    return (paint.accent + SYM["bar"] * whole + (SYM["half"] if half else "") + paint.reset
+            + paint.dim + SYM["bar"] * rest + paint.reset)
+
+
+# --- running programs ---------------------------------------------------------------------
+
+class Log:
+    """Every command a run starts, with its output, in one file per run."""
+
+    def __init__(self, path):
+        self.path = path
+        self.file = open(path, "ab") if path else None
+
+    def write(self, text):
+        self.raw(text.encode("utf-8", "replace"))
+
+    def raw(self, data):
+        if self.file:
+            try:
+                self.file.write(data)
+            except OSError:
+                pass
+
+    def command(self, argv):
+        self.write(f"\n$ {shlex.join(str(a) for a in argv)}\n")
+
+    def flush(self):
+        if self.file:
+            try:
+                self.file.flush()
+            except OSError:
+                pass
+
+    def close(self):
+        if self.file:
+            self.flush()
+            self.file.close()
+            self.file = None
+
+
+def open_log():
+    """A new log in LOG_DIR, which keeps the last few runs and links the newest
+    as latest.log."""
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        path = LOG_DIR / f"{stamp}.log"
+        n = 1
+        while path.exists():
+            n += 1
+            path = LOG_DIR / f"{stamp}-{n}.log"
+        log = Log(path)
+        runs = sorted(p for p in LOG_DIR.glob("*.log") if p.name != "latest.log" and not p.is_symlink())
+        for old in runs[:-KEEP_LOGS]:
+            old.unlink(missing_ok=True)
+        link = LOG_DIR / ".latest.log.new"
+        link.unlink(missing_ok=True)
+        link.symlink_to(path.name)
+        os.replace(link, LOG_DIR / "latest.log")
+        return log
+    except OSError:
+        fd, name = tempfile.mkstemp(prefix="monolith-update-", suffix=".log")
+        os.close(fd)
+        return Log(Path(name))
+
+
+class Session:
+    """One run: the steps, their programs, the log, and Ctrl+C."""
+
+    def __init__(self, log, ui=None):
+        self.log, self.ui = log, ui
+        self.found = []        # steps that apply here, in order
+        self.phase = "find"    # find, run, done
+        self.step = None       # the step running now
+        self.stop = False      # Ctrl+C once: stop after this step
+        self.abort = False     # twice: stop now
+        self.signal = None     # a TERM or HUP that ended the run
+        self.restart_to = None  # a build waiting for the next restart
+        self.started = time.monotonic()
+        self.ended = None
+        info = os_release()
+        self.subtitle = (" " + SYM["dot"] + " ").join(
+            v for v in (info.get("VARIANT"), info.get("OSTREE_VERSION")) if v) or info.get("PRETTY_NAME", "")
+
+    def tick(self):
+        if self.ui:
+            self.ui.tick()
+
+    @staticmethod
+    def which(name):
+        return shutil.which(name)
+
+    def run(self, argv, parse=None):
+        """Run a program for the current step, showing its latest line under the
+        step. Returns its exit code and output lines."""
+        argv = [str(a) for a in argv]
+        self.log.command(argv)
+        start = time.monotonic()
+        try:
+            proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, start_new_session=True)
+        except OSError as error:
+            self.log.write(f"{error}\n")
+            return 127, [str(error)]
+        lines = []
+        decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        partial = ""
+        fd = proc.stdout.fileno()
+        os.set_blocking(fd, False)
+        selector = selectors.DefaultSelector()
+        selector.register(fd, selectors.EVENT_READ)
+        reading, sent, signalled_at, exited_at = True, 0, 0.0, None
+        while reading or proc.poll() is None:
+            # A program can leave a background child holding its output open.
+            if proc.poll() is not None:
+                exited_at = exited_at or time.monotonic()
+                if time.monotonic() - exited_at > 3:
+                    break
+            if reading:
+                for _key, _events in selector.select(timeout=1 / FPS):
+                    try:
+                        chunk = os.read(fd, 65536)
+                    except BlockingIOError:
+                        continue
+                    if not chunk:
+                        reading = False
+                        selector.unregister(fd)
+                        break
+                    self.log.raw(chunk)
+                    partial += decoder.decode(chunk)
+                    *done, partial = partial.split("\n")
+                    for line in done:
+                        self._line(line, lines, parse, True)
+                    if partial:
+                        self._line(partial, lines, parse, False)
+            else:
+                time.sleep(1 / FPS)
+            # Stopping now: ask the program to stop as Ctrl+C would, then insist.
+            if self.abort:
+                now = time.monotonic()
+                for number, (sig, after) in enumerate(((signal.SIGINT, 0), (signal.SIGTERM, 5), (signal.SIGKILL, 10))):
+                    if sent == number and now - signalled_at >= after:
+                        try:
+                            os.killpg(proc.pid, sig)
+                        except (ProcessLookupError, PermissionError):
+                            pass
+                        sent = number + 1
+                        signalled_at = signalled_at or now
+            self.tick()
+        selector.close()
+        partial += decoder.decode(b"", final=True)
+        if partial:
+            self._line(partial, lines, parse, True)
+        proc.stdout.close()
+        code = proc.wait()
+        self.log.write(f"[exit {code} after {clock(time.monotonic() - start)}]\n")
+        self.log.flush()
+        return code, lines
+
+    def _line(self, line, lines, parse, final):
+        segments = [s for s in (plain(part) for part in line.split("\r")) if s]
+        if not segments:
+            return
+        if self.step:
+            self.step.sub = segments[-1]
+        for segment in segments:
+            if final:
+                lines.append(segment)
+            if parse:
+                parse(segment, final)
+        if len(lines) > 5000:
+            del lines[:2500]
+
+    def capture(self, argv, timeout=30):
+        """Run a quick query and return its exit code and standard output. Its
+        errors go to the log."""
+        argv = [str(a) for a in argv]
+        self.log.command(argv)
+        try:
+            proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, start_new_session=True)
+        except OSError as error:
+            self.log.write(f"{error}\n")
+            return 127, ""
+        buffers = {proc.stdout.fileno(): bytearray(), proc.stderr.fileno(): bytearray()}
+        out, err = buffers[proc.stdout.fileno()], buffers[proc.stderr.fileno()]
+        selector = selectors.DefaultSelector()
+        for fd in buffers:
+            os.set_blocking(fd, False)
+            selector.register(fd, selectors.EVENT_READ)
+        deadline = time.monotonic() + timeout
+        open_fds = set(buffers)
+        while open_fds:
+            if time.monotonic() > deadline or self.abort:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+                break
+            for key, _events in selector.select(timeout=1 / FPS):
+                try:
+                    chunk = os.read(key.fd, 65536)
+                except BlockingIOError:
+                    continue
+                if chunk:
+                    buffers[key.fd] += chunk
+                else:
+                    selector.unregister(key.fd)
+                    open_fds.discard(key.fd)
+            self.tick()
+        selector.close()
+        proc.stdout.close()
+        proc.stderr.close()
+        code = proc.wait()
+        if err:
+            self.log.raw(bytes(err))
+        self.log.write(f"[exit {code}]\n")
+        return code, out.decode("utf-8", "replace")
+
+    def sleep(self, seconds):
+        """Wait while the screen keeps moving. Ctrl+C ends the wait early."""
+        until = time.monotonic() + seconds
+        while time.monotonic() < until and not (self.stop or self.abort):
+            time.sleep(min(1 / FPS, max(0.0, until - time.monotonic())))
+            self.tick()
+
+    def unit_active(self, unit, user=False):
+        if not self.which("systemctl"):
+            return False
+        argv = ["systemctl"] + (["--user"] if user else []) + ["is-active", "--quiet", unit]
+        return self.capture(argv, timeout=10)[0] == 0
+
+    def wait_for_unit(self, step, unit, message, user=False):
+        """Wait for an automatic update to finish. False when stopped meanwhile."""
+        while self.unit_active(unit, user):
+            step.detail = message
+            if self.stop or self.abort:
+                return False
+            self.sleep(POLL)
+        return not (self.stop or self.abort)
+
+    def progress(self, now):
+        if self.phase == "find" or not self.found:
+            return 0.0
+        total = sum(s.weight for s in self.found)
+        done = 0.0
+        for step in self.found:
+            if step.state == "done":
+                done += step.weight
+            elif step.state == "running":
+                done += step.weight * step.share(now)
+        return min(1.0, done / total)
+
+
+# --- the steps ----------------------------------------------------------------------------
+
+class Result:
+    def __init__(self, kind, text, more=()):
+        self.kind, self.text, self.more = kind, text, [m for m in more if m]
+
+
+class Step:
+    id = title = ""
+    weight = 1    # its share of the progress bar
+    expect = 20   # seconds it usually takes, to keep the bar moving
+
+    def __init__(self):
+        self.state = "waiting"   # waiting, running, done
+        self.result = None
+        self.detail = ""         # what it's doing, beside its name
+        self.sub = ""            # its program's latest line, under it
+        self.fraction = None     # how far along it is, when it can tell
+        self.started = self.ended = None
+
+    def ready(self, session):
+        """Does this step apply here? Quick checks only."""
+        return True
+
+    def commands(self):
+        """What it runs, for --list."""
+        return ""
+
+    def run(self, session):
+        raise NotImplementedError
+
+    def share(self, now):
+        if self.fraction is not None:
+            return min(0.97, max(0.0, self.fraction))
+        elapsed = now - (self.started or now)
+        return min(0.9, 1 - math.exp(-elapsed / self.expect))
+
+
+def deployments(status):
+    return [d for d in (status or {}).get("deployments") or [] if isinstance(d, dict)]
+
+
+def image_parts(ref):
+    """ostree-image-signed:docker://ghcr.io/monolithlinux/kde:latest -> (ghcr.io/monolithlinux/kde, latest)"""
+    image = ref.split("docker://", 1)[-1]
+    image = image.removeprefix("ostree-unverified-registry:").split("@", 1)[0]
+    name, sep, tag = image.rpartition(":")
+    if not sep or "/" in tag:
+        return image, ""
+    return name, tag
+
+
+DIFF_HEADER = re.compile(r"^(Upgraded|Downgraded|Removed|Added):?\s*(.*)$")
+DIFF_CHANGE = re.compile(r"^(\S+)\s+(\S+)\s+->\s+(\S+)$")
+# The packages the release notes call major, as in .github/workflows/changelog.py.
+MAJOR = (("Kernel", ("kernel-cachyos", "kernel-cachyos-lto", "kernel-core", "kernel")),
+         ("Mesa", ("mesa-dri-drivers",)), ("NVIDIA", ("nvidia-driver",)), ("Plasma", ("plasma-workspace",)),
+         ("systemd", ("systemd",)), ("Brave", ("brave-origin-nightly",)), ("Steam", ("steam",)),
+         ("Gamescope", ("gamescope",)), ("GameMode", ("gamemode",)), ("MangoHud", ("mangohud",)),
+         ("Tailscale", ("tailscale",)), ("Fish", ("fish",)))
+
+
+def parse_diff(lines):
+    """rpm-ostree's package diff: {name: (old, new)} for changed packages, and
+    how many packages changed in all."""
+    changed, count, section = {}, 0, None
+    for line in lines:
+        header = DIFF_HEADER.match(line)
+        if header:
+            section, line = header.group(1), header.group(2).strip()
+            if not line:
+                continue
+        if section in ("Upgraded", "Downgraded") and (change := DIFF_CHANGE.match(line)):
+            changed[change.group(1)] = (change.group(2), change.group(3))
+            count += 1
+        elif section in ("Removed", "Added") and re.fullmatch(r"\S+", line):
+            count += 1
+        else:
+            section = None
+    return changed, count
+
+
+def version_of(evr):
+    evr = evr.split(":", 1)[-1]
+    return evr.rsplit("-", 1)[0] if "-" in evr else evr
+
+
+def major_changes(changed, count, room=48):
+    """The release notes' major packages that changed, as much as fits in
+    ROOM columns, or how many packages changed when none of them did."""
+    text = ""
+    for label, names in MAJOR:
+        name = next((n for n in names if n in changed), None)
+        if not name:
+            continue
+        part = f"{label} {version_of(changed[name][1])}"
+        longer = f"{text} {SYM['dot']} {part}" if text else f"New: {part}"
+        if width(longer) > room:
+            break
+        text = longer
+    if not text and count:
+        text = f"{plural(count, 'package')} changed"
+    return text
+
+
+def ostree_status(session):
+    code, out = session.capture(["rpm-ostree", "status", "--json"], timeout=60)
+    if code != 0:
+        return None
+    try:
+        data = json.loads(out)
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+class System(Step):
+    id, title, weight, expect = "system", "Monolith", 4, 120
+
+    def __init__(self):
+        super().__init__()
+        self.size = ""
+
+    def ready(self, session):
+        return OSTREE_BOOTED.exists() and bool(session.which("rpm-ostree"))
+
+    def commands(self):
+        return "rpm-ostree upgrade"
+
+    def run(self, session):
+        lines, code = [], 0
+        for _attempt in range(3):
+            status = self.wait_until_idle(session)
+            if isinstance(status, Result):
+                return status
+            booted = next((d for d in deployments(status) if d.get("booted")), {})
+            name, tag = image_parts(booted.get("container-image-reference") or "")
+            ours = name.startswith("ghcr.io/monolithlinux/")
+            if ours and re.fullmatch(r"\d{8}", tag):
+                return Result(WARN, f"Paused on the build from {nice_date(tag)}",
+                              ["For the newest build, run: monolith rollback latest"])
+            self.detail, self.fraction = "Checking for a new build", 0.02
+            code, lines = session.run(["rpm-ostree", "upgrade", "--unchanged-exit-77"], parse=self.progress)
+            # Another update can start between the check and ours.
+            if code in (0, 77) or session.stop or session.abort or not any("Transaction in progress" in l for l in lines):
+                break
+        if code not in (0, 77):
+            error = last_error(lines)
+            if re.search(r"authoriz|not allowed|polkit", error, re.I):
+                return Result(FAIL, "Needs an administrator: run rpm-ostree upgrade")
+            return Result(FAIL, error or f"rpm-ostree stopped with exit {code}")
+        after = ostree_status(session) or {}
+        found = deployments(after)
+        pending = found[0] if found and not found[0].get("booted") else None
+        notes = []
+        if ours and tag.startswith("pr-"):
+            notes.append(f"A test build from pull request {tag[3:].split('-')[0]}")
+        if pending:
+            version = pending.get("version") or str(pending.get("checksum", ""))[:10]
+            session.restart_to = version
+            if code == 77:
+                # The daily update downloaded it before we got here.
+                diff_code, out = session.capture(["rpm-ostree", "db", "diff"], timeout=120)
+                lines = [plain(l) for l in out.splitlines()] if diff_code == 0 else []
+            notes.insert(0, major_changes(*parse_diff(lines)))
+            return Result(OK, f"{version} is ready", notes)
+        return Result(OK, "Up to date", notes)
+
+    def wait_until_idle(self, session):
+        """The status once rpm-ostree is free, waiting for an update already running."""
+        waited = 0.0
+        while True:
+            status = ostree_status(session)
+            if status is None:
+                return Result(FAIL, "rpm-ostree didn't answer")
+            busy = status.get("transaction")
+            if not busy:
+                return status
+            if session.stop or session.abort:
+                return Result(STOPPED, "Stopped while waiting")
+            method = busy[0] if isinstance(busy, list) and busy else ""
+            self.detail = ("Waiting for the daily update to finish" if method == "AutomaticUpdateTrigger"
+                           else "Waiting for another update to finish")
+            session.sleep(POLL)
+            waited += POLL
+            if waited > 3600:
+                return Result(FAIL, "rpm-ostree has been busy with another task for an hour")
+
+    def progress(self, line, final):
+        if line.startswith("Pulling manifest"):
+            self.detail = "Checking for a new build"
+        elif line.startswith("Importing"):
+            self.detail, self.fraction = "Downloading the new build", max(self.fraction or 0, 0.05)
+        elif match := re.match(r"(?:ostree chunk|custom) layers needed: (\d+) \(([^)]+)\)", line):
+            self.size = self.size or match.group(2)
+        elif match := re.match(r"\[(\d+)/(\d+)\]", line):
+            k, n = int(match.group(1)), max(1, int(match.group(2)))
+            done = k if line.endswith("done") else k - 1
+            self.fraction = 0.05 + 0.85 * min(1.0, done / n)
+            self.sub = f"Layer {k} of {n}" + (f" {SYM['dot']} {self.size} in all" if self.size else "")
+        elif line.startswith("Staging deployment"):
+            self.detail, self.fraction = "Setting it up for the next restart", max(self.fraction or 0, 0.92)
+        elif line.startswith("No upgrade available"):
+            self.detail = "Up to date"
+
+
+def flatpak_installed(app):
+    return (FLATPAK_USER / "app" / app).is_dir() or (FLATPAK_SYSTEM / "app" / app).is_dir()
+
+
+class Flatpaks(Step):
+    id, title, weight, expect = "flatpak", "Flatpaks", 3, 60
+
+    def ready(self, session):
+        return bool(session.which("flatpak"))
+
+    def commands(self):
+        return "flatpak update, yours and the system's"
+
+    def run(self, session):
+        changed, removed, failed = [], [], []
+
+        def note(line, final, into):
+            match = re.match(r"(Updating|Installing|Uninstalling) (\S+)", line)
+            if match:
+                parts = match.group(2).split("/")
+                self.sub = f"{match.group(1)} {parts[1] if len(parts) > 1 else parts[0]}"
+                if final:
+                    into.append(match.group(2))
+
+        for unit, user in (("flatpak-user-update.service", True), ("flatpak-system-update.service", False)):
+            if not session.wait_for_unit(self, unit, "Waiting for the daily Flatpak update to finish", user):
+                return Result(STOPPED, "Stopped while waiting")
+        for n, (scope, label) in enumerate((("user", "Your Flatpaks"), ("system", "System Flatpaks"))):
+            self.detail, self.fraction = label, n * 0.45
+            code, lines = session.run(["flatpak", "update", f"--{scope}", "-y", "--noninteractive"],
+                                      parse=lambda line, final: note(line, final, changed))
+            if code != 0:
+                failed.append(f"{label}: {last_error(lines) or f'exit {code}'}")
+            if session.abort:
+                break
+        if not session.abort:
+            # The daily system job removes unused system runtimes as root.
+            self.detail, self.fraction = "Removing unused runtimes", 0.9
+            code, lines = session.run(["flatpak", "uninstall", "--user", "--unused", "-y", "--noninteractive"],
+                                      parse=lambda line, final: note(line, final, removed))
+            if code != 0:
+                failed.append(f"Removing unused runtimes: {last_error(lines) or f'exit {code}'}")
+        if failed:
+            return Result(FAIL, failed[0], failed[1:])
+        text = f"{len(set(changed))} updated" if changed else "Up to date"
+        if removed:
+            text += f", {len(set(removed))} unused removed"
+        return Result(OK, text)
+
+
+class Apps(Step):
+    id, title, weight, expect = "apps", "Monolith apps", 2, 40
+
+    def ready(self, session):
+        return os.access(SOFTWARE, os.X_OK) and any(CATALOG_STATE.glob("*.managed"))
+
+    def commands(self):
+        return "monolith update APP, for each app from the catalog"
+
+    def run(self, session):
+        changes, outcome, results = [], {}, False
+
+        def note(line, final):
+            nonlocal results
+            if match := re.match(r"\((\d+)/(\d+)\) (.+?) — ", line):
+                self.detail = match.group(3)
+                self.fraction = (int(match.group(1)) - 1) / max(1, int(match.group(2)))
+            elif not final:
+                return
+            elif match := re.match(r"Updated (.+?) from (\S+) to (\S+) at ", line):
+                changes.append(f"{match.group(1)} {match.group(2)} {SYM['to']} {match.group(3)}")
+            elif line == "Results:":
+                results = True
+            elif results and (match := re.match(
+                    r"(.+?)\s+(Up to date|Updated|Installed|Repaired|Adopted and updated|Done|"
+                    r"Failed \(exit \d+\)|Cancelled|Not run|Skipped by user)$", line)):
+                outcome[match.group(1)] = match.group(2)
+
+        code, lines = session.run([SOFTWARE, "update"], parse=note)
+        failures = [name for name, state in outcome.items() if state.startswith("Failed") or state == "Skipped by user"]
+        if code != 0 or failures:
+            if failures:
+                return Result(FAIL, f"{', '.join(failures)} didn't update")
+            return Result(FAIL, last_error(lines) or f"The catalog stopped with exit {code}")
+        if changes:
+            return Result(OK, ", ".join(changes))
+        updated = [name for name, state in outcome.items() if state != "Up to date"]
+        if updated:
+            return Result(OK, f"{', '.join(updated)} updated")
+        return Result(OK, "Up to date")
+
+
+class Proton(Step):
+    id, title, weight, expect = "proton", "Proton tools", 1, 30
+
+    def __init__(self):
+        super().__init__()
+        self.argv = []
+
+    def ready(self, session):
+        if session.which("protonplus"):
+            self.argv = ["protonplus", "update", "all"]
+        elif flatpak_installed(PROTONPLUS):
+            self.argv = ["flatpak", "run", PROTONPLUS, "update", "all"]
+        return bool(self.argv)
+
+    def commands(self):
+        return shlex.join(self.argv)
+
+    def run(self, session):
+        updated, errors = [], []
+
+        def note(line, final):
+            if match := re.match(r"Updating (.+?)\.\.\.$", line):
+                self.detail = match.group(1)
+            elif final and (match := re.match(r"Successfully updated (.+)$", line)):
+                updated.append(match.group(1))
+            elif final and line.startswith("Error:"):
+                errors.append(line.removeprefix("Error:").strip())
+
+        self.detail = "Checking ProtonPlus's tools"
+        code, lines = session.run(self.argv, parse=note)
+        if code != 0 or errors:
+            # GitHub's rate limit often trips these, so it only gets a warning.
+            return Result(WARN, f"Couldn't update: {errors[-1] if errors else last_error(lines)}")
+        if updated:
+            return Result(OK, f"{', '.join(updated)} updated")
+        return Result(OK, "Up to date")
+
+
+def appimage_folder():
+    """Where Gear Lever keeps AppImages, as the catalog's Gear Lever helper reads it."""
+    conf = HOME / ".var/app" / GEAR_LEVER / "config/gearlever.conf"
+    parser = configparser.ConfigParser(interpolation=None)
+    try:
+        parser.read(conf, encoding="utf-8")
+        value = ast.literal_eval(parser.get("it/mijorus/gearlever", "appimages-default-folder"))
+        if isinstance(value, str) and value:
+            return Path(os.path.expanduser(value))
+    except (configparser.Error, ValueError, SyntaxError, OSError):
+        pass
+    return HOME / "AppImages"
+
+
+class AppImages(Step):
+    id, title, weight, expect = "appimages", "AppImages", 1, 30
+
+    def ready(self, session):
+        if not flatpak_installed(GEAR_LEVER):
+            return False
+        try:
+            return any(p.suffix.lower() == ".appimage" for p in appimage_folder().iterdir())
+        except OSError:
+            return False
+
+    def commands(self):
+        return f"flatpak run {GEAR_LEVER} --update --all --yes"
+
+    def run(self, session):
+        updated, skipped = [], []
+
+        def note(line, final):
+            if match := re.match(r"Status: (\d+)%", line):
+                self.sub = f"Downloading, {match.group(1)}%"
+            elif line.startswith("Downloading update"):
+                self.detail = "Downloading an update"
+            elif final and (match := re.match(r"(.+) updated successfully$", line)):
+                updated.append(Path(match.group(1)).name)
+            elif final and "was skipped because the application is running" in line:
+                skipped.append(line)
+
+        self.detail = "Checking with Gear Lever"
+        code, lines = session.run(["flatpak", "run", GEAR_LEVER, "--update", "--all", "--yes"], parse=note)
+        if code != 0:
+            return Result(FAIL, last_error(lines) or f"Gear Lever stopped with exit {code}")
+        if skipped:
+            return Result(WARN, f"{plural(len(skipped), 'app')} skipped because they're open",
+                          [f"{len(updated)} updated"] if updated else [])
+        return Result(OK, f"{len(updated)} updated" if updated else "Up to date")
+
+
+class Distrobox(Step):
+    id, title, weight, expect = "distrobox", "Distrobox", 2, 90
+
+    def __init__(self):
+        super().__init__()
+        self.boxes = []
+
+    def ready(self, session):
+        if not (session.which("distrobox") and session.which("podman")):
+            return False
+        code, out = session.capture(["podman", "ps", "--all", "--filter", "label=manager=distrobox",
+                                     "--format", "{{.Names}}"], timeout=60)
+        self.boxes = out.split() if code == 0 else []
+        return bool(self.boxes)
+
+    def commands(self):
+        return "distrobox upgrade --all"
+
+    def run(self, session):
+        seen = []
+
+        def note(line, final):
+            if match := re.match(r"Upgrading (.+?)\.\.\.$", line):
+                if final:
+                    seen.append(match.group(1))
+                self.detail = match.group(1)
+                self.fraction = (len(seen) - 1) / max(1, len(self.boxes))
+
+        code, lines = session.run(["distrobox", "upgrade", "--all"], parse=note)
+        if code != 0:
+            error = last_error(lines) or f"exit {code}"
+            where = f"{seen[-1]}: " if seen and seen[-1] not in error else ""
+            return Result(FAIL, where + error)
+        return Result(OK, f"{plural(len(seen) or len(self.boxes), 'container')} upgraded")
+
+
+class Firmware(Step):
+    id, title, weight, expect = "firmware", "Firmware", 1, 20
+
+    def ready(self, session):
+        return bool(session.which("fwupdmgr"))
+
+    def commands(self):
+        return "fwupdmgr get-updates (only checks)"
+
+    def run(self, session):
+        self.detail = "Checking for firmware updates"
+        code, lines = session.run(["fwupdmgr", "refresh"])
+        # 2 means the list of updates is recent enough already.
+        if code not in (0, 2):
+            return Result(WARN, f"Couldn't check: {last_error(lines) or f'exit {code}'}")
+        code, out = session.capture(["fwupdmgr", "get-updates", "--json"], timeout=120)
+        if code == 2:
+            return Result(OK, "No updates")
+        devices = None
+        if code == 0:
+            try:
+                devices = json.loads(out).get("Devices") or []
+            except (ValueError, AttributeError):
+                pass
+        if devices is None:
+            return Result(WARN, "Couldn't check: fwupd didn't answer")
+        count = sum(1 for device in devices if isinstance(device, dict) and device.get("Releases"))
+        if count:
+            return Result(WARN, f"{plural(count, 'update')} available", ["To install: monolith update-firmware"])
+        return Result(OK, "No updates")
+
+
+class Tool(Step):
+    """A developer tool that updates with one or two commands of its own."""
+
+    def __init__(self, id, title, find, changes=(), current=()):
+        super().__init__()
+        self.id, self.title, self._find = id, title, find
+        self.changes = [(re.compile(pattern), form) for pattern, form in changes]
+        self.current = [re.compile(pattern, re.I) for pattern in current]
+        self.argvs = []
+
+    def ready(self, session):
+        self.argvs = self._find(session) or []
+        return bool(self.argvs)
+
+    def commands(self):
+        return ", then ".join(shlex.join(argv) for argv in self.argvs)
+
+    def run(self, session):
+        seen = []
+        for n, argv in enumerate(self.argvs):
+            self.detail, self.fraction = shlex.join(argv), n / len(self.argvs)
+            code, lines = session.run(argv)
+            seen += lines
+            if code != 0:
+                return Result(FAIL, last_error(lines) or f"exit {code}")
+            if session.abort:
+                return Result(STOPPED, "Stopped")
+        found = []
+        for line in seen:
+            for pattern, form in self.changes:
+                if match := pattern.search(line):
+                    found.append(form.format(*match.groups(), to=SYM["to"]))
+                    break
+        if found:
+            return Result(OK, ", ".join(dict.fromkeys(found)))
+        if any(pattern.search(line) for pattern in self.current for line in seen):
+            return Result(OK, "Up to date")
+        return Result(OK, "Done")
+
+
+def npm_globals(session):
+    if not session.which("npm"):
+        return None
+    code, out = session.capture(["npm", "prefix", "--global"], timeout=20)
+    modules = Path(out.strip()) / "lib/node_modules"
+    try:
+        if code == 0 and os.access(modules, os.W_OK) and any(not n.startswith(".") for n in os.listdir(modules)):
+            return [["npm", "update", "--global"]]
+    except OSError:
+        pass
+    return None
+
+
+def has_entries(path, pattern="*"):
+    try:
+        return any(Path(path).glob(pattern))
+    except OSError:
+        return False
+
+
+SKILL_DIRS = (".agents/skills", ".claude/skills", ".codex/skills", ".copilot/skills", ".gemini/skills")
+
+
+def gh_commands(session):
+    if not session.which("gh"):
+        return None
+    argvs = []
+    if has_entries(DATA_HOME / "gh/extensions"):
+        argvs.append(["gh", "extension", "upgrade", "--all"])
+    if any(has_entries(HOME / d, "*/SKILL.md") for d in SKILL_DIRS) \
+            and session.capture(["gh", "skill", "--help"], timeout=20)[0] == 0:
+        argvs.append(["gh", "skill", "update", "--all"])
+    return argvs
+
+
+def brew_commands(session):
+    brew = session.which("brew") or next(
+        (p for p in ("/home/linuxbrew/.linuxbrew/bin/brew",) if os.access(p, os.X_OK)), None)
+    return [[brew, "update"], [brew, "upgrade"]] if brew else None
+
+
+def tpm_commands(session):
+    for root in (HOME / ".tmux/plugins/tpm", CONFIG_HOME / "tmux/plugins/tpm"):
+        script = root / "bin/update_plugins"
+        if os.access(script, os.X_OK):
+            return [[script, "all"]]
+    return None
+
+
+def tools():
+    present = lambda *names: lambda session: all(session.which(n) for n in names)
+    return [
+        Tool("rust", "Rust", lambda s: present("rustup")(s) and [["rustup", "update"]],
+             changes=[(r"updated - rustc (\S+).*\(from rustc (\S+)", "{1} {to} {0}")],
+             current=[r"unchanged - rustc"]),
+        Tool("npm", "npm", npm_globals,
+             changes=[(r"changed (\d+ packages?)", "{0} updated"), (r"added (\d+ packages?)", "{0} added")],
+             current=[r"up to date"]),
+        Tool("pipx", "pipx", lambda s: present("pipx")(s) and [["pipx", "upgrade-all", "--include-injected"]],
+             changes=[(r"upgraded package (\S+) from (\S+) to (\S+)", "{0} {1} {to} {2}")],
+             current=[r"no packages to upgrade", r"versions did not change"]),
+        Tool("uv", "uv", lambda s: present("uv")(s) and [["uv", "tool", "upgrade", "--all"]],
+             changes=[(r"Updated (\S+) v?(\S+) -> v?(\S+)", "{0} {1} {to} {2}")],
+             current=[r"nothing to upgrade"]),
+        Tool("brew", "Homebrew", brew_commands,
+             changes=[(r"Upgrading (\d+) outdated packages?", "{0} upgraded")],
+             current=[r"already up-to-date"]),
+        Tool("mise", "mise", lambda s: present("mise")(s) and [["mise", "plugins", "update"], ["mise", "upgrade"]]),
+        Tool("cargo", "Cargo tools",
+             lambda s: present("cargo", "cargo-install-update")(s) and [["cargo", "install-update", "--all"]],
+             changes=[(r"[Uu]pdated (\d+ packages?)", "{0} updated")],
+             current=[r"no packages need updating"]),
+        Tool("claude", "Claude Code", lambda s: present("claude")(s) and [["claude", "update"]],
+             changes=[(r"[Uu]pdated from (\S+) to (?:version )?(\S+)", "{0} {to} {1}")],
+             current=[r"up to date"]),
+        Tool("gh", "GitHub CLI", gh_commands,
+             changes=[(r"(?:\[(\S+)\]:\s+)?upgraded from (\S+) to (\S+)", "{0} {1} {to} {2}"),
+                      (r"Updated (\S+)$", "{0} updated")],
+             current=[r"already up to date", r"all skills are up to date"]),
+        Tool("fisher", "fish plugins",
+             lambda s: present("fish")(s) and (CONFIG_HOME / "fish/functions/fisher.fish").is_file()
+             and [["fish", "-c", "fisher update"]]),
+        Tool("micro", "micro plugins",
+             lambda s: present("micro")(s) and has_entries(CONFIG_HOME / "micro/plug")
+             and [["micro", "-plugin", "update"]]),
+        Tool("tmux", "tmux plugins", tpm_commands),
+    ]
+
+
+class Custom(Step):
+    """A command from update.toml, run in the user's own shell."""
+    weight, expect = 1, 30
+
+    def __init__(self, id, title, command):
+        super().__init__()
+        self.id, self.title, self.command = id, title, command
+
+    def commands(self):
+        return self.command
+
+    def run(self, session):
+        shell = os.environ.get("SHELL") or ""
+        if not (os.path.isabs(shell) and os.access(shell, os.X_OK)):
+            shell = "/bin/sh"
+        self.detail = self.command
+        code, lines = session.run([shell, "-c", self.command])
+        if code != 0:
+            return Result(FAIL, last_error(lines) or f"exit {code}")
+        return Result(OK, "Done")
+
+
+def load_config():
+    """skip and [commands] from update.toml."""
+    try:
+        text = CONFIG.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return [], {}
+    except OSError as error:
+        raise Usage(f"Can't read {tilde(CONFIG)}: {error.strerror}") from error
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as error:
+        raise Usage(f"{tilde(CONFIG)} isn't valid TOML: {error}") from error
+    unknown = sorted(set(data) - {"skip", "commands"})
+    if unknown:
+        raise Usage(f"{tilde(CONFIG)} has settings monolith update doesn't know: {', '.join(unknown)}")
+    skip, commands = data.get("skip", []), data.get("commands", {})
+    if not isinstance(skip, list) or not all(isinstance(s, str) for s in skip):
+        raise Usage(f'In {tilde(CONFIG)}, skip must be a list of step names, such as skip = ["distrobox"]')
+    if not isinstance(commands, dict) or not all(isinstance(v, str) and v.strip() for v in commands.values()):
+        raise Usage(f'In {tilde(CONFIG)}, each command must be text, such as "Dotfiles" = "git -C ~/dotfiles pull"')
+    return skip, commands
+
+
+def all_steps(commands):
+    steps = [System(), Flatpaks(), Apps(), Proton(), AppImages(), Distrobox(), Firmware()] + tools()
+    taken = {step.id for step in steps}
+    for name, command in commands.items():
+        base = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "command"
+        sid, n = base, 1
+        while sid in taken:
+            n += 1
+            sid = f"{base}-{n}"
+        taken.add(sid)
+        steps.append(Custom(sid, name, command))
+    return steps
+
+
+def suggest(word, choices):
+    import difflib
+    match = difflib.get_close_matches(word, choices, n=1, cutoff=0.6)
+    return f" Did you mean {match[0]}?" if match else ""
+
+
+def select(steps, only, skip, config_skip):
+    ids = [step.id for step in steps]
+    for name in list(only) + list(skip):
+        if name not in ids:
+            raise Usage(f"monolith update doesn't have a step called {name}.{suggest(name, ids)} "
+                        "See them all with: monolith update --list")
+    warnings = [f"{tilde(CONFIG)} skips {name}, which isn't a step.{suggest(name, ids)}"
+                for name in config_skip if name not in ids]
+    left_out = set(skip) | (set(config_skip) - set(only))
+    chosen = [s for s in steps if (not only or s.id in only) and s.id not in left_out]
+    return chosen, [s for s in steps if s.id in left_out], warnings
+
+
+# --- showing it ---------------------------------------------------------------------------
+
+def mark(kind, paint):
+    symbol = {OK: paint.good + SYM["ok"], WARN: paint.warn + SYM["warn"], FAIL: paint.bad + SYM["fail"]}
+    return symbol.get(kind, paint.dim + SYM["stop"]) + paint.reset
+
+
+def headline(session, paint):
+    failed = sum(1 for s in session.found if s.result and s.result.kind == FAIL)
+    if session.stop or session.abort or session.signal:
+        return f"{paint.dim}{SYM['stop']}{paint.reset} {paint.bold}Stopped before the end{paint.reset}"
+    if failed:
+        return f"{paint.bad}{SYM['fail']}{paint.reset} {paint.bold}{plural(failed, 'step')} failed{paint.reset}"
+    return f"{paint.good}{SYM['ok']}{paint.reset} {paint.bold}Everything is updated{paint.reset}"
+
+
+class Panel:
+    """The steps beside the art: what's done, what's running and what's next."""
+
+    def __init__(self, session, paint, motion):
+        self.session, self.paint, self.motion = session, paint, motion
+        self.t0 = time.monotonic()
+
+    def lines(self, w, now, budget=None, final=False):
+        s, p = self.session, self.paint
+        out = [""]
+        if final:
+            out += [headline(s, p), f"{p.dim}Took {clock((s.ended or now) - s.started)}{p.reset}"]
+        else:
+            out.append(f"{p.bold}Updating Monolith{p.reset}")
+            sub = "Looking for things to update" if s.phase == "find" else s.subtitle
+            out.append(f"{p.dim}{fit(sub, w)}{p.reset}")
+        out.append("")
+        progress = 1.0 if final and not (s.stop or s.abort) else s.progress(now)
+        done = sum(1 for step in s.found if step.state == "done")
+        count = f"{done} of {len(s.found)} {SYM['dot']} {clock((s.ended or now) - s.started)}"
+        size = max(8, min(30, w - 7 - width(count)))
+        out.append(clip(f"{progress_bar(progress, size, p)} {p.bold}{int(progress * 100):3d}%{p.reset}  "
+                        f"{p.dim}{count}{p.reset}", w))
+        out.append("")
+        room = None if budget is None else max(0, budget - len(out))
+        return out + self.steps(w, now, room, final)
+
+    def name_width(self):
+        return max([10] + [min(15, width(s.title)) + 2 for s in self.session.found])
+
+    def block(self, step, w, now, final):
+        p, namew = self.paint, self.name_width()
+        body = max(4, w - 4 - namew - 6)
+        title = fit(step.title, namew - 2)
+        if step.state == "done":
+            r = step.result
+            text = fit(r.text, body)
+            if r.kind in (OK, STOPPED, NOT_RUN):
+                text = p.dim + text + p.reset
+            took = clock(step.ended - step.started) if step.started and step.ended else ""
+            head = pad(f"{mark(r.kind, p)}   {pad(title, namew)}{text}", w - 6) + f"{p.dim}{took:>6}{p.reset}"
+            return [head] + [f"    {p.dim}{SYM['sub']} {fit(more, w - 6)}{p.reset}" for more in r.more]
+        if step.state == "running":
+            spin = spinner(now - self.t0, self.motion and not final)
+            lines = [f"{p.accent}{spin}{p.reset} {p.bold}{pad(title, namew)}{p.reset}{fit(step.detail, body + 6)}"]
+            if step.sub and not final:
+                lines.append(f"    {p.dim}{SYM['sub']} {fit(step.sub, w - 6)}{p.reset}")
+            return lines
+        return [f"{p.dim}{SYM['wait']}   {title}{p.reset}"]
+
+    def steps(self, w, now, room, final):
+        found, p = self.session.found, self.paint
+        blocks = [self.block(step, w, now, final) for step in found]
+        if room is None or sum(map(len, blocks)) <= room:
+            return [line for block in blocks for line in block]
+        # Short on room: drop the notes under finished steps first...
+        blocks = [b[:1] if step.state == "done" else b for step, b in zip(found, blocks)]
+        if sum(map(len, blocks)) <= room:
+            return [line for block in blocks for line in block]
+        # ...then show the steps around the one running and count the rest.
+        n = len(blocks)
+        focus = next((i for i, step in enumerate(found) if step.state != "done"), n - 1)
+        lo, hi, used = focus, focus + 1, len(blocks[focus])
+
+        def fits(lo, hi, used):
+            return used + (lo > 0) + (hi < n) <= room
+
+        grew = True
+        while grew:
+            grew = False
+            if hi < n and fits(lo, hi + 1, used + len(blocks[hi])):
+                used, hi, grew = used + len(blocks[hi]), hi + 1, True
+            if lo > 0 and fits(lo - 1, hi, used + len(blocks[lo - 1])):
+                lo, grew = lo - 1, True
+                used += len(blocks[lo])
+        lines = [f"{p.dim}{SYM['more']} {lo} more done{p.reset}"] if lo else []
+        for block in blocks[lo:hi]:
+            lines += block
+        if hi < n:
+            lines.append(f"{p.dim}{SYM['more']} {n - hi} more to go{p.reset}")
+        return lines[:room]
+
+
+class Screen:
+    """The live view on the alternate screen, redrawn in place."""
+
+    LAYOUTS = (("large", 92, 60), ("medium", 68, 60), (None, 0, 72))
+
+    def __init__(self, look, paint, session):
+        self.look, self.paint, self.session = look, paint, session
+        self.panel = Panel(session, paint, look.motion)
+        self.t0 = time.monotonic()
+        self.scenes = {}
+        self.last, self.dirty, self.resized = 0.0, True, False
+        self.active, self.broken, self.saved_tty = False, False, None
+        self.celebrate = False
+
+    def scene(self, size):
+        if size not in self.scenes:
+            try:
+                self.scenes[size] = Scene(size)
+            except (OSError, ValueError):
+                self.scenes[size] = None
+        return self.scenes[size]
+
+    def footer(self, w, final):
+        s, p = self.session, self.paint
+
+        def first_fitting(*texts):
+            return next((text for text in texts if width(text) <= w), "")
+
+        if final:
+            lines = []
+            if s.restart_to:
+                # A cut-off link is no use, so it only shows when it fits.
+                lines.append(first_fitting(f"Release notes: {RELEASE_NOTES}", RELEASE_NOTES))
+            if any(step.result and step.result.kind == FAIL for step in s.found):
+                lines.append(first_fitting(f"What went wrong is in {tilde(s.log.path)}", tilde(s.log.path)))
+            return [f"{p.dim}{line}{p.reset}" for line in lines if line]
+        if s.stop or s.abort:
+            text = first_fitting(f"Stopping after this step {SYM['dot']} Ctrl+C again stops now",
+                                 "Stopping after this step")
+            return [clip(f"{p.warn}{text}{p.reset}", w)]
+        text = first_fitting(f"Ctrl+C stops after this step {SYM['dot']} Log: {tilde(LOG_DIR / 'latest.log')}",
+                             "Ctrl+C stops after this step", "Ctrl+C stops")
+        return [f"{p.dim}{text}{p.reset}"]
+
+    def compose(self, cols, rows, now, final=False):
+        s = self.session
+        motion = self.look.motion and not final
+        t = now - self.t0 if motion else 0.0
+        rise = smooth(t / 1.2) if motion else 1.0
+        progress = 1.0 if final and not (s.stop or s.abort) else s.progress(now)
+        flare = None
+        if motion and self.celebrate and s.ended:
+            flare = (now - s.ended) / FLARE
+            flare = flare if flare < 1 else None
+        w = max(10, cols - 1)
+        for size, least, widest in self.LAYOUTS:
+            scene = self.scene(size) if size else None
+            if size and (scene is None or w < least):
+                continue
+            art_w = scene.cols + 2 if scene else 0
+            panel_w = min(widest, w - 1 - art_w)
+            footer = self.footer(w - 1, final)
+            budget = None if final else rows - 2 - len(footer)
+            if scene and budget is not None and scene.rows > budget:
+                continue
+            break
+        panel = self.panel.lines(panel_w, now, budget, final)
+        art = scene.frame(t, rise, progress, flare) if scene else []
+        height = max(len(art), len(panel))
+        # The mark sits beside the title, as in monolith help.
+        art = art + [" " * scene.cols] * (height - len(art)) if scene else [""] * height
+        panel += [""] * (height - len(panel))
+        gap = "  " if scene else ""
+        lines = [""] + [clip(f" {a}{gap}{b}", w) for a, b in zip(art, panel)] + [""]
+        lines += [clip(" " + line, w) for line in footer]
+        return lines if final else lines[:rows]
+
+    def write(self, text):
+        if self.broken:
+            return
+        try:
+            sys.stdout.buffer.write(text.encode("utf-8", "replace"))
+            sys.stdout.buffer.flush()
+        except OSError:
+            self.broken = True
+
+    def start(self):
+        if sys.stdin.isatty():
+            try:
+                self.saved_tty = termios.tcgetattr(0)
+                quiet = termios.tcgetattr(0)
+                quiet[3] &= ~termios.ECHO
+                termios.tcsetattr(0, termios.TCSANOW, quiet)
+            except termios.error:
+                self.saved_tty = None
+        self.write("\x1b[?1049h\x1b[?25l\x1b[2J")
+        self.active = True
+        self.draw()
+
+    def close(self):
+        if not self.active:
+            return
+        self.active = False
+        self.write("\x1b[?2026l\x1b[0m\x1b[?25h\x1b[?1049l")
+        if self.saved_tty is not None:
+            try:
+                termios.tcsetattr(0, termios.TCSADRAIN, self.saved_tty)
+            except termios.error:
+                pass
+
+    def suspend(self):
+        """Ctrl+Z: give the terminal back as it was."""
+        was = self.active
+        self.close()
+        self.active_before_suspend = was
+
+    def resume(self):
+        if getattr(self, "active_before_suspend", False):
+            self.resized = True
+            self.start()
+
+    def tick(self, force=False):
+        if not self.active:
+            return
+        now = time.monotonic()
+        interval = 1 / FPS if self.look.motion else 1.0
+        if force or now - self.last >= interval or (self.dirty and now - self.last >= 1 / 30):
+            self.draw(now)
+
+    def draw(self, now=None):
+        now = now or time.monotonic()
+        cols, rows = terminal_size()
+        lines = self.compose(cols, rows, now)
+        out = ["\x1b[?2026h"]
+        if self.resized:
+            out.append("\x1b[2J")
+            self.resized = False
+        for i, line in enumerate(lines):
+            out.append(f"\x1b[{i + 1};1H{line}\x1b[K")
+        if len(lines) < rows:
+            out.append(f"\x1b[{len(lines) + 1};1H\x1b[J")
+        out.append("\x1b[?2026l")
+        self.write("".join(out))
+        self.last, self.dirty = now, False
+
+    def found(self, step):
+        self.dirty = True
+
+    def begin(self, step):
+        self.dirty = True
+
+    def end(self, step):
+        self.dirty = True
+
+    def notice(self, text):
+        self.dirty = True
+
+    def finish(self):
+        """The sunburst, then the summary on the normal screen."""
+        s = self.session
+        self.celebrate = (self.look.motion and not (s.stop or s.abort or s.signal)
+                          and not any(st.result and st.result.kind == FAIL for st in s.found))
+        if self.celebrate and self.active:
+            until = time.monotonic() + FLARE + 0.3
+            while time.monotonic() < until and not (s.abort or s.signal):
+                time.sleep(1 / FPS)
+                self.tick()
+        self.close()
+        if self.broken:
+            return
+        cols, rows = terminal_size()
+        self.write("\n".join(self.compose(cols, rows, time.monotonic(), final=True)) + "\n")
+
+
+class Lines:
+    """Plain output, one line per finished step, for pipes and simple terminals."""
+
+    def __init__(self, look, paint, session):
+        self.look, self.paint, self.session = look, paint, session
+        self.status = look.tty and (os.environ.get("TERM") or "dumb") != "dumb"
+        self.last, self.shown = 0.0, False
+
+    def say(self, text="", stream=None):
+        self.clear()
+        try:
+            print(text, file=stream or sys.stdout, flush=True)
+        except OSError:
+            pass
+
+    def clear(self):
+        if self.shown:
+            sys.stdout.write("\r\x1b[K")
+            self.shown = False
+
+    def start(self):
+        s = self.session
+        self.say(f"{self.paint.bold}Updating Monolith{self.paint.reset}" + (f" ({s.subtitle})" if s.subtitle else ""))
+
+    def found(self, step):
+        pass
+
+    def begin(self, step):
+        self.tick(force=True)
+
+    def tick(self, force=False):
+        step = self.session.step
+        now = time.monotonic()
+        if not self.status or not step or step.state != "running" or (not force and now - self.last < 0.25):
+            return
+        cols, _rows = terminal_size()
+        detail = step.sub or step.detail
+        text = f"{step.title}{': ' + detail if detail else ''}"
+        try:
+            sys.stdout.write("\r\x1b[K" + clip(f"{self.paint.dim}{text}{self.paint.reset}", cols - 1))
+            sys.stdout.flush()
+        except OSError:
+            self.status = False
+        self.shown, self.last = True, now
+
+    def end(self, step):
+        r, p = step.result, self.paint
+        namew = max([10] + [min(15, width(s.title)) + 2 for s in self.session.found])
+        took = f"  ({clock(step.ended - step.started)})" if step.started and step.ended else ""
+        self.say(f"{mark(r.kind, p)} {pad(step.title, namew)}{r.text}{p.dim}{took}{p.reset}")
+        for more in r.more:
+            self.say(f"  {' ' * namew}{p.dim}{more}{p.reset}")
+
+    def notice(self, text):
+        self.say(text, sys.stderr)
+
+    def close(self):
+        self.clear()
+
+    def finish(self):
+        s, p = self.session, self.paint
+        self.close()
+        self.say()
+        self.say(f"{headline(s, p)}{p.dim} {SYM['dot']} took {clock((s.ended or time.monotonic()) - s.started)}{p.reset}")
+        if s.restart_to:
+            self.say(f"{s.restart_to} is ready. Restart to use it.")
+            self.say(f"{p.dim}Release notes: {RELEASE_NOTES}{p.reset}")
+        if any(step.result and step.result.kind == FAIL for step in s.found):
+            self.say(f"{p.dim}What went wrong is in {s.log.path}{p.reset}")
+
+
+def ask_restart(version, paint, margin=""):
+    """MARGIN lines the question up with the summary above it."""
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return False
+    try:
+        termios.tcflush(0, termios.TCIFLUSH)
+    except termios.error:
+        pass
+    question = f"Restart now to use {version}?"
+    if len(margin) + width(question) + 7 > terminal_size()[0] - 1:
+        question = "Restart now?"
+    try:
+        answer = input(f"\n{margin}{question} {paint.dim}[y/N]{paint.reset} ")
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+    return answer.strip().lower() in ("y", "yes")
+
+
+# --- the command --------------------------------------------------------------------------
+
+def parse_args(argv):
+    opts = dict(help=False, list=False, steps=False, only=[], skip=[])
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg in ("-h", "--help"):
+            opts["help"] = True
+        elif arg == "--list":
+            opts["list"] = True
+        elif arg == "__steps":
+            opts["steps"] = True
+        elif arg.split("=", 1)[0] in ("--only", "--skip"):
+            key, sep, value = arg.partition("=")
+            if not sep:
+                i += 1
+                if i == len(argv):
+                    raise Usage(f"{key} needs step names, such as {key} flatpak,distrobox")
+                value = argv[i]
+            opts[key[2:]] += [name.strip() for name in value.split(",") if name.strip()]
+        elif arg.startswith("-"):
+            raise Usage(f"monolith update doesn't have an option called {arg}. See: monolith update --help")
+        else:
+            raise Usage(f"To update only some apps, run: monolith update {shlex.join(argv[i:])}")
+        i += 1
+    return opts
+
+
+def show_list(steps, left_out, session, paint):
+    here = [step for step in steps if step.ready(session)]
+    missing = [step for step in steps if step not in here]
+    if here:
+        print("monolith update runs these steps here, in this order:")
+        idw = max(width(step.id) for step in here) + 2
+        titlew = max(width(step.title) for step in here) + 2
+        for step in here:
+            print(f"  {paint.bold}{pad(step.id, idw)}{paint.reset}{pad(step.title, titlew)}{paint.dim}{step.commands()}{paint.reset}")
+    else:
+        print("Nothing here needs monolith update.")
+    if missing:
+        print(f"\nNot installed here: {', '.join(step.id for step in missing)}")
+    if left_out:
+        print(f"Left out: {', '.join(step.id for step in left_out)}")
+    return 0
+
+
+def main(argv):
+    try:
+        opts = parse_args(argv)
+        if opts["help"]:
+            print(HELP)
+            return 0
+        config_skip, commands = load_config()
+        steps = all_steps(commands)
+        if opts["steps"]:
+            for step in steps:
+                print(f"{step.id}\t{step.title}")
+            return 0
+        chosen, left_out, warnings = select(steps, opts["only"], opts["skip"], config_skip)
+    except Usage as problem:
+        print(problem, file=sys.stderr)
+        return 2
+
+    look = Look(sys.stdout)
+    if not look.unicode:
+        SYM.update(ASCII_SYMBOLS)
+    paint = Paint(look.color)
+    for warning in warnings:
+        print(warning, file=sys.stderr)
+    if opts["list"]:
+        return show_list(chosen, left_out, Session(Log(None)), paint)
+
+    log = open_log()
+    session = Session(log)
+    cols, rows = terminal_size()
+    ui = Screen(look, paint, session) if look.live and cols >= 30 and rows >= 9 else Lines(look, paint, session)
+    session.ui = ui
+    log.write(f"monolith update, {time.strftime('%Y-%m-%d %H:%M:%S %Z')}\n")
+
+    def interrupted(_signum, _frame):
+        if session.stop:
+            session.abort = True
+            ui.notice("Stopping now.")
+        else:
+            session.stop = True
+            ui.notice("Stopping after this step. Press Ctrl+C again to stop now.")
+
+    def ended(signum, _frame):
+        session.signal = signum
+        session.stop = session.abort = True
+
+    def suspended(_signum, _frame):
+        if isinstance(ui, Screen):
+            ui.suspend()
+        signal.signal(signal.SIGTSTP, signal.SIG_DFL)
+        os.kill(os.getpid(), signal.SIGTSTP)
+
+    def continued(_signum, _frame):
+        signal.signal(signal.SIGTSTP, suspended)
+        if isinstance(ui, Screen):
+            ui.resume()
+
+    signal.signal(signal.SIGINT, interrupted)
+    signal.signal(signal.SIGTERM, ended)
+    signal.signal(signal.SIGHUP, ended)
+    if isinstance(ui, Screen):
+        signal.signal(signal.SIGWINCH, lambda *_: setattr(ui, "resized", True))
+        signal.signal(signal.SIGTSTP, suspended)
+        signal.signal(signal.SIGCONT, continued)
+
+    try:
+        ui.start()
+        for step in chosen:
+            if session.abort:
+                break
+            try:
+                ready = step.ready(session)
+            except Exception:  # A broken check must not stop the update.
+                log.write(traceback.format_exc())
+                ready = False
+            if ready:
+                session.found.append(step)
+                ui.found(step)
+        session.phase = "run"
+        if not session.found:
+            ui.close()
+            print("Nothing here needs monolith update.")
+            return 0
+        for step in session.found:
+            if session.stop or session.abort:
+                step.state, step.result = "done", Result(NOT_RUN, "Not run")
+                continue
+            log.write(f"\n== {step.title} ==\n")
+            session.step, step.state, step.started = step, "running", time.monotonic()
+            ui.begin(step)
+            aborted_before = session.abort
+            try:
+                result = step.run(session)
+            except Exception:
+                log.write(traceback.format_exc())
+                result = Result(FAIL, "Something unexpected went wrong")
+            if session.abort and not aborted_before and result.kind != OK:
+                result = Result(STOPPED, "Stopped")
+            step.result, step.state, step.ended = result, "done", time.monotonic()
+            log.write(f"-> {result.kind}: {result.text}\n")
+            for more in result.more:
+                log.write(f"   {more}\n")
+            log.flush()
+            ui.end(step)
+        session.step, session.phase, session.ended = None, "done", time.monotonic()
+        ui.finish()
+    finally:
+        ui.close()
+        log.close()
+
+    finished = not (session.stop or session.abort or session.signal)
+    if finished and not opts["only"]:
+        try:
+            RECORD.parent.mkdir(parents=True, exist_ok=True)
+            RECORD.touch()
+        except OSError:
+            pass
+    if session.signal:
+        return 128 + session.signal
+    # Ctrl+C at the question just means no. A run that was stopped doesn't ask.
+    signal.signal(signal.SIGINT, signal.default_int_handler)
+    margin = " " if isinstance(ui, Screen) else ""
+    if finished and session.restart_to and ask_restart(session.restart_to, paint, margin):
+        os.execvp("systemctl", ["systemctl", "reboot"])
+    if not finished:
+        return 130
+    return 1 if any(step.result and step.result.kind == FAIL for step in session.found) else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
