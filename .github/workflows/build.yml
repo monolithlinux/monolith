@@ -58,6 +58,8 @@ jobs:
           node tests/monolith-update-polkit.js
       - name: Test edition selection
         run: bash tests/pick-editions.sh
+      - name: Test the Plasma version check
+        run: python3 tests/plasma-versions.py
       - name: Test Monolith News
         run: python3 tests/monolith-news.py
       - name: Test Protontricks desktop icon
