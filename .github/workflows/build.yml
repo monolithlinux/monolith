@@ -54,7 +54,9 @@ jobs:
           PATH="$RUNNER_TEMP/bin:$PATH" tests/monolith-greeting.sh
           tests/monolith-catalog-look.sh
       - name: Test monolith update
-        run: python3 tests/monolith-update.py
+        run: |
+          python3 tests/monolith-update.py
+          node tests/monolith-update-polkit.js
       - name: Test edition selection
         run: bash tests/pick-editions.sh
       - name: Test Monolith News

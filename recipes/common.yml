@@ -387,6 +387,9 @@ modules:
         # directory.
         test -x /usr/libexec/monolith/update
         HOME=/nonexistent python3 -B /usr/libexec/monolith/update --help >/dev/null
+        # The polkit rule that lets people update without a password must parse.
+        node -e 'new (require("vm").Script)(require("fs").readFileSync(process.argv[1], "utf8"))' \
+          /usr/share/polkit-1/rules.d/50-monolith-updates.rules
         # Monolith's system commands, which replace the old base's ujust. mjust and
         # ujust are old names for monolith, and old command names still work.
         help="$(HOME=/nonexistent /usr/bin/monolith help)"

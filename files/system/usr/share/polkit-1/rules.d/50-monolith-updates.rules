@@ -1,0 +1,26 @@
+// Let people update Monolith without a password. monolith update and software
+// centers use these actions to download the next build of the image you
+// already run and to update Flatpaks. Switching to another image, rolling
+// back, installing packages and changing boot settings still ask for an
+// administrator's password.
+//
+// Administrators (wheel) can update from anywhere, SSH included. Everyone else
+// can update while sitting at the machine, as Flatpak already allows for apps.
+// polkit runs this with an ES5 engine, so no let, const or arrow functions.
+polkit.addRule(function (action, subject) {
+    var updates = [
+        "org.projectatomic.rpmostree1.upgrade",
+        "org.projectatomic.rpmostree1.repo-refresh",
+        "org.freedesktop.Flatpak.app-update",
+        "org.freedesktop.Flatpak.runtime-update",
+        "org.freedesktop.Flatpak.appstream-update",
+        "org.freedesktop.Flatpak.metadata-update"
+    ];
+    if (updates.indexOf(action.id) < 0) {
+        return polkit.Result.NOT_HANDLED;
+    }
+    if (subject.isInGroup("wheel") || (subject.local && subject.active)) {
+        return polkit.Result.YES;
+    }
+    return polkit.Result.NOT_HANDLED;
+});
