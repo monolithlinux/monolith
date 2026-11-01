@@ -152,7 +152,7 @@ elif [[ $nvidia_gpu == yes ]]; then
         "For NVIDIA's own driver on a GTX 16, RTX 20 or newer card:" "monolith edition kde-nvidia"
 fi
 
-# The last full update, which topgrade records for the login reminder.
+# The last full update, which monolith update records for the login reminder.
 if days="$(full_update_days)"; then
     if ((days >= 7)); then
         row warn "Full update" "$(days_ago "$days")" "Update your apps, containers and dev tools:" "monolith update"

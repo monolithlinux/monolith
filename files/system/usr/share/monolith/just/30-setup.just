@@ -9,20 +9,12 @@ adopt:
     #!/usr/bin/bash
     set -euo pipefail
     # Copy defaults missed by accounts created before rebasing to Monolith.
-    # Replace foreign topgrade config after backing it up.
     shopt -s dotglob globstar nullglob
     for src in /etc/skel/**/*; do
         [ -f "$src" ] || continue
         rel="${src#/etc/skel/}"
         dest="$HOME/$rel"
-        if [ "$rel" = ".config/topgrade.toml" ]; then
-            if [ -f "$dest" ] && ! cmp -s "$src" "$dest"; then
-                cp -a "$dest" "$dest.pre-monolith"
-                echo "Backed up existing $rel to $rel.pre-monolith"
-            fi
-            install -Dm0644 "$src" "$dest"
-            echo "Installed $rel"
-        elif [ ! -e "$dest" ]; then
+        if [ ! -e "$dest" ]; then
             install -Dm0644 "$src" "$dest"
             echo "Installed $rel"
         fi

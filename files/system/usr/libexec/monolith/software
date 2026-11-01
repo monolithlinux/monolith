@@ -1364,7 +1364,7 @@ install_flatpak_app() {
         flatpak update --user --noninteractive --assumeyes "$id" 9>&- ||
             die "$name could not be updated; Flatpak kept the installed version"
         if [ -n "$commit" ] && [ "$(flatpak_commit "$id")" = "$commit" ]; then
-            # Another updater, such as topgrade's Flatpak step, may have moved it.
+            # Another updater, such as monolith update's Flatpak step, may have moved it.
             version="$(flatpak_version user "$id")"
             [ "$(marker_version "$tool")" = "${version:-unknown}" ] ||
                 write_marker "$tool" "${version:-unknown}" "$ref"
@@ -2434,7 +2434,7 @@ show_flatpak_app_details() {
             else
                 printf '\nMonolith installs %s from %s\n' "$name" "$(flatpak_app_source "$tool")"
                 printf 'for your account; no administrator password is needed. Bazaar, flatpak update,\n'
-                printf 'topgrade, and automatic Flatpak updates keep it current as well.\n'
+                printf 'monolith update, and automatic Flatpak updates keep it current as well.\n'
                 if [ "$(flatpak_app_source "$tool")" != Flathub ]; then
                     printf 'This also adds %s to your account'\''s Flatpak sources.\n' "$(flatpak_app_source "$tool")"
                 fi

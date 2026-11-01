@@ -1,0 +1,5 @@
+#!/usr/bin/bash
+# upgrade: another short way to run monolith update, for anyone used to
+# dnf upgrade or apt upgrade. It does exactly what update does: upgrade APP...
+# updates only those apps, and upgrade --help explains the rest.
+exec "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/monolith" update "$@"

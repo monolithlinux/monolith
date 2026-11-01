@@ -64,25 +64,19 @@ and everything after it. Only one install, update or removal runs at a time.
 
 ## How updates work
 
-`monolith update` runs topgrade, which updates the system, your Flatpaks and your
-developer tools, and then these apps as its **Monolith software** step. **Update
-installed** in the dashboard, or `monolith update` followed by app names, updates
-only Monolith's apps.
+`monolith update` updates the system, your Flatpaks and your developer tools,
+and these apps as its **Monolith apps** step. **Update installed** in the
+dashboard, or `monolith update` followed by app names, updates only Monolith's
+apps.
 
 Monolith first checks each app for a newer release. If an app already has it and
 doesn't need repair, it shows `Up to date` and nothing is downloaded.
 `monolith install` always installs the newest release again, except for a Flatpak
 app that already has it.
 
-Running `topgrade` yourself does the same as `monolith update`. If an app needs an
-update but can't get one right now, such as WowUp-CF while it's open, topgrade
-lists it as failed in its summary and still updates the rest.
-
-At each login, Monolith links `~/.config/topgrade.d/monolith.toml` to the image's
-copy, unless you already have a file there. To opt out, replace that link with an
-empty file, or run
-`ln -s /dev/null ~/.config/user-tmpfiles.d/monolith-topgrade.conf` and then delete
-the link.
+If an app needs an update but can't get one right now, such as WowUp-CF while
+it's open, `monolith update` lists it as failed in its summary and still updates
+the rest.
 
 ## What Monolith keeps safe
 
@@ -114,8 +108,8 @@ it, or move the file aside and run `monolith install <app>`. After adoption,
 Monolith uses three kinds of installs, depending on what each project publishes.
 
 **Flathub Flatpaks** (Prism Launcher, Fluxer). These stay ordinary Flatpaks, so
-Bazaar, `flatpak update`, topgrade and the daily automatic Flatpak update all keep
-them current, alongside `monolith update`.
+Bazaar, `flatpak update` and the daily automatic Flatpak update all keep them
+current, alongside `monolith update`.
 
 **Flatpak bundles from GitHub** (Moonfin, Plezy, the Crafting Apps). These apps
 aren't on Flathub, so Monolith downloads the Flatpak bundle from each project's
@@ -157,8 +151,8 @@ it's a real AppImage. If you already have the launcher in Gear Lever, Monolith
 adopts it and replaces the AppImage with a fresh download from Epic.
 
 After that, the launcher keeps itself up to date. `monolith update epic-games`,
-**Update** in the dashboard and topgrade leave a working copy alone, and only
-repair a missing launcher, icon or AppImage. `monolith install epic-games`
+`monolith update` and **Update** in the dashboard leave a working copy alone, and
+only repair a missing launcher, icon or AppImage. `monolith install epic-games`
 downloads Epic's current build again over whatever is installed.
 
 Close the launcher, including its tray icon, before installing or removing it.

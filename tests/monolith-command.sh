@@ -20,7 +20,7 @@ command -v just >/dev/null || fail 'just is not installed'
 usr="$test_root/usr"
 log="$test_root/log"
 mkdir -p "$usr/bin" "$usr/libexec/monolith" "$usr/share" "$log"
-cp "$repo_root/files/system/usr/bin/"{monolith,mjust,ujust} "$usr/bin/"
+cp "$repo_root/files/system/usr/bin/"{monolith,mjust,ujust,update,upgrade} "$usr/bin/"
 cp -r "$repo_root/files/system/usr/share/monolith" "$usr/share/"
 cp "$repo_root/files/system/usr/libexec/monolith/common.sh" "$usr/libexec/monolith/"
 stand_in() {
@@ -37,17 +37,13 @@ for script in status scheduler rollback edition report-bug; do
     stand_in "$usr/libexec/monolith/$script" "$script" \
         '[ "${1-}" != --help ] || echo "Usage: monolith '"$script"' [details]"'
 done
+stand_in "$usr/libexec/monolith/update" updater '
+case "${1-}" in
+    --help) echo "Usage: monolith update [--list] [--only STEPS] [--skip STEPS]" ;;
+    __steps) printf "system\tMonolith\nflatpak\tFlatpaks\n" ;;
+esac'
 bin="$test_root/bin"
 mkdir -p "$bin"
-stand_in "$bin/topgrade" topgrade
-# Like the real topgrade binary, this stand-in must show up as "topgrade" in
-# /proc/PID/comm, which a #!/usr/bin/env script would not. CALL_MONOLITH runs
-# the old drop-in's `monolith update` once; a second topgrade would only log.
-cat >"$bin/topgrade" <<EOF
-#!/bin/bash
-printf '%s\n' "\$*" >>"$log/topgrade"
-if [ -n "\${CALL_MONOLITH-}" ]; then CALL_MONOLITH= monolith update; fi
-EOF
 printf '#!/usr/bin/env bash\nexit 1\n' >"$bin/rpm-ostree"
 chmod +x "$bin/rpm-ostree"
 printf 'NAME=Monolith\nPRETTY_NAME="Monolith KDE"\n' >"$test_root/os-release"
@@ -84,6 +80,8 @@ done
 [ "$(awk 'length > 80' <<<"$help")" = '' ] || fail 'help has lines over 80 characters'
 [ "$(monolith --help)" = "$help" ] || fail '--help differs from help'
 [ "$(monolith -h)" = "$help" ] || fail '-h differs from help'
+grep -qx 'update and upgrade on their own are short for monolith update.' <<<"$help" ||
+    fail 'help does not mention update and upgrade'
 
 # App commands go to the catalog, unchanged.
 for words in 'list' 'install sidra' 'remove sidra epic-games' 'uninstall sidra' 'update sidra'; do
@@ -99,17 +97,36 @@ for word in software monolith-software menu; do
     logged catalog ''
 done
 
-# update without app names updates everything with topgrade...
+# update without app names runs the updater, options and all; app names go to
+# the catalog. update and upgrade on their own are short for monolith update.
 fresh
 monolith update
-logged topgrade ''
+logged updater ''
 not_called catalog
-# ...except when topgrade itself asks, as an older drop-in does: then only
-# the apps update, or topgrade would start itself again.
 fresh
-CALL_MONOLITH=1 topgrade
-logged topgrade ''
-logged catalog update
+monolith update --skip distrobox --list
+logged updater '--skip distrobox --list'
+not_called catalog
+fresh
+update
+logged updater ''
+fresh
+update --only flatpak
+logged updater '--only flatpak'
+fresh
+update sidra epic-games
+logged catalog 'update sidra epic-games'
+not_called updater
+fresh
+upgrade
+logged updater ''
+fresh
+upgrade --skip flatpak
+logged updater '--skip flatpak'
+fresh
+upgrade sidra
+logged catalog 'update sidra'
+not_called updater
 
 # System commands run their scripts with their arguments.
 fresh
@@ -133,7 +150,10 @@ monolith device-info
 logged report-bug ''
 fresh
 monolith upgrade
-logged topgrade ''
+logged updater ''
+fresh
+monolith upgrade sidra
+logged catalog 'update sidra'
 
 # Mistakes get a plain answer, without running anything else.
 fresh
@@ -155,13 +175,18 @@ grep -q '^monolith scheduler \[mode\]$' <<<"$out" || fail "help scheduler: $out"
 grep -q 'Usage: monolith scheduler' <<<"$out" || fail 'help scheduler skipped the details'
 out="$(monolith help device-info)"
 grep -q '^monolith report-bug$' <<<"$out" || fail "help for an old name: $out"
+# update explains both of its forms itself.
+out="$(monolith help update)"
+grep -q '^Usage: monolith update \[--list\]' <<<"$out" || fail "help update: $out"
+[ "$(update --help)" = "$out" ] || fail 'update --help differs from monolith help update'
+[ "$(upgrade --help)" = "$out" ] || fail 'upgrade --help differs from monolith help update'
 
 # mjust and ujust are old names: on their own they list the commands.
 [ "$(mjust)" = "$help" ] || fail 'mjust on its own does not show help'
 [ "$(ujust)" = "$help" ] || fail 'ujust on its own does not show help'
 fresh
 ujust update
-logged topgrade ''
+logged updater ''
 fresh
 mjust monolith
 logged catalog ''
@@ -183,7 +208,11 @@ for command in list install remove update help status scheduler rollback edition
 done
 [ "$(grep -o ' update ' <<<" $first " | wc -l)" = 1 ] || fail 'update is offered twice'
 [ "$(words install)" = 'sidra epic-games ' ] || fail "install completion: $(words install)"
-[ "$(words update)" = 'sidra epic-games ' ] || fail "update completion: $(words update)"
+[ "$(words update)" = 'sidra epic-games --list --only --skip ' ] || fail "update completion: $(words update)"
+[ "$(words update --only)" = 'system flatpak ' ] || fail "update --only completion: $(words update --only)"
+[ "$(words update --skip system --skip)" = 'system flatpak ' ] || fail "update --skip completion"
+[ "$(words update sidra)" = 'sidra epic-games ' ] || fail "update APP completion: $(words update sidra)"
+[ "$(words update --list)" = '' ] || fail "update --list completion: $(words update --list)"
 [ "$(words scheduler)" = 'gaming powersave auto off lowlatency ' ] || fail "scheduler completion: $(words scheduler)"
 [ "$(words edition)" = 'kde kde-nvidia ' ] || fail "edition completion: $(words edition)"
 [ "$(words rollback)" = 'list latest ' ] || fail "rollback completion: $(words rollback)"
@@ -199,6 +228,18 @@ bash_complete() {
 [ "$(bash_complete ujust install si)" = sidra ] || fail "bash ujust: $(bash_complete ujust install si)"
 bash -c '. "$1"; complete -p monolith mjust ujust' _ "$completions/bash-completion/completions/monolith" >/dev/null ||
     fail 'bash completion is not registered for every name'
+bash_complete_update() {
+    bash -c '. "$1"; shift; COMP_WORDS=("$@"); COMP_CWORD=$((${#COMP_WORDS[@]} - 1)); _monolith_update; echo "${COMPREPLY[*]}"' \
+        _ "$completions/bash-completion/completions/update" "$@"
+}
+[ "$(bash_complete_update update --sk)" = --skip ] || fail "bash update: $(bash_complete_update update --sk)"
+[ "$(bash_complete_update update --only f)" = flatpak ] || fail "bash update --only: $(bash_complete_update update --only f)"
+[ "$(bash_complete_update update si)" = sidra ] || fail "bash update APP: $(bash_complete_update update si)"
+[ "$(bash_complete_update upgrade --sk)" = --skip ] || fail "bash upgrade: $(bash_complete_update upgrade --sk)"
+# bash-completion loads a file by command name, so upgrade has one that loads
+# update's.
+bash -c '. <(sed "s#/usr/share/bash-completion/completions#$1#" "$1/upgrade"); complete -p upgrade' \
+    _ "$completions/bash-completion/completions" >/dev/null || fail 'upgrade has no bash completion of its own'
 
 if command -v fish >/dev/null; then
     fish_complete() {
@@ -208,6 +249,10 @@ if command -v fish >/dev/null; then
     [ "$(fish_complete 'monolith sta')" = 'status ' ] || fail "fish: $(fish_complete 'monolith sta')"
     [ "$(fish_complete 'mjust edition ')" = 'kde kde-nvidia ' ] || fail "fish mjust: $(fish_complete 'mjust edition ')"
     [ "$(fish_complete 'ujust rollback l')" = 'latest list ' ] || fail "fish ujust: $(fish_complete 'ujust rollback l')"
+    [ "$(fish_complete 'update --only ')" = 'flatpak system ' ] || fail "fish update: $(fish_complete 'update --only ')"
+    [ "$(fish_complete 'update si')" = 'sidra ' ] || fail "fish update APP: $(fish_complete 'update si')"
+    [ "$(fish_complete 'upgrade --only ')" = 'flatpak system ' ] ||
+        fail "fish upgrade: $(fish_complete 'upgrade --only ')"
 else
     printf 'skipped fish completion: fish is not installed\n'
 fi
@@ -216,13 +261,18 @@ if command -v zsh >/dev/null; then
     # _describe needs a live completion widget; this stand-in lists what it got.
     zsh_complete() {
         zsh -f -c '_describe() { local name=${@[-1]}; print -l -- "${(@P)name}"; }
-            words=("${@[1,-1]}"); CURRENT=${#words}; source "$ZSH_COMPLETION"' zsh "$@" | cut -d: -f1 | tr '\n' ' '
+            words=("${@[1,-1]}"); CURRENT=${#words}; service=$words[1]; source "$ZSH_COMPLETION"' zsh "$@" |
+            cut -d: -f1 | tr '\n' ' '
     }
     export ZSH_COMPLETION="$completions/zsh/site-functions/_monolith"
     [ "$(zsh_complete monolith edition '')" = 'kde kde-nvidia ' ] || fail "zsh: $(zsh_complete monolith edition '')"
     [ "$(zsh_complete ujust scheduler '')" = 'gaming powersave auto off lowlatency ' ] ||
         fail "zsh ujust: $(zsh_complete ujust scheduler '')"
-    head -n 1 "$ZSH_COMPLETION" | grep -qx '#compdef monolith mjust ujust' || fail 'zsh completion misses a name'
+    [ "$(zsh_complete update --only '')" = 'system flatpak ' ] || fail "zsh update: $(zsh_complete update --only '')"
+    [ "$(zsh_complete upgrade --only '')" = 'system flatpak ' ] ||
+        fail "zsh upgrade: $(zsh_complete upgrade --only '')"
+    head -n 1 "$ZSH_COMPLETION" | grep -qx '#compdef monolith mjust ujust update upgrade' ||
+        fail 'zsh completion misses a name'
 else
     printf 'skipped zsh completion: zsh is not installed\n'
 fi

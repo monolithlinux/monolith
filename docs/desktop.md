@@ -105,9 +105,9 @@ if you only want one OpenDeck.
 
 Node.js 24 and npm are included. `npm install -g` installs packages into your own
 account, in `~/.local` with their commands in `~/.local/bin`, so you don't need an
-administrator password, and topgrade keeps them updated. To put them somewhere
-else, set `prefix` in `~/.npmrc`. A Node.js from nvm, fnm or mise still comes
-first in your shell.
+administrator password, and `monolith update` keeps them updated. To put them
+somewhere else, set `prefix` in `~/.npmrc`. A Node.js from nvm, fnm or mise still
+comes first in your shell.
 
 ## Waywallen wallpapers
 
@@ -130,19 +130,20 @@ or `--global`), then log out and back in.
 ## Update reminder
 
 The system and your Flatpaks update by themselves every day. `monolith update`
-updates the rest with topgrade: apps from `monolith`, Distrobox containers, and
-developer tools such as rustup and Claude Code.
+(or just `update` or `upgrade`) updates the rest: apps from `monolith`,
+Distrobox containers, and developer tools such as rustup and Claude Code.
 
-If topgrade hasn't finished a run for a week, a notification at login reminds you,
-at most once a week. **Update now** opens Ghostty and runs `monolith update`, and
-keeps the window open afterwards so you can read the summary. A new account gets
-its first reminder a week after its first login at the earliest.
+If `monolith update` hasn't finished a run for a week, a notification at login
+reminds you, at most once a week. **Update now** opens Ghostty and runs
+`monolith update`, and keeps the window open afterwards so you can read the
+summary. A new account gets its first reminder a week after its first login at
+the earliest.
 
-Every finished run counts, even one where some steps failed. topgrade records it
-through the post command in `~/.config/topgrade.d/monolith.toml`, so if you opted
-out of that file, turn the reminder off too. To turn it off, disable
-**Monolith Update Reminder** in Plasma's Autostart settings. The reminder keeps its
-timestamps in `~/.local/state/monolith/update-reminder/`.
+Every run that gets through all its steps counts, even one where some steps
+failed. A run you stop with Ctrl+C, or one limited with `--only`, doesn't. To
+turn the reminder off, disable **Monolith Update Reminder** in Plasma's Autostart
+settings. The reminder keeps its timestamps in
+`~/.local/state/monolith/update-reminder/`.
 
 ## Monolith News
 

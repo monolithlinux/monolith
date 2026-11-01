@@ -1,0 +1,10 @@
+# Tab completion for update and upgrade, which are short for monolith update:
+# app names from the catalog, the options, and step names after --only and
+# --skip.
+_monolith_update() {
+    local current="${COMP_WORDS[COMP_CWORD]}" candidates IFS=$'\n'
+    candidates="$(monolith __complete update "${COMP_WORDS[@]:1:COMP_CWORD-1}" 2>/dev/null | cut -f1)"
+    # shellcheck disable=SC2207
+    COMPREPLY=($(compgen -W "$candidates" -- "$current"))
+}
+complete -F _monolith_update update upgrade

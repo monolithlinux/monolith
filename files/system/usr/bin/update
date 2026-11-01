@@ -1,0 +1,5 @@
+#!/usr/bin/bash
+# update: the short way to run monolith update, which updates Monolith, your
+# Flatpaks, the apps from the catalog and your tools. update APP... updates only
+# those apps, and update --help explains the rest.
+exec "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/monolith" update "$@"
