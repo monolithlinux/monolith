@@ -439,7 +439,7 @@ modules:
         # values in each user's fish_variables.
         sed -i 's/set --universal/set --global/' "$tmpdir/functions/_pure_set_default.fish"
         grep -q 'set --global' "$tmpdir/functions/_pure_set_default.fish"
-        ! grep -q 'set --universal' "$tmpdir/functions/_pure_set_default.fish"
+        if grep -q 'set --universal' "$tmpdir/functions/_pure_set_default.fish"; then exit 1; fi
         install -d /usr/share/fish/vendor_functions.d /usr/share/fish/vendor_conf.d
         cp -a "$tmpdir/functions/." /usr/share/fish/vendor_functions.d/
         cp -a "$tmpdir/conf.d/."    /usr/share/fish/vendor_conf.d/
