@@ -2,6 +2,19 @@
 # yaml-language-server: $schema=https://schema.blue-build.org/recipe-v1.json
 # Desktop-neutral layer shared by every edition.
 modules:
+  # First, before anything changes the base: install the updates Fedora
+  # published after it built this image. Otherwise a package added below can
+  # pull in only part of an update. On 2026-11-01 plasma-oxygen brought in
+  # Plasma 6.8.2 while KWin stayed on 6.7.5, and the login screen never came
+  # up. Fedora's kernel stays as it is, since the CachyOS kernel replaces it
+  # below, and no new weak dependencies come in.
+  - type: script
+    snippets:
+      - |
+        set -euxo pipefail
+        dnf5 -y upgrade --setopt=install_weak_deps=False \
+          --exclude=kernel,kernel-core,kernel-modules,kernel-modules-core,kernel-modules-extra
+
   - type: files
     files:
       - source: system

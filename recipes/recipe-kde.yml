@@ -36,6 +36,12 @@ modules:
         test ! -e /usr/bin/chsh
         test ! -e /usr/bin/lchsh
 
+  # After the last package change: Plasma's core has to come from a single
+  # Plasma release. See the script.
+  - type: script
+    scripts:
+      - check-plasma-versions.py
+
   - type: initramfs
 
   - type: signing
