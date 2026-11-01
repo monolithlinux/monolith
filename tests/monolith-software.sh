@@ -1139,7 +1139,7 @@ test_prism_lifecycle() {
     grep -qx 'version=11.2.0' "$state_root/prismlauncher.managed" || fail 'Prism Launcher marker did not update'
     assert_prism_listed 'installed +11\.2\.0'
 
-    # Another updater, such as topgrade's Flatpak step, can update it first;
+    # Another updater, such as monolith update's Flatpak step, can update it first;
     # Monolith then reports it current and records the version it finds.
     flatpak_state '{"flathub": {"org.prismlauncher.PrismLauncher": "11.3.0"}, "apps": {"org.prismlauncher.PrismLauncher": {"user": "11.3.0"}}}'
     run_monolith update prismlauncher >"$case_root/update.log"

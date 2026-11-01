@@ -33,9 +33,24 @@ The [Monolith Software guide](software.md) covers these.
 The system and your Flatpaks update by themselves every day. A system update
 takes effect the next time you restart.
 
-`monolith update` updates everything else too: apps from the catalog, Distrobox
-containers, and developer tools such as rustup. It runs topgrade, so running
-`topgrade` does the same.
+`monolith update`, or just `update` or `upgrade`, updates everything else too:
+apps from the catalog, Proton tools, AppImages, Distrobox containers, and
+developer tools such as rustup, npm and Claude Code. It also checks for firmware
+updates. Each step shows its progress, and one that fails doesn't stop the rest.
+At the end you get a short summary of what changed.
+
+You don't need a password to update. If there's a new build of Monolith, it asks
+whether to restart now. The answer is no unless you type `y`, and the new build
+waits for your next restart either way.
+
+`update --list` shows the steps it would run on your computer. `--only` and
+`--skip` take step names, such as `update --skip distrobox`. To skip a step
+every time, or to add your own commands, put them in
+`~/.config/monolith/update.toml`; `update --help` shows an example. The full
+output of the last ten runs is kept in `~/.local/state/monolith/update/`.
+
+`monolith update` followed by app names, such as `monolith update sidra`, updates
+only those apps from the catalog.
 
 `monolith changelogs` lists the packages that the last system update changed.
 
@@ -117,8 +132,7 @@ switch takes effect when you restart.
 ## Setup
 
 `monolith adopt` gives an account that existed before you switched to Monolith
-the default settings it's missing, and rebuilds its font cache. If you have your
-own topgrade settings, they're saved as `topgrade.toml.pre-monolith` first.
+the default settings it's missing, and rebuilds its font cache.
 
 `monolith enroll-secure-boot-key` lets Secure Boot trust Monolith's kernel and
 NVIDIA driver. Restart afterwards, choose **Enroll MOK → Continue** in the

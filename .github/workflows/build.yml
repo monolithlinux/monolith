@@ -31,7 +31,6 @@ jobs:
           tests/monolith-paths.sh
           tests/monolith-software.sh
           python3 tests/gear-lever-apps.py
-          tests/monolith-topgrade.sh
           tests/opendeck-flatpak-migration.sh
           tests/monolith-update-reminder.sh
       - name: Test the monolith command

@@ -78,8 +78,6 @@ modules:
 
   - type: dnf
     repos:
-      copr:
-        - lilay/topgrade
       files:
         - https://brave-browser-rpm-nightly.s3.brave.com/brave-browser-nightly.repo
         - https://negativo17.org/repos/fedora-steam.repo
@@ -113,8 +111,6 @@ modules:
         - google-noto-fonts-all
         # Tailscale's official stable RPM
         - tailscale
-        # Updating helper
-        - topgrade
         # Steam/controller support
         - steam-devices
         # Gaming tools
@@ -172,8 +168,8 @@ modules:
         - google-noto-sans-javanese-fonts
         - google-noto-sans-sundanese-fonts
         # GitHub's own gh; Fedora's trails by months. Fedora's 2.97 scans
-        # ~/.codex/skills, so topgrade's GitHub CLI skills step warned about
-        # every skill Codex ships there; 2.99 and later scan ~/.agents/skills.
+        # ~/.codex/skills, so gh skill update warned about every skill Codex
+        # ships there; 2.99 and later scan ~/.agents/skills.
         # The module installs repo entries after the plain list, which
         # supplies git, the one package gh needs from outside gh-cli.
         - repo: gh-cli
@@ -367,9 +363,12 @@ modules:
         HOME=/nonexistent python3 -B /usr/libexec/monolith/gear-lever-app --help >/dev/null
         # Programs the catalog, the updater and the system commands run.
         for command in fzf python3 curl flock readelf flatpak jq just lspci mokutil xdg-open busctl \
-            topgrade rpm-ostree fwupdmgr distrobox podman; do
+            rpm-ostree fwupdmgr distrobox podman; do
           command -v "$command" >/dev/null
         done
+        # monolith update replaced topgrade. (set -e ignores a command negated
+        # with !, so a failing check has to exit itself.)
+        if command -v topgrade; then exit 1; fi
         # Node.js 24 with full locale data, and npm installing global packages
         # for the current user (/etc/npmrc) instead of into root-owned /usr/local.
         node --version | grep -q '^v24\.'
@@ -377,16 +376,16 @@ modules:
         home="$(mktemp -d)"
         test "$(HOME="$home" npm config get prefix)" = "$home/.local"
         rm -rf "$home"
-        # The login rule must link a drop-in that the image ships.
-        home="$(mktemp -d)"
-        HOME="$home" XDG_RUNTIME_DIR="$home" \
-          systemd-tmpfiles --user --create /usr/share/user-tmpfiles.d/monolith-topgrade.conf
-        test -f "$(readlink "$home/.config/topgrade.d/monolith.toml")"
-        rm -rf "$home"
-        # monolith update explains itself without needing or touching a home
-        # directory.
+        # monolith update and its short forms, update and upgrade, explain
+        # themselves without needing or touching a home directory. No package
+        # may own either name, or ours would quietly replace its file.
         test -x /usr/libexec/monolith/update
-        HOME=/nonexistent python3 -B /usr/libexec/monolith/update --help >/dev/null
+        help="$(HOME=/nonexistent python3 -B /usr/libexec/monolith/update --help)"
+        for short in update upgrade; do
+          test -x "/usr/bin/$short"
+          test "$(HOME=/nonexistent "/usr/bin/$short" --help)" = "$help"
+          if rpm -qf "/usr/bin/$short"; then exit 1; fi
+        done
         # The polkit rule that lets people update without a password must parse.
         node -e 'new (require("vm").Script)(require("fs").readFileSync(process.argv[1], "utf8"))' \
           /usr/share/polkit-1/rules.d/50-monolith-updates.rules

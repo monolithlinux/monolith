@@ -1,0 +1,3 @@
+# Bash loads completions by command name; upgrade completes like update.
+# shellcheck source=/dev/null
+. /usr/share/bash-completion/completions/update

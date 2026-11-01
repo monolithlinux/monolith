@@ -1,8 +1,9 @@
 #!/usr/bin/python3
 """Bring Monolith, your apps and your tools up to date.
 
-This is `monolith update`, which `update` on its own runs too. `monolith update
-APP...` goes to the catalog instead, so it never reaches this script.
+This is `monolith update`, which `update` and `upgrade` on their own run too.
+`monolith update APP...` goes to the catalog instead, so it never reaches this
+script.
 
 Each step runs on its own, with no terminal attached, and one failing doesn't
 stop the rest. Their full output goes to ~/.local/state/monolith/update/. On a
@@ -70,7 +71,7 @@ Usage: monolith update [--list] [--only STEPS] [--skip STEPS]
 Updates Monolith, your Flatpaks, the apps from the catalog, Proton tools,
 AppImages, Distrobox containers, and the developer tools you've installed,
 one step at a time. A step that fails doesn't stop the others. Running
-update on its own does the same.
+update or upgrade on its own does the same.
 
   --list          show the steps it would run here, then stop
   --only STEPS    run only these steps, separated by commas

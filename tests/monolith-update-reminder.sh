@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# The login reminder appears when topgrade has not finished a run for a week, at
-# most once a week, and not before an account has been tracked for a week.
+# The login reminder appears when monolith update hasn't finished a run for a
+# week, at most once a week, and not before an account has been tracked for a
+# week.
 set -euo pipefail
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -39,11 +40,11 @@ new_account() {
     state="$home/.local/state/monolith/update-reminder"
     mkdir -p "$home"
 }
-# run [--record]: one login check, or the post command after a topgrade run.
+# run: one login check.
 run() {
     rm -rf "$log"
     mkdir -p "$log"
-    env -u XDG_STATE_HOME PATH="$bin:$PATH" HOME="$home" "$reminder" "$@"
+    env -u XDG_STATE_HOME PATH="$bin:$PATH" HOME="$home" "$reminder"
 }
 age() { mkdir -p "$state"; touch -d "$2 days ago" "$state/$1"; }
 shown() { [ -s "$log/notify-send" ]; }
@@ -68,11 +69,11 @@ just_written last-reminder || fail 'the reminder was not recorded'
 run
 ! shown || fail 'reminded twice in a week'
 
-# A finished topgrade run postpones the reminder by a week.
+# A finished monolith update postpones the reminder by a week. The updater
+# writes the same file (RECORD in /usr/libexec/monolith/update).
 new_account
 age last-reminder 30
-run --record
-just_written last-update || fail '--record did not note the update'
+age last-update 0
 run
 ! shown || fail 'reminded right after an update'
 
@@ -85,7 +86,7 @@ age last-reminder 2
 run
 ! shown || fail 'reminded again two days after a reminder'
 
-# Update now opens a terminal that runs monolith update (topgrade) and stays open.
+# Update now opens a terminal that runs monolith update and stays open.
 age last-reminder 7
 : >"$test_root/click"
 run

@@ -6,7 +6,7 @@ alias upgrade := update
 # Update the system, Flatpaks, apps and dev tools
 [group('Updates')]
 update:
-    topgrade
+    "$MONOLITH_LIBEXEC/update"
 
 alias changelog := changelogs
 

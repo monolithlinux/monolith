@@ -8,8 +8,10 @@
 #   monolith COMMAND [ARG]        run a system command, such as status
 #   monolith help                 show every command
 #
-# The catalog is /usr/libexec/monolith/software. The system commands are just
-# recipes in /usr/share/monolith/just/; the old names mjust and ujust run this.
+# The catalog is /usr/libexec/monolith/software and the updater
+# /usr/libexec/monolith/update, which update and upgrade on their own run too.
+# The system commands are just recipes in /usr/share/monolith/just/; the old
+# names mjust and ujust run this.
 set -euo pipefail
 
 self="$(readlink -f -- "${BASH_SOURCE[0]}")"
@@ -131,13 +133,19 @@ show_help() {
                 $((width - ${#label})) "" "$description"
         done
     done
-    printf '\n%s%s%s\n' "$DIM" "The old names mjust and ujust still work." "$RESET"
+    printf '\n%s%s\n%s%s\n' "$DIM" "update and upgrade on their own are short for monolith update." \
+        "The old names mjust and ujust still work." "$RESET"
 }
 
 # help_for NAME: the usage line of one command; commands with choices also
 # explain them.
 help_for() {
     local name="$1" row app group usage description args target
+    # The updater explains both ways to use update itself.
+    if [[ $name == update || $name == upgrade ]]; then
+        "$MONOLITH_LIBEXEC/update" --help
+        return 0
+    fi
     for row in "${app_rows[@]}"; do
         IFS=$'\x1f' read -r app usage description <<<"$row"
         [[ $app == "$name" ]] || continue
@@ -157,19 +165,6 @@ help_for() {
         return 0
     done < <(recipes)
     unknown "$name"
-}
-
-# inside_topgrade: is topgrade our ancestor? topgrade runs `monolith update`
-# for the apps through older copies of its drop-in, which must not start
-# topgrade again.
-inside_topgrade() {
-    local pid="$PPID" comm
-    while [[ $pid =~ ^[0-9]+$ ]] && ((pid > 1)); do
-        comm="$(cat -- "/proc/$pid/comm" 2>/dev/null)" || return 1
-        [[ $comm == topgrade ]] && return 0
-        pid="$(awk '/^PPid:/ {print $2}' "/proc/$pid/status" 2>/dev/null)" || return 1
-    done
-    return 1
 }
 
 unknown() {
@@ -205,7 +200,18 @@ complete_words() {
         return 0
     fi
     case "$1" in
-        install|remove|uninstall|update) "$software" __ids ;;
+        install|remove|uninstall) "$software" __ids ;;
+        update|upgrade)
+            if (($# == 1)); then
+                "$software" __ids
+                printf '%s\t%s\n' --list 'Show the steps it would run' \
+                    --only 'Run only these steps' --skip 'Leave these steps out'
+            elif [[ ${*: -1} == --only || ${*: -1} == --skip ]]; then
+                "$MONOLITH_LIBEXEC/update" __steps
+            elif [[ $2 != -* ]]; then
+                "$software" __ids
+            fi
+            ;;
         help)
             (($# == 1)) || return 0
             while IFS=$'\x1f' read -r name group usage description args; do
@@ -271,12 +277,13 @@ main() {
     case "$1" in
         menu|software|monolith|monolith-software) shift; exec "$software" "$@" ;;
         list|install|remove|uninstall) exec "$software" "$@" ;;
-        update)
+        update|upgrade)
             shift
-            if (($# > 0)) || inside_topgrade; then
+            # App names go to the catalog; nothing, or options, to the updater.
+            if (($# > 0)) && [[ $1 != -* ]]; then
                 exec "$software" update "$@"
             fi
-            run_command update
+            exec "$MONOLITH_LIBEXEC/update" "$@"
             ;;
         help|-h|--help)
             if (($# > 1)); then help_for "$2"; else show_help; fi

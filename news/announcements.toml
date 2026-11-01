@@ -28,6 +28,31 @@
 #   files/kde/usr/bin/monolith-news --preview news/announcements.toml
 
 [[announcements]]
+id = "2026-11-01-monolith-update"
+date = 2026-11-01
+title = "Monolith has its own updater now"
+category = "System"
+body = """
+Type `update` or `upgrade` in a terminal to update everything at once: Monolith
+itself, your Flatpaks, apps from `monolith`, Distrobox containers and your
+developer tools. Both are short for `monolith update`, which still works.
+
+Each step shows its progress, and you get a short summary at the end. In a big
+enough window, the sun rises behind the Monolith logo while it works.
+
+It doesn't ask for your password anymore. When a new build of Monolith is ready,
+it asks whether to restart now. Press Enter to keep working, and the new build
+starts the next time you restart.
+
+It replaces topgrade, which is no longer included. To skip steps or add your own
+commands, see `update --help`.
+"""
+note = "Not there yet? Update Monolith and reboot first."
+links = [
+  { label = "How updates work", url = "https://github.com/monolithlinux/monolith/blob/main/docs/commands.md#updates" },
+]
+
+[[announcements]]
 id = "2026-10-30-monolith-look"
 date = 2026-10-30
 title = "monolith and fastfetch have a new look"
@@ -123,7 +148,7 @@ Last.fm scrobbling. You need an Apple Music subscription. To install it, run
   than adding a second launcher.
 - **Updates:** Monolith installs the newest stable release, and Sidra also
   updates itself to newer stable releases. Close Sidra before running
-  `monolith update sidra` or topgrade.
+  `monolith update sidra` or `monolith update`.
 - **Your data stays:** Removing Sidra keeps your Apple Music sign-in and
   settings.
 
@@ -137,16 +162,16 @@ links = [
 [[announcements]]
 id = "2026-10-19-update-reminder"
 date = 2026-10-19
-title = "A reminder when topgrade has not run for a week"
+title = "A reminder when you haven't updated everything for a week"
 category = "Monolith"
 body = """
-Some of your apps and tools update only when you run `topgrade`. Monolith now
-reminds you when you haven't run it for a week.
+Some of your apps and tools update only when you run `monolith update`. Monolith
+now reminds you when you haven't run it for a week.
 
 - **Reminder:** A notification at login, at most once a week, until you run
-  `topgrade` again.
+  `monolith update` again.
 - **Update now:** The notification's button opens a terminal that runs
-  `topgrade`.
+  `monolith update`.
 - **Turn it off:** Disable Monolith Update Reminder in Plasma's Autostart
   settings.
 
@@ -205,7 +230,7 @@ interfaces. To install it, run `monolith`, open **Crafting Apps**, and select
   `flatpak override --user --share=network ai.storyteller.figcraft`.
 - **Same as the others:** Monolith checks the download against the SHA256
   digest GitHub publishes, installs it for your account, and updates it through
-  `mjust update`, topgrade, or `monolith update`.
+  `monolith update`.
 - **Your data stays:** Removing FigCraft keeps its settings, recent files,
   plugins, and recovery files.
 
@@ -227,7 +252,7 @@ installing anything.
 
 - **Global packages:** `npm install -g` installs for your account in
   `~/.local`, with the commands in `~/.local/bin`, so no administrator password
-  is needed. topgrade keeps them updated.
+  is needed. `monolith update` keeps them updated.
 - **Your own Node.js:** A Node.js from nvm, fnm, or mise still comes first in
   your shell.
 
@@ -258,7 +283,7 @@ install one, run `monolith`, open **Crafting Apps**, and select it.
   folder SoundCraft suggests in your home folder is lost when it closes.
 - **Same as the others:** Monolith checks each download against the SHA256
   digest GitHub publishes, installs it for your account, and updates it
-  through `mjust update`, topgrade, or `monolith update`.
+  through `monolith update`.
 - **Your data stays:** Removing an app keeps its settings, and your own files
   stay where you saved them.
 
@@ -290,8 +315,8 @@ motion graphics, and DesignCraft for page layout. To install one, run
   SHA256 digest GitHub publishes. They are installed for your account, so no
   administrator password is needed.
 - **Updates:** Bazaar and the daily automatic Flatpak update cannot update
-  these Flatpaks. Monolith does, through `mjust update`, topgrade, or
-  `monolith update`, and downloads only newer releases.
+  these Flatpaks. Monolith does, through `monolith update`, and
+  downloads only newer releases.
 - **No launcher needed:** Monolith installs and updates the apps itself, so you
   can skip the ArtCraft Launcher.
 - **Your data stays:** Removing an app keeps its settings, and your own files
@@ -322,7 +347,7 @@ Fluxer is an open-source chat app with voice calls. To install it, run
   Canary from Fluxer's own signed Flatpak repository and adds that repository to
   your account's software sources.
 - **Updates:** Both update like any other Flatpak, including the daily automatic
-  update, Bazaar, topgrade, and `monolith update`.
+  update, Bazaar, and `monolith update`.
 - **Already installed?** Monolith takes over a copy installed for your account.
   A system-wide copy, such as Fluxer from Bazaar, is left alone.
 - **Your data stays:** Removing either keeps your sign-ins and settings.
@@ -374,8 +399,8 @@ run `monolith`, open **Media**, and select **Plezy**.
   digest GitHub publishes. It is installed for your account, so no
   administrator password is needed.
 - **Updates:** Bazaar and the daily automatic Flatpak update cannot update this
-  Flatpak. Monolith does, through `mjust update`, topgrade, or
-  `monolith update plezy`, and downloads only a newer release.
+  Flatpak. Monolith does, through `monolith update plezy`, and
+  downloads only a newer release.
 - **Already installed?** Monolith takes over a copy installed for your account.
   A system-wide copy is left alone rather than installed twice.
 - **Your data stays:** Removing Plezy keeps your servers, sign-ins, settings,
@@ -404,8 +429,8 @@ Moonfin is a media client for Jellyfin and Emby servers. To install it, run
   SHA256 digest GitHub publishes. It is installed for your account, so no
   administrator password is needed.
 - **Updates:** Bazaar and the daily automatic Flatpak update cannot update this
-  Flatpak. Monolith does, through `mjust update`, topgrade, or
-  `monolith update moonfin`, and downloads only a newer release.
+  Flatpak. Monolith does, through `monolith update moonfin`, and
+  downloads only a newer release.
 - **Already installed?** Monolith takes over a copy installed for your account.
   A system-wide copy is left alone rather than installed twice.
 - **Your data stays:** Removing Moonfin keeps your servers, sign-ins, settings,
@@ -459,7 +484,7 @@ modpacks. To install it, run `monolith`, open **Gaming**, and select
   system-wide copy, such as one from Bazaar, is left alone rather than installed
   twice.
 - **Updates:** It updates like any other Flatpak, including the daily automatic
-  update, Bazaar, topgrade, and `monolith update prismlauncher`. You do not need
+  update, Bazaar, and `monolith update prismlauncher`. You do not need
   to close it first.
 - **Your data stays:** Removing Prism Launcher keeps your instances, worlds,
   accounts, and settings.
@@ -490,7 +515,7 @@ r2modman is a mod manager for Thunderstore games such as **Lethal Company**,
   than adding a second launcher.
 - **Updates:** Monolith installs the newest stable release, and r2modman can
   also update itself to newer stable releases. Close r2modman before running
-  `monolith update r2modman` or topgrade.
+  `monolith update r2modman` or `monolith update`.
 - **Your data stays:** Removing r2modman keeps your profiles, mods, and
   settings.
 

@@ -17,7 +17,7 @@ MONOLITH_REGISTRY="${MONOLITH_REGISTRY:-https://ghcr.io}"
 MONOLITH_MOK_KEY="${MONOLITH_MOK_KEY:-/etc/pki/akmods/certs/akmods-monolith.der}"
 # ostree keeps this file while a downloaded update waits for the next restart.
 MONOLITH_STAGED="${MONOLITH_STAGED:-/run/ostree/staged-deployment}"
-# topgrade touches this after a full update, for the login reminder.
+# monolith update touches this after a full run, for the login reminder.
 MONOLITH_UPDATE_RECORD="${XDG_STATE_HOME:-$HOME/.local/state}/monolith/update-reminder/last-update"
 # Keep in sync with ALL in .github/workflows/pick-editions.sh.
 MONOLITH_EDITIONS=(kde kde-nvidia)

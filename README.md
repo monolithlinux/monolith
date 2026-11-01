@@ -20,7 +20,7 @@ On top of Kinoite you get:
 - OpenDeck for Stream Decks, Node.js 24, Wine and the Waywallen wallpaper plugin,
   already installed
 - daily automatic updates for the system and Flatpaks, and a weekly nudge to run
-  `topgrade` for everything else
+  `update` for everything else
 - Monolith News, which tells you when something needs your attention
 
 ## Pick your edition
@@ -59,8 +59,7 @@ After the last reboot, there are three things to do.
 
 **Set up your account.** Run this once for each user account that existed before
 the switch. It copies any of Monolith's default settings (from `/etc/skel`) that
-your account is missing and rebuilds the font cache. If you already have a
-different topgrade configuration, it's backed up first.
+your account is missing and rebuilds the font cache.
 
 ```bash
 monolith adopt
@@ -90,8 +89,9 @@ takes effect the next time you boot, and a Flatpak update the next time you open
 the app.
 
 Everything else, such as apps from `monolith`, Distrobox containers and tools like
-rustup or Claude Code, updates when you run `monolith update`. If you haven't run
-it for a week, Monolith reminds you at login.
+rustup or Claude Code, updates when you run `update` or `upgrade`, both short for
+`monolith update`. It doesn't ask for a password, and it asks before restarting.
+If you haven't run it for a week, Monolith reminds you at login.
 
 When something needs you to act, Monolith News opens at login and explains what to
 do.
