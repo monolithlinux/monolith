@@ -2,10 +2,14 @@ name: bluebuild
 on:
   schedule:
     # Daily at 1:11 am Central, hours after Fedora updates its Kinoite image
-    # (usually 8-10 pm Central). Off the hour, because GitHub delays scheduled
-    # runs most at the start of each hour.
+    # (usually 8-10 pm Central). Since late August 2026 GitHub creates these
+    # runs 4-9 hours late, so a timer outside GitHub sends the "nightly"
+    # repository_dispatch below at the same time. This stays as a backup: if
+    # the nightly already ran, the rebuild check finds nothing new and skips.
     - cron: "11 1 * * *"
       timezone: "America/Chicago"
+  repository_dispatch:
+    types: [nightly]
   push:
     branches: [main]
     paths-ignore:
@@ -17,7 +21,9 @@ on:
   workflow_dispatch:
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref || github.run_id }}
-  cancel-in-progress: true
+  # A nightly waits for a running build instead of cancelling it, so a late
+  # scheduled run can't stop the nightly that already started.
+  cancel-in-progress: ${{ github.event_name != 'schedule' && github.event_name != 'repository_dispatch' }}
 jobs:
   test:
     name: Test scripts
@@ -123,7 +129,8 @@ jobs:
         shell: bash
         run: |
           set -uo pipefail
-          if [ "${{ github.event_name }}" != "schedule" ]; then
+          # Only nightlies may skip; pushes and manual runs always build.
+          if [ "${{ github.event_name }}" != "schedule" ] && [ "${{ github.event_name }}" != "repository_dispatch" ]; then
             echo "skip=false" >> "${GITHUB_OUTPUT}"
             exit 0
           fi
