@@ -28,6 +28,33 @@
 #   files/kde/usr/bin/monolith-news --preview news/announcements.toml
 
 [[announcements]]
+id = "2026-11-02-sunshine"
+date = 2026-11-02
+title = "You can install Sunshine from monolith"
+category = "Gaming"
+install_path = ["monolith", "Gaming", "Sunshine"]
+body = """
+Sunshine streams the games on this PC to your phone, TV, tablet or another
+computer through Moonlight. To install it, run `monolith`, open **Gaming**, and
+select **Sunshine**.
+
+Monolith installs the Flathub Flatpak and does the setup it normally needs. It
+asks for your password once, so Sunshine can emulate controllers. Without it,
+mouse and keyboard still work.
+
+Sunshine doesn't start on its own. Open it from the application menu, or run
+`systemctl --user enable --now app-dev.lizardbyte.app.Sunshine` to start it every
+time you log in. Then open https://localhost:47990 to set a password and pair
+your devices.
+"""
+note = "Not there yet? Update Monolith and reboot first."
+links = [
+  { label = "Sunshine", url = "https://app.lizardbyte.dev/Sunshine" },
+  { label = "Moonlight", url = "https://moonlight-stream.org" },
+  { label = "Monolith software guide", url = "https://github.com/monolithlinux/monolith/blob/main/docs/software.md#sunshine" },
+]
+
+[[announcements]]
 id = "2026-11-01-monolith-update"
 date = 2026-11-01
 title = "Monolith has its own updater now"

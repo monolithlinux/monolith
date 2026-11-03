@@ -3,7 +3,8 @@
 `monolith` installs and looks after apps that aren't part of the Monolith image:
 games and mod managers, media players, the Crafting Apps, chat apps and coding
 tools. Everything installs into your own account, so you don't need an
-administrator password.
+administrator password. The one exception is Sunshine's controller support,
+which asks for it once.
 
 - [Using the dashboard](#using-the-dashboard)
 - [From the command line](#from-the-command-line)
@@ -107,7 +108,7 @@ it, or move the file aside and run `monolith install <app>`. After adoption,
 
 Monolith uses three kinds of installs, depending on what each project publishes.
 
-**Flathub Flatpaks** (Prism Launcher, Fluxer). These stay ordinary Flatpaks, so
+**Flathub Flatpaks** (Prism Launcher, Sunshine, Fluxer). These stay ordinary Flatpaks, so
 Bazaar, `flatpak update` and the daily automatic Flatpak update all keep them
 current, alongside `monolith update`.
 
@@ -212,6 +213,41 @@ and settings in `~/.var/app/org.prismlauncher.PrismLauncher`.
 Monolith doesn't move instances from a non-Flatpak Prism Launcher. To bring them
 over, copy the folders in `~/.local/share/PrismLauncher/instances` to
 `~/.var/app/org.prismlauncher.PrismLauncher/data/PrismLauncher/instances`.
+
+### Sunshine
+
+**Gaming → Sunshine** installs [Sunshine](https://app.lizardbyte.dev/Sunshine),
+a game streaming host. With it, you can play the games on this PC from a phone,
+TV, tablet or another computer running [Moonlight](https://moonlight-stream.org).
+It comes from the official
+[Flathub Flatpak](https://flathub.org/apps/dev.lizardbyte.app.Sunshine).
+
+Sunshine's Flatpak normally needs its own setup script run after installing it.
+Monolith does that part for you. It adds Sunshine's login service but leaves it
+off. To start Sunshine every time you log in, run:
+
+```bash
+systemctl --user enable --now app-dev.lizardbyte.app.Sunshine
+```
+
+It also asks for your password once, to load the `uhid` kernel module at every
+boot (it writes `/etc/modules-load.d/60-sunshine.conf`). Sunshine needs it to
+emulate controllers. If you skip the password, Sunshine still streams with mouse
+and keyboard, and running `monolith install sunshine` again asks once more. The
+udev rule that lets Sunshine create virtual mice, keyboards and controllers is
+already part of Monolith.
+
+Once Sunshine is running, open <https://localhost:47990> to set a username and
+password and to pair your devices. Your browser warns about the certificate,
+because Sunshine makes its own.
+
+The Flatpak captures your screen through the desktop's screen sharing, since a
+Flatpak can't capture straight from the graphics driver (KMS capture).
+
+Updates never ask for a password, and Sunshine updates like any other Flatpak.
+Removing it turns off the login service and the `uhid` setting, which asks for
+your password again. Your sign-in, paired devices, app list and settings stay in
+`~/.var/app/dev.lizardbyte.app.Sunshine`.
 
 ## Media
 

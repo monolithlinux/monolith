@@ -15,8 +15,8 @@ On top of Kinoite you get:
 - the CachyOS kernel, signed with Monolith's own key so Secure Boot keeps working
 - Ghostty with Fish as the terminal, with hundreds of themes ready to go
 - `monolith`, a small dashboard that installs and updates the apps Fedora doesn't
-  ship, like the Epic Games Launcher, WowUp-CF, r2modman, Prism Launcher, Sidra,
-  the Crafting Apps and coding agents
+  ship, like the Epic Games Launcher, WowUp-CF, r2modman, Prism Launcher,
+  Sunshine, Sidra, the Crafting Apps and coding agents
 - OpenDeck for Stream Decks, Node.js 24, Wine and the Waywallen wallpaper plugin,
   already installed
 - daily automatic updates for the system and Flatpaks, and a weekly nudge to run
@@ -103,7 +103,7 @@ settings and data when you remove one.
 
 | Category | Apps |
 | --- | --- |
-| Gaming | Epic Games Launcher, WowUp-CF, r2modman, Prism Launcher |
+| Gaming | Epic Games Launcher, WowUp-CF, r2modman, Prism Launcher, Sunshine |
 | Media | Sidra, Moonfin, Plezy |
 | Crafting Apps | PhotoCraft, VectorCraft, FilmCraft, LightCraft, PdfCraft, EffectCraft, DesignCraft, FigCraft, WordCraft, SoundCraft, DeckCraft, CADCraft, GridCraft |
 | Communication | Fluxer, Fluxer Canary |
