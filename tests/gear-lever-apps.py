@@ -257,6 +257,8 @@ def default_state(installed=None):
     runtimes: {"user"|"system": [runtime ref]} installed runtimes. A bundle installs only when its runtime is
               installed, or a user remote with Flathub's URL provides it, which installs it for the user.
     user_remotes: {name: URL} remotes of the user's installation.
+    locations: {app ID: directory} what `flatpak info --show-location` prints for an installed app, the
+               deployment whose files/ directory holds /app.
     home: GLib home directory Gear Lever sees (default: the caller's $HOME).
     running: {AppImage path or "*": true|false|null} reported in the JSON `running` field.
     faults: {"list": "fail"|"bad-json"|"schema"|"hang", "integrate": "fail"|"partial"|"crash"|"corrupt"|"block",
@@ -724,6 +726,13 @@ def flatpak_command(state, arguments, sync_dir):
             return 1, "", f"error: {app_id}/*unspecified*/*unspecified* not installed\n"
         # Each modelled version is its own commit.
         return 0, hashlib.sha256(f"{app_id}/{version}".encode()).hexdigest() + "\n", ""
+    if (len(arguments) == 4 and arguments[0] == "info" and arguments[1] in scopes
+            and arguments[2] == "--show-location"):
+        app_id = arguments[3]
+        location = state.get("locations", {}).get(app_id)
+        if installed_apps(state, arguments[1][2:]).get(app_id) is None or location is None:
+            return 1, "", f"error: {app_id}/*unspecified*/*unspecified* not installed\n"
+        return 0, f"{location}\n", ""
     if (len(arguments) == 4 and arguments[0] == "list" and "--app" in arguments
             and "--columns=application:f,version:f" in arguments
             and len(set(arguments) & set(scopes)) == 1):

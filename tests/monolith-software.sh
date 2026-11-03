@@ -246,6 +246,24 @@ cp "$MOCK_FIXTURES/$version/codex" "$root/releases/$version/codex"
 ln -sfn "$root/releases/$version/codex" "$CODEX_INSTALL_DIR/codex"
 if [ "${MOCK_INSTALLER_FAIL:-}" = codex ]; then echo "Injected installer failure" >&2; exit 1; fi
 MOCK
+# Sunshine's setup runs these. Each logs its arguments; sudo then runs the
+# command as the test user, unless MOCK_SUDO_FAIL makes it fail like a
+# cancelled password prompt. systemctl reports units as disabled.
+cat >"$mock_bin/sudo" <<'MOCK'
+#!/usr/bin/env bash
+printf 'sudo %s\n' "$*" >>"$MOCK_HOST_LOG"
+if [ -n "${MOCK_SUDO_FAIL:-}" ]; then echo "sudo: a password is required" >&2; exit 1; fi
+exec "$@"
+MOCK
+cat >"$mock_bin/systemctl" <<'MOCK'
+#!/usr/bin/env bash
+printf 'systemctl %s\n' "$*" >>"$MOCK_HOST_LOG"
+case " $* " in *" is-enabled "*) exit 1 ;; esac
+MOCK
+cat >"$mock_bin/modprobe" <<'MOCK'
+#!/usr/bin/env bash
+printf 'modprobe %s\n' "$*" >>"$MOCK_HOST_LOG"
+MOCK
 chmod 0755 "$mock_bin"/*
 # Flatpak answers from a per-case model state; see tests/gear-lever-apps.py.
 fake_flatpak="$repo_root/tests/gear-lever-apps.py"
@@ -278,6 +296,8 @@ setup_case() {
     extra_env=()
     mkdir -p "$case_home" "$case_root"/{data,state,config,cache,runtime,tmp} "$bin_dir"
     : >"$case_root/curl.log"
+    : >"$case_root/host.log"
+    sudo_fail=
     cp -- "$fixtures/flatpak-state.json" "$case_root/flatpak-state.json"
 }
 
@@ -296,6 +316,8 @@ monolith_env() {
         MOCK_FAIL_MOVE_DESTINATION="$fail_move_destination"
         MOCK_MV_FAILURE_SEEN="$case_root/mv-failed"
         MONOLITH_TEST_FLATPAK_STATE="$case_root/flatpak-state.json"
+        MONOLITH_MODULES_LOAD_DIR="$case_root/etc/modules-load.d"
+        MOCK_HOST_LOG="$case_root/host.log" MOCK_SUDO_FAIL="$sudo_fail"
         "${extra_env[@]}" "$manager")
 }
 
@@ -1459,6 +1481,141 @@ test_fluxer_channels() {
     assert_flatpak_modelled
 }
 
+sunshine_id=dev.lizardbyte.app.Sunshine
+sunshine_unit=app-dev.lizardbyte.app.Sunshine.service
+
+# Sunshine from Flathub, with a deployment that holds its login service.
+sunshine_case() {
+    local deploy="$case_root/deploy/$sunshine_id"
+    sunshine_source="$deploy/files/share/sunshine/systemd/user/$sunshine_unit"
+    sunshine_target="$case_root/config/systemd/user/$sunshine_unit"
+    sunshine_conf="$case_root/etc/modules-load.d/60-sunshine.conf"
+    mkdir -p "$(dirname -- "$sunshine_source")"
+    printf '[Service]\nExecStart=flatpak run --command=sunshine %s\n' "$sunshine_id" >"$sunshine_source"
+    flatpak_state "{\"flathub\": {\"$sunshine_id\": \"2026.906.222525\"}, \"locations\": {\"$sunshine_id\": \"$deploy\"}}"
+}
+
+assert_host_called() {
+    grep -Fxq -- "$1" "$case_root/host.log" || fail "not run: $1; ran: $(tr '\n' ';' <"$case_root/host.log")"
+}
+
+assert_no_sudo() {
+    if grep -q '^sudo ' "$case_root/host.log"; then fail "unexpected sudo: $(grep '^sudo ' "$case_root/host.log")"; fi
+}
+
+assert_sunshine_conf() {
+    printf '# Sunshine needs uhid for descriptor-driven gamepad emulation\nuhid\n' >"$case_root/expected-conf"
+    assert_file_equals "$case_root/expected-conf" "$sunshine_conf"
+}
+
+# Install sets up what Sunshine's own additional-install.sh would, except the
+# udev rule the image ships: the login service, left off, and uhid at boot.
+# Updates never ask for a password.
+test_sunshine_lifecycle() {
+    sunshine_case
+    seed_user_data "$case_home/.var/app/$sunshine_id/config/sunshine/sunshine_state.json"
+    assert_listed Gaming Sunshine 'not installed +-'
+    run_monolith install sunshine >"$case_root/install.log"
+    assert_flatpak_called "install --user --noninteractive --assumeyes https://dl.flathub.org/repo/appstream/$sunshine_id.flatpakref"
+    assert_file_equals "$sunshine_source" "$sunshine_target"
+    assert_sunshine_conf
+    grep -Eq "^sudo install -D -m 0644 -- .*/60-sunshine.conf $sunshine_conf\$" "$case_root/host.log" ||
+        fail 'uhid was not set up with sudo'
+    assert_host_called 'sudo modprobe uhid'
+    assert_host_called 'modprobe uhid'
+    assert_host_called 'systemctl --user daemon-reload'
+    grep -Fxq '  systemctl --user enable --now app-dev.lizardbyte.app.Sunshine' "$case_root/install.log" ||
+        fail 'install did not say how to start Sunshine at login'
+    if grep -q -- '--user enable' "$case_root/host.log"; then fail 'install turned the login service on'; fi
+    assert_listed Gaming Sunshine 'installed +2026\.906\.222525'
+
+    # An update copies a changed login service, never asks for a password,
+    # and only warns when uhid isn't set up.
+    : >"$case_root/host.log"
+    printf '# changed upstream\n' >>"$sunshine_source"
+    rm -- "$sunshine_conf"
+    flatpak_state '{"flathub": {"dev.lizardbyte.app.Sunshine": "2026.914.233613"}}'
+    run_monolith update >"$case_root/update.log" 2>&1
+    grep -Eq '^  Sunshine +Updated$' "$case_root/update.log" || fail 'Sunshine was not updated'
+    assert_file_equals "$sunshine_source" "$sunshine_target"
+    grep -Fq 'Controller support for Sunshine is off. Run monolith install sunshine' "$case_root/update.log" ||
+        fail 'the update did not warn about controller support'
+    if grep -Fq 'enable --now' "$case_root/update.log"; then fail 'the update repeated the login hint'; fi
+    assert_no_sudo
+    assert_absent "$sunshine_conf"
+
+    # Installing again restores it, even with the newest release.
+    run_monolith install sunshine >"$case_root/install.log"
+    assert_sunshine_conf
+
+    # An update with everything in place changes nothing on the host.
+    : >"$case_root/host.log"
+    run_monolith update sunshine >"$case_root/update.log" 2>&1
+    grep -Eq '^  Sunshine +Up to date$' "$case_root/update.log" || fail 'current Sunshine was not up to date'
+    if grep -q '^Warning' "$case_root/update.log"; then fail "unexpected warning: $(cat "$case_root/update.log")"; fi
+    [ ! -s "$case_root/host.log" ] || fail "the update touched the host: $(cat "$case_root/host.log")"
+
+    # Removal stops and removes the service, uninstalls the app and drops the
+    # boot setting, keeping Sunshine's data.
+    : >"$case_root/host.log"
+    run_monolith remove sunshine >"$case_root/remove.log"
+    assert_host_called "systemctl --user stop $sunshine_unit"
+    assert_host_called "systemctl --user disable $sunshine_unit"
+    assert_host_called "sudo rm -f -- $sunshine_conf"
+    assert_absent "$sunshine_target"
+    assert_absent "$sunshine_conf"
+    assert_absent "$state_root/sunshine.managed"
+    [ "$(app_installations "$sunshine_id")" = '{}' ] || fail "Sunshine is still installed: $(app_installations "$sunshine_id")"
+    grep -Fq 'Sign-in, paired devices, app list, and settings were kept.' "$case_root/remove.log" ||
+        fail 'removal did not say what it kept'
+    assert_user_data_preserved
+    assert_flatpak_modelled
+    assert_no_temp_leaks
+}
+
+# Without the password, Sunshine still installs, for mouse and keyboard. A
+# changed boot file is left alone, and a failed uninstall keeps the service
+# and the boot setting for the retry.
+test_sunshine_without_password() {
+    sunshine_case
+    sudo_fail=1
+    run_monolith install sunshine >"$case_root/install.log" 2>&1
+    grep -Eq '^  Sunshine +Installed$' "$case_root/install.log" || fail 'Sunshine was not installed'
+    grep -Fq 'Controller support for Sunshine is off, because' "$case_root/install.log" || fail 'the missing password was not explained'
+    assert_absent "$sunshine_conf"
+    if grep -q '^modprobe ' "$case_root/host.log"; then fail 'modprobe ran without the password'; fi
+    assert_file_equals "$sunshine_source" "$sunshine_target"
+
+    sudo_fail=
+    run_monolith install sunshine >"$case_root/install.log"
+    assert_sunshine_conf
+    flatpak_state '{"faults": {"app-uninstall": "fail"}}'
+    expect_failure remove sunshine
+    assert_failure_reported Sunshine
+    [ -f "$sunshine_target" ] || fail 'a failed removal deleted the login service'
+    assert_sunshine_conf
+
+    flatpak_state '{"faults": {}}'
+    printf 'uhid\nuinput\n' >"$sunshine_conf"
+    : >"$case_root/host.log"
+    run_monolith remove sunshine >"$case_root/remove.log"
+    assert_no_sudo
+    [ "$(cat "$sunshine_conf")" = $'uhid\nuinput' ] || fail 'a changed boot file was removed'
+    assert_absent "$sunshine_target"
+    assert_flatpak_modelled
+}
+
+# Without a login service in the Flatpak, install warns and goes on.
+test_sunshine_without_service() {
+    sunshine_case
+    rm -- "$sunshine_source"
+    run_monolith install sunshine >"$case_root/install.log" 2>&1
+    grep -Fq 'has no login service where Monolith expects it' "$case_root/install.log" || fail 'the missing service was not reported'
+    assert_absent "$sunshine_target"
+    assert_sunshine_conf
+    assert_listed Gaming Sunshine 'installed +2026\.906\.222525'
+}
+
 passed=0
 failed=0
 for test in omp_lifecycle omp_unmanaged_launcher omp_replaced_launcher omp_checksum_failure failed_publication \
@@ -1473,7 +1630,8 @@ for test in omp_lifecycle omp_unmanaged_launcher omp_replaced_launcher omp_check
     overlapping_mutation_is_locked interrupt_rolls_back_and_cancels_batch terminate_cleans_staging \
     prism_lifecycle prism_adopts_user_copy prism_leaves_system_copy_alone prism_repair_and_failures \
     prism_with_broken_flatpak moonfin_lifecycle moonfin_refuses_unverified_bundles moonfin_runtime_sources \
-    moonfin_existing_copies photocraft_lifecycle fluxer_channels; do
+    moonfin_existing_copies photocraft_lifecycle fluxer_channels \
+    sunshine_lifecycle sunshine_without_password sunshine_without_service; do
     # Do not put the subshell in an if condition: that disables Bash errexit
     # throughout the test function and can conceal a failing manager command.
     set +e
