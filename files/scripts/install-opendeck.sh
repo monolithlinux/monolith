@@ -28,7 +28,9 @@ curl --fail --location --retry 3 --output "$temporary_dir/LICENSE.md" \
   "https://raw.githubusercontent.com/nekename/OpenDeck/$revision/LICENSE.md"
 printf '%s  %s\n' "$license_checksum" "$temporary_dir/LICENSE.md" | sha256sum --check --status
 
-dnf5 -y install "$package"
+# OpenDeck links against OpenSSL 3, but its RPM doesn't say so, and Fedora 45
+# moved to OpenSSL 4. Fedora's openssl3-libs keeps the OpenSSL 3 libraries.
+dnf5 -y install "$package" openssl3-libs
 test "$(rpm -q --queryformat '%{VERSION}' opendeck)" = "$version"
 # Fail the build, not OpenDeck's first start, if a library it needs is missing.
 if ldd /usr/bin/opendeck | grep -F 'not found'; then exit 1; fi

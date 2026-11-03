@@ -177,7 +177,7 @@ modules:
         - libcamera-gstreamer
         - libcamera-tools
         - google-noto-sans-balinese-fonts
-        - google-noto-sans-cjk-fonts       # static CJK fonts; /usr/share/fonts/noto-cjk target
+        - google-noto-sans-cjk-fonts       # static CJK fonts
         - google-noto-sans-javanese-fonts
         - google-noto-sans-sundanese-fonts
         # GitHub's own gh; Fedora's trails by months. Fedora's 2.97 scans
@@ -442,13 +442,6 @@ modules:
         if grep -vx 'negativo17.org' <<<"$vendors"; then exit 1; fi
         grep -qx 'AutomaticUpdatePolicy=stage' /etc/rpm-ostreed.conf
         test -f /etc/flatpak/remotes.d/flathub.flatpakrepo
-      - |
-        # Flatpak apps miss host CJK glyphs with fontconfig 2.17 (Fedora 44)
-        # unless this path exists; fontconfig 2.18 (Fedora 45) fixes it.
-        set -euxo pipefail
-        if [ "$(rpm -E %fedora)" -le 44 ] && [ ! -e /usr/share/fonts/noto-cjk ]; then
-          ln -s /usr/share/fonts/google-noto-sans-cjk-fonts /usr/share/fonts/noto-cjk
-        fi
       - |
         # Install Pure system-wide without a runtime plugin manager.
         set -euxo pipefail
