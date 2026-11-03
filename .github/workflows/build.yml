@@ -62,6 +62,8 @@ jobs:
         run: python3 tests/plasma-versions.py
       - name: Test Monolith News
         run: python3 tests/monolith-news.py
+      - name: Test the release notes
+        run: python3 tests/release-notes.py
       - name: Test Protontricks desktop icon
         run: tests/protontricks-icon.sh
       - name: Test Ghostty integration
