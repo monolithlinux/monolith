@@ -177,7 +177,7 @@ modules:
         - libcamera-gstreamer
         - libcamera-tools
         - google-noto-sans-balinese-fonts
-        - google-noto-sans-cjk-fonts       # static CJK fonts; /usr/share/fonts/noto-cjk target
+        - google-noto-sans-cjk-fonts       # static CJK fonts
         - google-noto-sans-javanese-fonts
         - google-noto-sans-sundanese-fonts
         # GitHub's own gh; Fedora's trails by months. Fedora's 2.97 scans
@@ -351,6 +351,13 @@ modules:
         dnf5 --enable-repo=terra-mesa -y install \
           mesa-libOpenCL \
           mesa-libEGL.i686
+        # Mesa's OpenCL loads libclc from a path set when Mesa was built, and
+        # Terra's mesa-libOpenCL doesn't require the package that has it (on
+        # Fedora 45, libclc22-spirv). Install whatever provides that path;
+        # check-opencl.py makes sure OpenCL works.
+        libclc=$(grep -a -o -E '/usr/lib64/clc[0-9]*/spirv64-mesa3d-\.spv' \
+          /usr/lib64/libRusticlOpenCL.so.1 | sort -u)
+        dnf5 -y install "$libclc"
         dnf5 versionlock add \
           mesa-dri-drivers \
           mesa-filesystem \
@@ -442,13 +449,6 @@ modules:
         if grep -vx 'negativo17.org' <<<"$vendors"; then exit 1; fi
         grep -qx 'AutomaticUpdatePolicy=stage' /etc/rpm-ostreed.conf
         test -f /etc/flatpak/remotes.d/flathub.flatpakrepo
-      - |
-        # Flatpak apps miss host CJK glyphs with fontconfig 2.17 (Fedora 44)
-        # unless this path exists; fontconfig 2.18 (Fedora 45) fixes it.
-        set -euxo pipefail
-        if [ "$(rpm -E %fedora)" -le 44 ] && [ ! -e /usr/share/fonts/noto-cjk ]; then
-          ln -s /usr/share/fonts/google-noto-sans-cjk-fonts /usr/share/fonts/noto-cjk
-        fi
       - |
         # Install Pure system-wide without a runtime plugin manager.
         set -euxo pipefail

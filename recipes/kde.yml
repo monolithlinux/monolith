@@ -31,7 +31,6 @@ modules:
         - fcitx5-qt
         - fcitx5-sayura
         - fcitx5-unikey
-        - kcm-fcitx5
     remove:
       packages:
         # Ghostty replaces the shared terminal in the KDE editions.
@@ -53,6 +52,18 @@ modules:
         set -euxo pipefail
         dnf5 --enable-repo=terra -y install \
           ghostty ghostty-shell-integration ghostty-fish-completion ghostty-kio
+      - |
+        # fcitx5's page in System Settings. Fedora 45 shipped kcm-fcitx5
+        # 5.1.16-1 built for Plasma 6.7, so it needs libPlasma.so.7 and can't
+        # be installed next to Plasma 6.8 (rhbz#2563996; 44 and 46 have the
+        # rebuild). Skip it until Fedora's newest build stops needing that
+        # library; any other failure still stops the build.
+        set -euxo pipefail
+        if ! dnf5 -y install kcm-fcitx5; then
+          requires="$(dnf5 -q repoquery --latest-limit=1 --arch=x86_64 --requires kcm-fcitx5)"
+          grep -qx 'libPlasma.so.7()(64bit)' <<<"$requires"
+          echo "Skipped kcm-fcitx5: Fedora 45 hasn't rebuilt it for Plasma 6.8 yet."
+        fi
 
   - type: files
     files:

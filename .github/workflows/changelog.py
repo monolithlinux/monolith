@@ -26,6 +26,12 @@ MAJOR_PACKAGES = [
 EPOCH_PATTERN = re.compile(r"^(?:\d+|\(none\)):")
 FEDORA_PATTERN = re.compile(r"\.fc\d+")
 
+# GitHub refuses release notes longer than 125,000 characters. A move to a new
+# Fedora release changes nearly every package: the notes for Fedora 44 to 45
+# came to about 208,000. Notes longer than BODY_LIMIT, a little under GitHub's
+# limit, leave rows out (see main).
+BODY_LIMIT = 120_000
+
 
 def clean_version(version: str) -> str:
     """Drop the leading epoch and the trailing `.fcNN` dist tag for readability."""
@@ -64,7 +70,9 @@ def major_table(prev: dict[str, str], curr: dict[str, str]) -> str:
     return "### Major packages\n| Name | Version |\n| --- | --- |" + rows + "\n\n"
 
 
-def changes_table(prev: dict[str, str], curr: dict[str, str]) -> str:
+def changes_table(prev: dict[str, str], curr: dict[str, str], detail: str = "full") -> str:
+    """The package table. detail "short" leaves out the changed packages and
+    "counts" every row, for notes that would be too long otherwise."""
     # Avoid a multi-thousand-row diff for a brand-new edition.
     if not prev:
         return f"_New edition in this build, shipping {len(curr)} packages._\n\n"
@@ -76,7 +84,15 @@ def changes_table(prev: dict[str, str], curr: dict[str, str]) -> str:
     if not (added or removed or changed):
         return "_No package changes._\n\n"
 
-    out = "### Package changes\n| | Name | Previous | New |\n| --- | --- | --- | --- |"
+    out = "### Package changes\n"
+    if detail != "full":
+        out += (f"_{len(changed):,} packages changed, {len(added):,} were added and "
+                f"{len(removed):,} removed. That's too many to list here")
+        if detail == "counts" or not (added or removed):
+            return out + "._\n\n"
+        out += ", so the table shows only the added and removed ones._\n\n"
+        changed = []
+    out += "| | Name | Previous | New |\n| --- | --- | --- | --- |"
     for p in changed:
         out += f"\n| 🔄 | {p} | {prev[p]} | {curr[p]} |"
     for p in added:
@@ -155,38 +171,48 @@ def main() -> None:
     curr_release = args.curr_release_tag or args.curr_tag
 
     title = curr_release
-    body = ""
-    if args.handwritten:
-        body += args.handwritten + "\n\n"
-    body += (
-        f"Changes from the previous build [`{prev_release}`]"
-        f"(https://github.com/{args.repo}/releases/tag/{prev_release}) "
-        f"to [`{curr_release}`](https://github.com/{args.repo}/releases/tag/{curr_release}).\n\n"
-    )
-    if present:
-        names = ", ".join(f"`{e}`" for e in present)
-        body += f"Editions in this build: {names}.\n\n"
+    commits = commits_section(args.workdir, args.prev_rev, args.curr_rev, args.repo)
 
-    # One package section per published edition.
-    for name in present:
-        body += f"## `{name}`\n\n"
-        body += major_table(prev.get(name, {}), curr[name])
-        body += changes_table(prev.get(name, {}), curr[name])
-
-    body += commits_section(args.workdir, args.prev_rev, args.curr_rev, args.repo)
-
-    body += "### How to rebase\nPick your edition. Rebase to this exact build, or track the latest:\n\n"
-    for name in present:
-        img = ref_by_name[name]
+    def render(detail: str) -> str:
+        body = ""
+        if args.handwritten:
+            body += args.handwritten + "\n\n"
         body += (
-            f"**`{name}`**\n\n"
-            "```bash\n"
-            "# this exact build\n"
-            f"rpm-ostree rebase ostree-image-signed:docker://{img}:{args.curr_tag}\n"
-            "# or track the latest build\n"
-            f"rpm-ostree rebase ostree-image-signed:docker://{img}:latest\n"
-            "```\n\n"
+            f"Changes from the previous build [`{prev_release}`]"
+            f"(https://github.com/{args.repo}/releases/tag/{prev_release}) "
+            f"to [`{curr_release}`](https://github.com/{args.repo}/releases/tag/{curr_release}).\n\n"
         )
+        if present:
+            names = ", ".join(f"`{e}`" for e in present)
+            body += f"Editions in this build: {names}.\n\n"
+
+        # One package section per published edition.
+        for name in present:
+            body += f"## `{name}`\n\n"
+            body += major_table(prev.get(name, {}), curr[name])
+            body += changes_table(prev.get(name, {}), curr[name], detail)
+
+        body += commits
+
+        body += "### How to rebase\nPick your edition. Rebase to this exact build, or track the latest:\n\n"
+        for name in present:
+            img = ref_by_name[name]
+            body += (
+                f"**`{name}`**\n\n"
+                "```bash\n"
+                "# this exact build\n"
+                f"rpm-ostree rebase ostree-image-signed:docker://{img}:{args.curr_tag}\n"
+                "# or track the latest build\n"
+                f"rpm-ostree rebase ostree-image-signed:docker://{img}:latest\n"
+                "```\n\n"
+            )
+        return body
+
+    # Leave out the changed packages first, then every row, until the notes fit.
+    for detail in ("full", "short", "counts"):
+        body = render(detail)
+        if len(body) <= BODY_LIMIT:
+            break
 
     with open(args.changelog, "w") as f:
         f.write(body)
