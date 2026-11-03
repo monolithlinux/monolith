@@ -14,6 +14,7 @@ import tarfile
 import tempfile
 import unittest
 from unittest import mock
+import urllib.error
 
 sys.dont_write_bytecode = True
 
@@ -221,6 +222,28 @@ class ThemeTests(unittest.TestCase):
     def test_bad_checksum_preserves_previous_install(self):
         self.call("install")
         self.reject_download(self.download, checksum="0" * 64)
+
+    def test_failed_download_changes_nothing(self):
+        def offline(*args, **kwargs):
+            raise urllib.error.URLError("Temporary failure in name resolution")
+
+        working = self.opener
+        before = self.snapshot()
+        self.opener = offline
+        with self.assertRaises((Exception, SystemExit)):
+            self.call("install")
+        self.assertEqual(before, self.snapshot())
+        self.assertFalse(self.marker.exists())
+        # A repair or update that can't download keeps the installed themes.
+        self.opener = working
+        self.call("install")
+        (self.themes / self.names[0]).unlink()
+        before = self.snapshot()
+        self.opener = offline
+        for action in ("update", "install"):
+            with self.subTest(action), self.assertRaises((Exception, SystemExit)):
+                self.call(action)
+            self.assertEqual(before, self.snapshot())
 
     def test_status_reports_missing_files_and_corrupt_manifest(self):
         self.call("install")

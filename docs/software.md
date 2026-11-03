@@ -370,7 +370,7 @@ sources until you run `flatpak remote-delete --user fluxer`.
 
 ## Appearance
 
-### Ghostty themes
+### Ghostty Themes
 
 Monolith already includes 554 Ghostty themes (see
 [the terminal](desktop.md#themes)). **Appearance → Ghostty Themes**, or

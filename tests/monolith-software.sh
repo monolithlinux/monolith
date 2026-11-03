@@ -15,6 +15,10 @@ fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 assert_absent() { [ ! -e "$1" ] && [ ! -L "$1" ] || fail "unexpected path: $1"; }
 assert_file_equals() { cmp -s -- "$1" "$2" || fail "files differ: $1 and $2"; }
 
+# Every Crafting App, as the catalog lists them.
+read -r -a crafting_apps <<<"$(sed -n 's/^CRAFTING_TOOLS=(\(.*\))$/\1/p' "$manager")"
+[ "${#crafting_apps[@]}" -gt 0 ] || fail 'could not read CRAFTING_TOOLS from the catalog'
+
 # Release fixtures. v9.9.9 publishes programs that fail to start.
 for version in v1.0.0 v2.0.0 v9.9.9; do
     dir="$fixtures/$version"
@@ -43,8 +47,13 @@ for version in v1.0.0 v2.0.0 v9.9.9; do
         "$plain" >"$dir/Moonfin_Linux_v$plain.flatpak"
     # The Crafting Apps tag vX.Y.Z but name their bundles X.Y.Z, the version
     # Flatpak reports.
-    printf '{"app": "ai.storyteller.photocraft", "version": "%s", "runtime": "org.freedesktop.Platform/x86_64/26.08"}\n' \
-        "$plain" >"$dir/photocraft-$plain-linux-x86_64.flatpak"
+    for app in "${crafting_apps[@]}"; do
+        printf '{"app": "ai.storyteller.%s", "version": "%s", "runtime": "org.freedesktop.Platform/x86_64/26.08"}\n' \
+            "$app" "$plain" >"$dir/$app-$plain-linux-x86_64.flatpak"
+    done
+    # Plezy tags X.Y.Z, and its bundle's name carries no version.
+    printf '{"app": "com.edde746.plezy", "version": "%s", "runtime": "org.gnome.Platform/x86_64/50"}\n' \
+        "$plain" >"$dir/plezy-linux-x64.flatpak"
 done
 # A correctly checksummed Superfile archive without the expected program.
 mkdir -p "$fixtures/bad-archive/dist/elsewhere"
@@ -100,9 +109,14 @@ case "$url" in
         github_release Moonfin-Client/Moonfin-Core "Moonfin_Linux_v$plain.flatpak" \
             "$dir/Moonfin_Linux_v$plain.flatpak" "$plain"
         exit 0 ;;
-    https://api.github.com/repos/storytold/photocraft/releases/latest)
-        github_release storytold/photocraft "photocraft-$plain-linux-x86_64.flatpak" \
-            "$dir/photocraft-$plain-linux-x86_64.flatpak"
+    https://api.github.com/repos/storytold/*/releases/latest)
+        app="${url#https://api.github.com/repos/storytold/}"
+        app="${app%%/*}"
+        github_release "storytold/$app" "$app-$plain-linux-x86_64.flatpak" \
+            "$dir/$app-$plain-linux-x86_64.flatpak"
+        exit 0 ;;
+    https://api.github.com/repos/edde746/plezy/releases/latest)
+        github_release edde746/plezy plezy-linux-x64.flatpak "$dir/plezy-linux-x64.flatpak" "$plain"
         exit 0 ;;
     # The sources the upstream installers read their newest version from.
     https://downloads.claude.ai/claude-code-releases/stable)
@@ -123,8 +137,10 @@ case "$url" in
         payload="$dir/SHA256SUMS.txt" ;;
     https://github.com/Moonfin-Client/Moonfin-Core/releases/download/"$plain"/Moonfin_Linux_v"$plain".flatpak)
         payload="$dir/Moonfin_Linux_v$plain.flatpak" ;;
-    https://github.com/storytold/photocraft/releases/download/"$version"/photocraft-"$plain"-linux-x86_64.flatpak)
-        payload="$dir/photocraft-$plain-linux-x86_64.flatpak" ;;
+    https://github.com/storytold/*/releases/download/"$version"/*-"$plain"-linux-x86_64.flatpak)
+        payload="$dir/${url##*/}" ;;
+    https://github.com/edde746/plezy/releases/download/"$plain"/plezy-linux-x64.flatpak)
+        payload="$dir/plezy-linux-x64.flatpak" ;;
     https://dl.gitea.com/tea/"$plain"/tea-"$plain"-linux-amd64)
         payload="$dir/tea-$plain-linux-amd64" ;;
     https://dl.gitea.com/tea/"$plain"/tea-"$plain"-linux-amd64.sha256)
@@ -207,6 +223,7 @@ set -eu
 mkdir -p "$HERDR_INSTALL_DIR"
 cp "$MOCK_FIXTURES/$MOCK_VERSION/herdr" "$HERDR_INSTALL_DIR/herdr"
 mock_block
+if [ "${MOCK_INSTALLER_FAIL:-}" = herdr ]; then echo "Injected installer failure" >&2; exit 1; fi
 MOCK
 cat >"$fixtures/install-claude.sh" <<'MOCK'
 #!/bin/sh
@@ -268,6 +285,49 @@ chmod 0755 "$mock_bin"/*
 # Flatpak answers from a per-case model state; see tests/gear-lever-apps.py.
 fake_flatpak="$repo_root/tests/gear-lever-apps.py"
 python3 "$fake_flatpak" install-fake-flatpak "$mock_bin" "$fixtures/flatpak-state.json"
+# The catalog's own functions, loaded without running it, describe each app.
+catalog_lib="$test_root/catalog/software"
+mkdir -p "$test_root/catalog"
+cp -- "$repo_root/files/system/usr/libexec/monolith/common.sh" "$test_root/catalog/"
+[ "$(tail -n 1 "$manager")" = 'main "$@"' ] || fail 'the catalog no longer ends with main "$@"'
+sed '$d' "$manager" >"$catalog_lib"
+# One line per app: ID, how it installs, name, category, Flatpak ID, what
+# removal keeps, description, and the category arrays that list it.
+catalog_table="$test_root/catalog.tsv"
+HOME="$test_root/catalog-home" bash -c '
+. "$1"
+declare -A label=([CLI_TOOLS]="Developer CLIs" [AI_TOOLS]="AI coding" [GAMING_TOOLS]=Gaming [MEDIA_TOOLS]=Media
+    [CRAFTING_TOOLS]="Crafting Apps" [COMMUNICATION_TOOLS]=Communication [APPEARANCE_TOOLS]=Appearance)
+for tool in "${ALL_TOOLS[@]}"; do
+    if [ "$tool" = ghostty-themes ]; then kind=ghostty
+    elif is_gear_lever_app "$tool"; then kind=gear-lever
+    elif flatpak_bundle_release "$tool" >/dev/null; then kind=bundle
+    elif is_flatpak_app "$tool"; then kind=flathub
+    elif declare -F "install_$tool" >/dev/null &&
+        declare -f "install_$tool" | grep -Eq "with_native_rollback|download_installer"; then kind=installer
+    elif declare -F "install_$tool" >/dev/null; then kind=release
+    else kind=none
+    fi
+    id=-
+    if is_flatpak_app "$tool"; then id="$(flatpak_app_id "$tool")"; fi
+    arrays=""
+    for array in "${!label[@]}"; do
+        declare -n members="$array"
+        for member in "${members[@]}"; do
+            [ "$member" != "$tool" ] || arrays="${arrays:+$arrays,}${label[$array]}"
+        done
+        unset -n members
+    done
+    printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" "$tool" "$kind" "$(tool_name "$tool")" \
+        "$(tool_category "$tool" || echo -)" "$id" "$(kept_data "$tool")" \
+        "$(tool_description "$tool" || echo -)" "${arrays:--}"
+done' catalog "$catalog_lib" >"$catalog_table" || fail 'could not describe the catalog'
+
+# catalog_field TOOL COLUMN: one column of the catalog table.
+catalog_field() {
+    awk -F '\t' -v tool="$1" -v column="$2" '$1 == tool { print $column }' "$catalog_table"
+}
+
 prism_id=org.prismlauncher.PrismLauncher
 prism_ref="https://dl.flathub.org/repo/appstream/$prism_id.flatpakref"
 moonfin_id=org.moonfin.linux
@@ -1482,7 +1542,7 @@ test_fluxer_channels() {
 }
 
 sunshine_id=dev.lizardbyte.app.Sunshine
-sunshine_unit=app-dev.lizardbyte.app.Sunshine.service
+sunshine_unit='app-dev.lizardbyte.app.Sunshine.service'
 
 # Sunshine from Flathub, with a deployment that holds its login service.
 sunshine_case() {
@@ -1616,26 +1676,222 @@ test_sunshine_without_service() {
     assert_listed Gaming Sunshine 'installed +2026\.906\.222525'
 }
 
+# Plezy is the Flatpak bundle of its latest GitHub release. Its tags have no
+# v, and its bundle has the same name in every release.
+test_plezy_lifecycle() {
+    local id=com.edde746.plezy release=https://github.com/edde746/plezy/releases/download
+    seed_user_data "$case_home/.var/app/$id/config/servers.json"
+    assert_listed Media Plezy 'not installed +-'
+    run_monolith install plezy
+    [ "$(app_installations "$id")" = '{"user": "1.0.0"}' ] || fail "unexpected Plezy installations: $(app_installations "$id")"
+    grep -qx "source=$release/1.0.0/plezy-linux-x64.flatpak" "$state_root/plezy.managed" ||
+        fail 'Plezy marker has the wrong source'
+    assert_listed Media Plezy 'installed +1\.0\.0'
+
+    : >"$case_root/curl.log"
+    forget_flatpak_calls
+    run_monolith update plezy >"$case_root/update.log"
+    grep -Eq '^  Plezy +Up to date$' "$case_root/update.log" || fail 'current Plezy was not reported up to date'
+    if grep -Fq '.flatpak' "$case_root/curl.log"; then fail 'updating a current Plezy downloaded it again'; fi
+    assert_no_flatpak_changes
+
+    release_version=v2.0.0
+    run_monolith update plezy >"$case_root/update.log"
+    grep -Eq '^  Plezy +Updated$' "$case_root/update.log" || fail 'an older Plezy was not updated'
+    [ "$(app_installations "$id")" = '{"user": "2.0.0"}' ] || fail "Plezy was not updated: $(app_installations "$id")"
+    grep -qx "source=$release/2.0.0/plezy-linux-x64.flatpak" "$state_root/plezy.managed" ||
+        fail 'Plezy marker has the wrong source'
+
+    run_monolith remove plezy >"$case_root/remove.log"
+    grep -Fq 'Servers, sign-ins, settings, and downloads were kept.' "$case_root/remove.log" ||
+        fail 'removal did not say what it kept'
+    [ "$(app_installations "$id")" = '{}' ] || fail 'Plezy is still installed'
+    assert_user_data_preserved
+    assert_flatpak_modelled
+    assert_no_temp_leaks
+}
+
+# Every app has what the catalog shows and the docs explain: a name, a
+# description, one category, a way to install it, an entry for what removal
+# keeps, an ID in monolith help, a row in monolith list, and a place in
+# docs/software.md. A new app that misses one fails here.
+test_catalog_entries_are_complete() {
+    local tool kind name category id kept description arrays help
+    local fallback='settings, authentication, sessions, and project files'
+    help="$(run_monolith help)"
+    run_monolith list >"$case_root/list.log"
+    [ "$(wc -l <"$catalog_table")" -gt 0 ] || fail 'the catalog lists no apps'
+    while IFS=$'\t' read -r tool kind name category id kept description arrays; do
+        [ "$kind" != none ] || fail "$tool has no way to install it"
+        [ -n "$name" ] || fail "$tool has no display name"
+        [ "$description" != - ] && [ -n "$description" ] || fail "$name has no description"
+        [ "$category" != - ] || fail "$name has no category"
+        [ "$arrays" = "$category" ] || fail "$name is in the category lists '$arrays' but its category is '$category'"
+        if [ "$kept" = "$fallback" ] && [ "$category" != 'Developer CLIs' ] && [ "$category" != 'AI coding' ]; then
+            fail "$name has no entry for what removal keeps"
+        fi
+        case "$kind" in
+            bundle|flathub) [[ "$id" =~ ^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+){2,}$ ]] || fail "$name has no valid Flatpak ID: $id" ;;
+        esac
+        grep -Eq "(^| )$tool( |\$)" <<<"$help" || fail "monolith help does not list $tool"
+        grep -Eq "^$category +$name +" "$case_root/list.log" || fail "monolith list has no row for $name"
+        grep -Eq "^### $name\$|^\| $name( \(\`[a-z]+\`\))? \||^\*\*$category → $name\*\*" "$repo_root/docs/software.md" ||
+            fail "docs/software.md has no section or table row for $name"
+    done <"$catalog_table"
+}
+
+# Every file and link in the case, without the harness's logs and notes.
+# ~/.claude.json is Claude Code's own settings file. Its installer writes it,
+# and Monolith never deletes it, since it may hold the user's setup.
+case_state() {
+    (cd "$case_root" && find . \( -path ./tmp -o -name '*.log' -o -name '*.calls' -o -name .lock -o -name mv-failed \
+        -o -name 'state-*' -o -name 'marker-*' -o -path ./home/.claude.json \) -prune -o \( -type f -o -type l \) -print | LC_ALL=C sort | while IFS= read -r path; do
+        if [ -L "$path" ]; then
+            printf '%s -> %s\n' "$path" "$(readlink -- "$path")"
+        else
+            printf '%s %s\n' "$path" "$(sha256sum <"$path" | cut -c 1-64)"
+        fi
+    done)
+}
+
+assert_case_unchanged() {
+    case_state >"$case_root/state-after"
+    diff -u "$case_root/state-before" "$case_root/state-after" >&2 || fail "$1"
+}
+
+# Make TOOL's sources fail in one way:
+#   offline  nothing downloads, and Flatpak can't reach its remotes
+#   damaged  downloads arrive changed, so checksums don't match (only apps
+#            with a published checksum; official installers have none)
+#   refused  downloads work, but the install itself fails: the installer
+#            exits with an error, Flatpak fails, or moving files in fails
+break_sources() {
+    local mode="$1" tool="$2"
+    case "$mode" in
+        offline)
+            fail_download_match='https://'
+            flatpak_state '{"faults": {"app-install": "fail", "app-update": "fail", "remote-add": "fail"}}'
+            ;;
+        damaged)
+            corrupt_match='https://'
+            flatpak_state '{"faults": {"app-install": "fail", "app-update": "fail"}}'
+            ;;
+        refused)
+            installer_fail="$tool"
+            fail_publish_tool="$tool"
+            flatpak_state '{"faults": {"app-install": "fail", "app-update": "fail", "bundle-install": "fail"}}'
+            ;;
+    esac
+}
+
+restore_sources() {
+    fail_download_match='' corrupt_match='' installer_fail='' fail_publish_tool=''
+    rm -f -- "$case_root/mv-failed"
+    flatpak_state '{"faults": {}}'
+}
+
+failure_modes() {
+    case "$(catalog_field "$1" 2)" in
+        installer) echo offline refused ;;
+        *) echo offline damaged refused ;;
+    esac
+}
+
+# For a Flathub app, publish VERSION of it on Flathub.
+publish_flathub() {
+    local id
+    id="$(catalog_field "$1" 5)"
+    [ "$(catalog_field "$1" 2)" = flathub ] || return 0
+    flatpak_state "{\"flathub\": {\"$id\": \"$2\"}}"
+}
+
+# A failed install or update of TOOL changes nothing, in every way it can fail:
+# a fresh install leaves no trace, and a failed update keeps the installed
+# version and Monolith's record. Once its sources work again, it updates.
+test_app_failures() {
+    local tool="$1" name mode marker
+    name="$(catalog_field "$tool" 3)"
+    marker="$state_root/$tool.managed"
+    # A bundle adds Flathub to the user's sources for its runtime before
+    # installing, and keeps it for the retry. Start with Flathub there, so
+    # anything else that changes shows up.
+    flatpak_state '{"user_remotes": {"flathub": "https://dl.flathub.org/repo/"}}'
+    for mode in $(failure_modes "$tool"); do
+        publish_flathub "$tool" 1.0.0
+        break_sources "$mode" "$tool"
+        case_state >"$case_root/state-before"
+        expect_failure install "$tool"
+        assert_failure_reported "$name"
+        assert_case_unchanged "a failed install ($mode) of $name changed files"
+        assert_absent "$marker"
+        assert_no_temp_leaks
+        restore_sources
+    done
+
+    publish_flathub "$tool" 1.0.0
+    run_monolith install "$tool" >"$case_root/install.log" 2>&1 || {
+        cat "$case_root/install.log" >&2
+        fail "$name could not be installed with working sources; check the test fixtures"
+    }
+    cp -- "$marker" "$case_root/marker-installed"
+    release_version=v2.0.0
+    publish_flathub "$tool" 2.0.0
+    for mode in $(failure_modes "$tool"); do
+        break_sources "$mode" "$tool"
+        case_state >"$case_root/state-before"
+        expect_failure update "$tool"
+        assert_failure_reported "$name"
+        assert_case_unchanged "a failed update ($mode) of $name changed files"
+        assert_file_equals "$case_root/marker-installed" "$marker"
+        assert_no_temp_leaks
+        restore_sources
+    done
+
+    run_monolith update "$tool" >"$case_root/update.log" 2>&1
+    grep -Eq "^  $name +Updated\$" "$case_root/update.log" || fail "$name did not update once its sources worked"
+    if cmp -s -- "$case_root/marker-installed" "$marker"; then fail "$name's record did not change after updating"; fi
+    assert_flatpak_modelled
+    assert_no_temp_leaks
+}
+
+# Gear Lever apps and Ghostty themes download with Python's urllib and have
+# their own failure tests in tests/gear-lever-apps.py and tests/ghostty-themes.py.
+app_failure_tests=()
+while IFS=$'\t' read -r tool kind _; do
+    case "$kind" in
+        gear-lever|ghostty) ;;
+        *) app_failure_tests+=("app_failures:$tool") ;;
+    esac
+done <"$catalog_table"
+
 passed=0
 failed=0
-for test in omp_lifecycle omp_unmanaged_launcher omp_replaced_launcher omp_checksum_failure failed_publication \
-    failed_launcher_publication failed_marker_publication download_failure_cleanup batch_preflight \
-    empty_update_all update_skips_current_items batch_continues_after_failure tea_lifecycle superfile_lifecycle \
-    herdr_lifecycle checksum_list_failures bad_archive_and_broken_program \
-    regular_file_adoption failed_adoption_restores_originals \
-    claude_broken_launcher_needs_repair native_installers codex_lifecycle_and_inherited_environment \
-    native_failures_roll_back native_adoption herdr_legacy_launcher herdr_replaced_launcher \
-    legacy_herdr_adoption replaced_launcher_adoption adopted_copy_survives_failed_update \
-    adoption_refuses_unusable_copies \
-    overlapping_mutation_is_locked interrupt_rolls_back_and_cancels_batch terminate_cleans_staging \
-    prism_lifecycle prism_adopts_user_copy prism_leaves_system_copy_alone prism_repair_and_failures \
-    prism_with_broken_flatpak moonfin_lifecycle moonfin_refuses_unverified_bundles moonfin_runtime_sources \
-    moonfin_existing_copies photocraft_lifecycle fluxer_channels \
-    sunshine_lifecycle sunshine_without_password sunshine_without_service; do
+all_tests=(omp_lifecycle omp_unmanaged_launcher omp_replaced_launcher omp_checksum_failure failed_publication
+    failed_launcher_publication failed_marker_publication download_failure_cleanup batch_preflight
+    empty_update_all update_skips_current_items batch_continues_after_failure tea_lifecycle superfile_lifecycle
+    herdr_lifecycle checksum_list_failures bad_archive_and_broken_program
+    regular_file_adoption failed_adoption_restores_originals
+    claude_broken_launcher_needs_repair native_installers codex_lifecycle_and_inherited_environment
+    native_failures_roll_back native_adoption herdr_legacy_launcher herdr_replaced_launcher
+    legacy_herdr_adoption replaced_launcher_adoption adopted_copy_survives_failed_update
+    adoption_refuses_unusable_copies
+    overlapping_mutation_is_locked interrupt_rolls_back_and_cancels_batch terminate_cleans_staging
+    prism_lifecycle prism_adopts_user_copy prism_leaves_system_copy_alone prism_repair_and_failures
+    prism_with_broken_flatpak moonfin_lifecycle moonfin_refuses_unverified_bundles moonfin_runtime_sources
+    moonfin_existing_copies photocraft_lifecycle fluxer_channels
+    sunshine_lifecycle sunshine_without_password sunshine_without_service
+    plezy_lifecycle catalog_entries_are_complete "${app_failure_tests[@]}")
+# Test names on the command line run only those, such as app_failures:plezy.
+selected=("${all_tests[@]}")
+[ "$#" -eq 0 ] || selected=("$@")
+for test in "${selected[@]}"; do
     # Do not put the subshell in an if condition: that disables Bash errexit
     # throughout the test function and can conceal a failing manager command.
     set +e
-    (set -e; setup_case "$test"; "test_$test") >"$test_root/$test.log" 2>&1
+    # app_failures:tea runs test_app_failures tea.
+    arguments=()
+    [[ "$test" != *:* ]] || arguments=("${test#*:}")
+    (set -e; setup_case "${test/:/-}"; "test_${test%%:*}" "${arguments[@]}") >"$test_root/$test.log" 2>&1
     result=$?
     set -e
     if [ "$result" -eq 0 ]; then
@@ -1644,8 +1900,8 @@ for test in omp_lifecycle omp_unmanaged_launcher omp_replaced_launcher omp_check
     else
         printf 'FAIL %s\n' "$test" >&2
         cat -- "$test_root/$test.log" >&2
-        if [ -f "$test_root/$test/expected-failure.log" ]; then
-            cat -- "$test_root/$test/expected-failure.log" >&2
+        if [ -f "$test_root/${test/:/-}/expected-failure.log" ]; then
+            cat -- "$test_root/${test/:/-}/expected-failure.log" >&2
         fi
         failed=$((failed + 1))
     fi

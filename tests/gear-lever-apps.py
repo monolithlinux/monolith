@@ -2870,6 +2870,100 @@ exec {python} "$@"
 """
 
 
+GEAR_LEVER_APPS = (WOWUP_CF, R2MODMAN, SIDRA, EPIC)
+
+
+class EveryAppFailureTests(GearLeverAppCase):
+    """Every Gear Lever app, in each way its install or update can fail: a fresh install leaves no trace, a failed
+    update keeps the installed copy, and the app updates once its source works again."""
+
+    # An update replaces the AppImage in place without Gear Lever, so a Gear Lever failure only hits a fresh
+    # install. A full disk hits both, after the new AppImage is already in place.
+    INSTALL_FAILURES = ("offline", "damaged download", "Gear Lever fails", "disk full")
+    UPDATE_FAILURES = ("offline", "damaged download", "disk full")
+
+    def test_every_gear_lever_app_is_covered(self):
+        self.assertEqual({app.id for app in GEAR_LEVER_APPS}, set(self.helper.APPS))
+
+    def publish(self, app, *versions, data=None):
+        """Serve the app's releases, newest last, and the newest one's download (DATA, default a valid one)."""
+        newest = versions[-1]
+        data = make_appimage(newest, name=app.name) if data is None else data
+        if app.epic:
+            # Epic's link redirects to the newest build, without a published checksum.
+            for url in [url for url in self.web.routes if url == EPIC_LINK or url.startswith(EPIC_BUILDS)]:
+                del self.web.routes[url]
+            self.web.add(EPIC_LINK, b"", headers={"Content-Length": str(len(data))},
+                         final_url=f"{app.download_url(newest)}?launcherfilename={EPIC_ASSET}")
+            self.web.add(app.download_url(newest), data, headers={"Content-Length": str(len(data))})
+        else:
+            self.serve(*versions, app=app)
+            self.web.asset(newest, data, app=app)
+
+    @contextlib.contextmanager
+    def broken_source(self, failure, app, *versions):
+        """While active, installing the newest of VERSIONS fails in one way; afterwards it works again."""
+        patch = contextlib.nullcontext()
+        if failure == "offline":
+            self.web.routes.clear()
+            self.web.add(EPIC_LINK if app.epic else app.releases_url(1),
+                         error="Temporary failure in name resolution")
+        elif failure == "damaged download":
+            good = make_appimage(versions[-1], name=app.name)
+            # GitHub's digest no longer matches; Epic publishes none, so its download isn't an AppImage at all.
+            damaged = bytes(len(good)) if app.epic else good.replace(b"payload", b"pAyload", 1)
+            self.publish(app, *versions, data=damaged)
+        elif failure == "Gear Lever fails":
+            self.publish(app, *versions)
+            self.flatpak.fault("integrate", "fail")
+        else:
+            self.publish(app, *versions)
+            receipt = self.receipt_of(app)
+            original = self.helper.Transaction.write_private
+
+            def disk_full(transaction, path, *arguments):
+                if Path(path) == receipt:
+                    raise OSError(errno.ENOSPC, "No space left on device", str(path))
+                return original(transaction, path, *arguments)
+            patch = mock.patch.object(self.helper.Transaction, "write_private", disk_full)
+        try:
+            with patch:
+                yield
+        finally:
+            self.flatpak.update(faults={})
+            self.publish(app, *versions)
+
+    def test_failed_fresh_install_leaves_no_trace(self):
+        for app in GEAR_LEVER_APPS:
+            for failure in self.INSTALL_FAILURES:
+                with self.subTest(app=app.id, failure=failure), self.broken_source(failure, app, app.old):
+                    before = self.snapshot()
+                    self.failed(self.install(app=app))
+                    self.assertEqual(self.snapshot(), before)
+                    self.assertEqual(self.entries(app), [])
+                    self.assertEqual(self.status(app), "not installed")
+
+    def test_failed_update_keeps_the_installed_copy(self):
+        for app in GEAR_LEVER_APPS:
+            with self.subTest(app=app.id):
+                self.publish(app, app.old)
+                self.ok(self.install(app=app))
+                installed = self.snapshot()
+                for failure in self.UPDATE_FAILURES:
+                    with self.subTest(app=app.id, failure=failure), \
+                            self.broken_source(failure, app, app.old, app.new):
+                        # install always fetches the newest release; update does too, except for the Epic
+                        # Games Launcher, which updates itself, so Monolith only repairs it.
+                        for action in (self.install,) if app.epic else (self.install, self.update):
+                            self.failed(action(app=app))
+                            self.assertEqual(self.snapshot(), installed)
+                            self.assertEqual(self.read_receipt(app)["version"], app.old)
+                            self.assertEqual(self.status(app), "installed")
+                self.ok(self.install(app=app))
+                self.assertEqual(self.read_receipt(app)["version"], app.new)
+                self.ok(self.remove(app=app))
+
+
 class ManagerPrerequisiteTests(unittest.TestCase):
     """The real `monolith` manager checking Gear Lever before changing an app, and managing both side by side."""
 
