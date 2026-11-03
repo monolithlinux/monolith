@@ -351,6 +351,13 @@ modules:
         dnf5 --enable-repo=terra-mesa -y install \
           mesa-libOpenCL \
           mesa-libEGL.i686
+        # Mesa's OpenCL loads libclc from a path set when Mesa was built, and
+        # Terra's mesa-libOpenCL doesn't require the package that has it (on
+        # Fedora 45, libclc22-spirv). Install whatever provides that path;
+        # check-opencl.py makes sure OpenCL works.
+        libclc=$(grep -a -o -E '/usr/lib64/clc[0-9]*/spirv64-mesa3d-\.spv' \
+          /usr/lib64/libRusticlOpenCL.so.1 | sort -u)
+        dnf5 -y install "$libclc"
         dnf5 versionlock add \
           mesa-dri-drivers \
           mesa-filesystem \
