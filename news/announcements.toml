@@ -28,6 +28,38 @@
 #   files/kde/usr/bin/monolith-news --preview news/announcements.toml
 
 [[announcements]]
+id = "2026-11-03-fedora-45"
+date = 2026-11-03
+title = "Monolith moves to Fedora 45, its first new Fedora version"
+category = "Monolith"
+body = """
+Monolith is built on Fedora, and Fedora puts out a new version about every six
+months, once in the spring and once in the fall. Fedora 45 came out on
+November 3, and with this update Monolith moves from Fedora 44 to 45. It's the
+first time Monolith has moved to a new version of Fedora, which makes this a
+big milestone for the project. Thanks for being here for it.
+
+You don't need to do anything. Fedora 45 comes with your next update and starts
+when you restart, and your apps, files and settings come along. The download is
+bigger than usual this time, since almost everything on the system gets a new
+version.
+
+Two things are missing. If you type Chinese, Japanese, Korean or another
+language with Fcitx 5, its page in System Settings isn't ready for Fedora 45
+yet, so use the **Fcitx 5 Configuration** app until a later update brings it
+back. And Fedora 45 removed **Cisco Compatible VPN (vpnc)** from Plasma's
+network settings, so VPN connections of that type stop working.
+
+If something you rely on breaks, `monolith rollback` takes you back to the build
+you had before. System updates pause until you run `monolith rollback latest`.
+"""
+note = "Not there yet? Update Monolith and reboot first."
+links = [
+  { label = "Fedora 45 announcement", url = "https://fedoramagazine.org/announcing-fedora-linux-45/" },
+  { label = "Going back to an earlier build", url = "https://github.com/monolithlinux/monolith/blob/main/docs/commands.md#going-back-to-an-earlier-build" },
+]
+
+[[announcements]]
 id = "2026-11-02-sunshine"
 date = 2026-11-02
 title = "You can install Sunshine from monolith"
