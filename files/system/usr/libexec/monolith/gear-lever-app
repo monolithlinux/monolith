@@ -24,6 +24,7 @@ import configparser
 import contextlib
 import dataclasses
 import errno
+import fnmatch
 import hashlib
 import http.client
 import json
@@ -687,8 +688,8 @@ def require_readelf(app):
     return readelf
 
 
-def check_embedded(app, path, release):
-    """Gear Lever follows embedded update information, which cannot be unset per app."""
+def embedded_source(app, path):
+    """The update source an AppImage embeds, as Gear Lever reads it (check_app_embedded_url), or None."""
     try:
         result = subprocess.run([require_readelf(app), "--string-dump=.upd_info", "--wide", str(path)],
                                 stdin=subprocess.DEVNULL, capture_output=True, timeout=GEAR_LEVER_TIMEOUT)
@@ -698,10 +699,37 @@ def check_embedded(app, path, release):
         detail = summary(result.returncode, "", result.stderr.decode("utf-8", "replace"))
         raise HelperError(f"readelf could not inspect {path} ({detail}). Nothing was changed.")
     dump = result.stdout.decode("utf-8", "replace").replace("\n", " ") + " "
-    if any(pattern.search(dump) for pattern in EMBEDDED_SOURCES):
-        raise HelperError(f"{app.name} {release.version} embeds an AppImage update source that Gear Lever "
-                          "would follow outside Monolith's release policy and that cannot be removed. "
+    for pattern in EMBEDDED_SOURCES:
+        if match := pattern.search(dump):
+            return match[0].strip()
+    return None
+
+
+def own_stable_releases(app, source, release):
+    """Whether an embedded update source is the newest stable release in the application's own GitHub
+    repository, with the release's own AppImage as its file: gh-releases-zsync|OWNER|REPOSITORY|latest|GLOB.
+    Gear Lever then takes the AppImage Monolith would, and never a prerelease (its GithubUpdater reads
+    GitHub's latest release unless the source says latest-pre or latest-all). The application's own updater
+    follows the same releases. A beta's stable successor could be an older version, so only a stable
+    release may carry one; an application outside GitHub has no repository to match."""
+    fields = source.split("|")
+    return (len(fields) == 5 and fields[0] == "gh-releases-zsync" and release.stable
+            and "/".join(fields[1:3]).casefold() == app.repository.casefold() and fields[3] == "latest"
+            and fnmatch.fnmatchcase(f"{release.asset}.zsync", fields[4]))
+
+
+def check_embedded(app, path, release):
+    """Whether the AppImage embeds an update source. Gear Lever follows one and cannot unset it per app, so
+    the only one allowed is the application's own stable releases, which Monolith installs from too."""
+    source = embedded_source(app, path)
+    if source is None:
+        return False
+    if not own_stable_releases(app, source, release):
+        named = f" ({source})" if plain(source) and len(source) <= 200 else ""
+        raise HelperError(f"{app.name} {release.version} embeds an AppImage update source{named} that Gear "
+                          "Lever would follow outside Monolith's release policy and that cannot be removed. "
                           "Nothing was changed.")
+    return True
 
 
 # --- desktop entries --------------------------------------------------------------------------
@@ -1025,11 +1053,15 @@ def restore_update_source(paths, gear_lever, appimage, saved):
                           f"re-enter manager {saved['manager']} with {', '.join(options)} in Gear Lever")
 
 
-def clear_update_source(paths, gear_lever, transaction, entry):
+def clear_update_source(paths, gear_lever, transaction, entry, embedded):
+    """Remove a custom update source. EMBEDDED: the AppImage embeds one that check_embedded allowed; Gear
+    Lever follows that one whenever no custom source is set."""
     app = paths.app
     if entry.manager is None:
         return
     if entry.embedded:
+        if embedded:
+            return
         raise HelperError(f"The integrated {app.name} AppImage {entry.path} embeds an update source that Gear "
                           "Lever cannot unset. Nothing was changed.")
     saved = read_update_section(paths, entry.path)
@@ -1045,7 +1077,8 @@ def clear_update_source(paths, gear_lever, transaction, entry):
     if code != 0 or read_update_section(paths, entry.path) is not None:
         raise HelperError(f"Gear Lever could not remove {app.name}'s custom update source "
                           f"({summary(code, out, err)}).")
-    print(f"Removed Gear Lever's custom update source for {app.name}; Monolith selects its updates.", flush=True)
+    after = f"Gear Lever follows the one {app.name} embeds" if embedded else "Monolith selects its updates"
+    print(f"Removed Gear Lever's custom update source for {app.name}; {after}.", flush=True)
 
 
 # --- running application ----------------------------------------------------------------------------
@@ -1697,14 +1730,14 @@ def set_desktop_version(transaction, integration, release):
                              mode, desktop.data, "launcher.desktop")
 
 
-def verify(paths, gear_lever, appimage, desktop_path, release):
+def verify(paths, gear_lever, appimage, desktop_path, release, embedded):
     integration = find_managed(paths, gear_lever, appimage, desktop_path)
     entry = integration.entry
     status = lstat_or_none(entry.path)
     problems = []
     if integration.desktop.get("X-AppImage-Version") != release.version:
         problems.append("its launcher version was not updated")
-    if entry.manager is not None or entry.embedded:
+    if (entry.manager is not None or entry.embedded) and not (entry.embedded and embedded):
         problems.append(f"Gear Lever still has update source {entry.manager}")
     if status is None or not stat.S_ISREG(status.st_mode) or status.st_size != release.size:
         problems.append(f"{entry.path} is not the verified AppImage")
@@ -1739,8 +1772,13 @@ def nothing_to_change(paths, plan, preferences, current, target):
     if plan.mode != "managed" or plan.missing or current is None or current.sha256 != target.sha256:
         return False
     entry, desktop = integration.entry, integration.desktop
-    if entry.manager is not None or entry.embedded or desktop.get("X-AppImage-Version") != target.version:
+    if desktop.get("X-AppImage-Version") != target.version:
         return False
+    if entry.manager is not None or entry.embedded:
+        # Only the source the AppImage embeds may stay, and only the one check_embedded allows.
+        source = embedded_source(app, entry.path) if entry.embedded else None
+        if source is None or not own_stable_releases(app, source, target):
+            return False
     if app.setting and (preferences is None or preferences.value.get(app.setting.key) != app.setting.value):
         return False
     icon = owned_icon(desktop, entry.path)
@@ -1801,7 +1839,7 @@ def install(app, scope, only_if_changed=False):
             source = Path(plan.appimage)
         else:
             source, target = download(app, target, scratch.mkdtemp(".stage."))
-        check_embedded(app, source, target)
+        embedded = check_embedded(app, source, target)
         recheck(paths, gear_lever, plan)
         transaction = Transaction(scratch)
 
@@ -1819,9 +1857,10 @@ def install(app, scope, only_if_changed=False):
                 if "desktop" not in plan.missing and integration.desktop.data != plan.integration.desktop.data:
                     raise HelperError(f"{integration.desktop_path} changed while Monolith was working; it was "
                                       "not overwritten. Retry.")
-            clear_update_source(paths, gear_lever, transaction, integration.entry)
+            clear_update_source(paths, gear_lever, transaction, integration.entry, embedded)
             set_desktop_version(transaction, integration, target)
-            integration = verify(paths, gear_lever, integration.entry.path, integration.desktop_path, target)
+            integration = verify(paths, gear_lever, integration.entry.path, integration.desktop_path, target,
+                                 embedded)
             finalize(paths, transaction, integration, target)
             return integration
 
