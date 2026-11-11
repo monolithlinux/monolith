@@ -762,13 +762,21 @@ def flatpak_command(state, arguments, sync_dir):
 
 
 def fake_flatpak(arguments):
+    if (os.environ.get("MONOLITH_PROGRESS") == "1" and arguments[:2] in (["install", "--user"], ["update", "--user"])
+            and "--noninteractive" not in arguments and "--assumeyes" in arguments):
+        # monolith update's catalog run leaves out --noninteractive, so Flatpak
+        # prints its progress; the model treats both the same.
+        arguments = arguments[:2] + ["--noninteractive"] + arguments[2:]
+        logged = [word for word in arguments if word != "--noninteractive"]
+    else:
+        logged = arguments
     state_path = os.environ.get(STATE_ENV)
     if not state_path:
         print(f"fake flatpak: {STATE_ENV} is not set", file=sys.stderr)
         return UNMODELLED
     log = Path(f"{state_path}.calls")
     with log.open("a") as file:
-        file.write(json.dumps({"argv": arguments}) + "\n")
+        file.write(json.dumps({"argv": logged}) + "\n")
     state = read_state(state_path)
     original = json.dumps(state, sort_keys=True)
     try:

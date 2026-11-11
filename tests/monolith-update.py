@@ -70,16 +70,40 @@ case "$1" in
     echo "  kernel-cachyos 6.17.1-1.fc44 -> 6.17.3-1.fc44"
     echo "  systemd 258.1-1.fc44 -> 258.2-1.fc44" ;;
 esac''',
+    # flatpak update -y to a pipe lists its changes in tab-separated rows, then
+    # prints a line as each starts and as it moves (REAL_FLATPAK_* below are
+    # real runs). Sizes and speeds have a no-break space before the unit.
     "flatpak": r'''
+[ "$1" != update ] || printf '%s LC_ALL=%s LANGUAGE=%s\n' "$2" "${LC_ALL:-}" "${LANGUAGE:-}" >>"$CALLS-env"
 [ ! -e "$SCENARIO/flatpak-$1-$2-fails" ] || { echo "error: Unable to load summary from remote flathub"; exit 1; }
+if [ "$1 $2" = "update --user" ] && [ -e "$SCENARIO/flatpak-replay" ]; then
+  cat "$SCENARIO/flatpak-replay"; exit "$(cat "$SCENARIO/flatpak-replay-exit" 2>/dev/null || echo 0)"
+fi
 case "$1 $2" in
-  "update --user") echo "Updating app/org.kde.okular/x86_64/stable"; sleep "${DELAY:-0}"
-                   echo "Installing runtime/org.kde.Platform/x86_64/6.10" ;;
-  "update --system") echo "Updating app/org.mozilla.Thunderbird/x86_64/stable" ;;
+  "update --user")
+    printf 'Looking for updates…\n\n\n'
+    printf ' 1.\t   \torg.kde.okular\tstable\tu\tflathub\t< 41.6\xc2\xa0MB\n'
+    printf ' 2.\t   \torg.kde.Platform\t6.10\ti\tflathub\t< 312.0\xc2\xa0MB\n\n\n'
+    printf 'Updating 1/2…\n'
+    for p in 0 35 70 100; do printf 'Updating 1/2… ████████ %3d%%  6.1\xc2\xa0MB/s\n' "$p"; sleep "${TICK:-0}"; done
+    printf 'Installing 2/2…\n'
+    for p in 0 20 45 70 90 100; do printf 'Installing 2/2… ████████ %3d%%  8.4\xc2\xa0MB/s\n' "$p"; sleep "${TICK:-0}"; done
+    echo "Changes complete." ;;
+  "update --system")
+    printf 'Looking for updates…\n\n\n'
+    printf ' 1.\t   \torg.mozilla.Thunderbird\tstable\tu\tflathub\t< 88.0\xc2\xa0MB\n\n\n'
+    printf 'Updating…\n'
+    for p in 0 50 100; do printf 'Updating… ████████ %3d%%  7.0\xc2\xa0MB/s\n' "$p"; sleep "${TICK:-0}"; done
+    echo "Updates complete." ;;
   "uninstall --user") echo "Uninstalling runtime/org.kde.Platform/x86_64/6.9" ;;
+  "list --user") printf 'org.kde.okular\tstable\tOkular\norg.kde.Platform\t6.9\tKDE Application Platform\n'
+                 printf 'org.test.Hello\tstable\tHello World\norg.test.Platform\t1\tTest Platform\n' ;;
+  "list --system") printf 'org.mozilla.Thunderbird\tstable\tThunderbird\n' ;;
   "run com.vysp3r.ProtonPlus")
     echo "Updating all runners..."
-    printf 'Updating GE-Proton Latest...\r'; sleep "${DELAY:-0}"; printf '\r\033[2K\r'
+    printf 'Updating GE-Proton Latest...\r'
+    for p in 10 55 100; do printf '\r\033[2KUpdating GE-Proton10-25... %s%% (9.1 MB/s) [ETA: 2s]\r' "$p"; sleep "${TICK:-0}"; done
+    sleep "${DELAY:-0}"; printf '\r\033[2K\r'
     echo "Successfully updated GE-Proton Latest" ;;
   "run it.mijorus.gearlever") echo "No updates available" ;;
 esac''',
@@ -104,6 +128,7 @@ esac''',
     "distrobox": r'''
 for box in fedora arch; do
   printf >&2 "\033[1;31m Upgrading %s...\n\033[0m" "$box"; sleep "${DELAY:-0}"
+  echo "Upgraded: 12 packages"; sleep "${TICK:-0}"
   echo "Complete!"
 done
 [ ! -e "$SCENARIO/distrobox-fails" ] || { echo "error: arch: pacman failed"; exit 1; }''',
@@ -125,14 +150,70 @@ esac''',
 UTILS = ("cat", "sleep", "touch", "stty")
 
 CATALOG = r'''
+printf 'software %s progress=%s locale=%s language=%s\n' "$*" "${MONOLITH_PROGRESS:-}" "${LC_ALL:-}" "${LANGUAGE:-}" >>"$CALLS"
 [ "$1" = update ] || exit 0
+[ "${MONOLITH_PROGRESS:-}" != 1 ] || echo "Plan: Sidra | Epic Games Launcher"
 printf '\n(1/2) Sidra — Update\n'
+printf '\n==> Downloading Sidra 1.5.0\n'
+for p in 12.5 47.3 81.0 100.0; do printf '\r#######################                           %s%%' "$p"; sleep "${TICK:-0}"; done
+printf '\n'
 sleep "${DELAY:-0}"
 echo "Updated Sidra from 1.4.2 to 1.5.0 at $HOME/AppImages/Sidra.AppImage."
 printf '\n(2/2) Epic Games Launcher — Update\n'
-echo "Epic Games Launcher is already up to date."
+sleep "${DELAY:-0}"
+echo "Epic Games Launcher 17.2.1 is already up to date."
 printf '\nResults:\n  %-19s %s\n  %-19s %s\n' Sidra Updated "Epic Games Launcher" "Up to date"
 '''
+
+
+# Lines from real runs of `flatpak update --user -y` into a pipe, with
+# flatpak 1.18.4 (what Fedora 45 ships) and a local test repository.
+REAL_FLATPAK_UPDATE = "\n".join([
+    "Looking for updates…",
+    "Required runtime for org.test.Paint/x86_64/stable (runtime/org.test.Platform/x86_64/2) found in remote testrepo",
+    "", "",
+    " 1.\t   \torg.test.Platform\t1\tu\ttestrepo\t< 4.0\xa0MB",
+    " 2.\t   \torg.test.Hello\tstable\tu\ttestrepo\t< 4.0\xa0MB",
+    " 3.\t   \torg.test.Platform\t2\ti\ttestrepo\t< 4.0\xa0MB",
+    " 4.\t   \torg.test.Paint\tstable\tu\ttestrepo\t< 5.0\xa0MB",
+    "", "",
+    "Updating 1/4…",
+    "Updating 1/4…                        0%  0 bytes/s",
+    "Updating 1/4… ▌                      3%",
+    "Updating 1/4… ███████████████▍      77%  7.1\xa0MB/s",
+    "Updating 1/4… ████████████████████ 100%",
+    "Updating 2/4…",
+    "Updating 2/4…                        0%  0 bytes/s",
+    "Updating 2/4… ██████████████▌       73%",
+    "Updating 2/4… ████████████████████ 100%",
+    "Installing 3/4…",
+    "Installing 3/4…                        0%  0 bytes/s",
+    "Installing 3/4… ████████████████████ 100%",
+    "Updating 4/4…",
+    "Updating 4/4…                        0%  0 bytes/s",
+    "Updating 4/4… ███████████████▍      77%",
+    "Updating 4/4… ████████████████████ 100%",
+    "Changes complete.",
+    ""])
+# One change fails: flatpak goes on with the rest, then exits 1.
+REAL_FLATPAK_FAILURE = "\n".join([
+    "Looking for updates…", "", "",
+    " 1.\t   \torg.test.Paint\tstable\tu\ttestrepo\t< 2.0\xa0MB",
+    " 2.\t   \torg.test.Hello\tstable\tu\ttestrepo\t< 3.0\xa0MB",
+    "", "",
+    "Updating 1/2…",
+    "Updating 1/2…                        0%  0 bytes/s",
+    "Updating 1/2… ▌                      3%",
+    "Updating 1/2… ████████████████████ 100%",
+    "Updating 2/2…",
+    "Updating 2/2…                        0%  0 bytes/s",
+    "Error: While pulling app/org.test.Hello/x86_64/stable from remote testrepo: While fetching "
+    "http://127.0.0.1:18734/repo/objects/c2/55fc0c51a6b1363bb648ca28d07cd4a51f6c37b4e7addc7e73662a1af18f2a.filez: "
+    "Server returned HTTP 404",
+    "Updates complete.",
+    "error: There were one or more errors",
+    ""])
+FLATPAK_NAMES = "org.test.Hello\tstable\tHello World\norg.test.Paint\tstable\tPaint Studio\norg.test.Platform\t1\tTest Platform\n"
 
 
 class World:
@@ -299,7 +380,7 @@ def test(function):
     return function
 
 
-def expect(condition, message, detail=""):
+def expect(condition, message, detail: object = ""):
     if not condition:
         raise AssertionError(message + (f"\n--- got ---\n{detail}" if detail else ""))
 
@@ -311,6 +392,40 @@ def has(text, *needles):
 
 def lines_with(text, needle):
     return [line for line in text.splitlines() if needle in line]
+
+
+def replay(module, step, outputs, captures=(), peek=None):
+    """Run STEP alone in a session whose programs print canned output.
+    OUTPUTS and CAPTURES are (start of the command, exit code, text); PEEK(line,
+    step) sees the step after each line. Returns the session."""
+    class Session(module.Session):
+        def run(self, argv, parse=None, env=None):
+            words = " ".join(map(str, argv))
+            self.ran.append((words, env))
+            code, text = next(((c, t) for start, c, t in outputs if words.startswith(start)), (0, ""))
+            lines = []
+            for line in text.split("\n"):
+                self._line(line, lines, parse, True)
+                if peek:
+                    peek(line, step)
+            return code, lines
+
+        def capture(self, argv, timeout=30):
+            words = " ".join(map(str, argv))
+            return next(((c, t) for start, c, t in captures if words.startswith(start)), (0, ""))
+
+        def unit_active(self, unit, user=False):
+            return False
+
+    session = Session(module.Log(None))
+    session.ran = []
+    session.step, step.state, step.started = step, "running", 0.0
+    step.result = step.run(session)
+    return session
+
+
+def items_of(step):
+    return [(item.name, item.state, item.text, item.kind) for item in step.items]
 
 
 def ran(out):
@@ -338,8 +453,9 @@ def full_run_without_a_terminal(w):
         "2 packages updated", "gh-dash v4.1.0 → v4.2.0", "Everything is updated",
         "44.20261101.0 is ready. Restart to use it.", "Release notes: https://github.com/monolithlinux/monolith/releases/latest")
     calls = w.calls()
-    for call in ("rpm-ostree upgrade --unchanged-exit-77", "flatpak update --user -y --noninteractive",
-                 "flatpak update --system -y --noninteractive", "flatpak uninstall --user --unused -y --noninteractive",
+    for call in ("rpm-ostree upgrade --unchanged-exit-77", "flatpak update --user -y",
+                 "flatpak update --system -y", "flatpak uninstall --user --unused -y --noninteractive",
+                 "software update progress=1 locale=C.UTF-8 language=",
                  "flatpak run com.vysp3r.ProtonPlus update all", "flatpak run it.mijorus.gearlever --update --all --yes",
                  "distrobox upgrade --all", "fwupdmgr refresh", "fwupdmgr get-updates --json", "rustup update",
                  "npm update --global", "gh extension upgrade --all", "gh skill update --all", "pulled"):
@@ -441,7 +557,7 @@ def a_failing_step_doesnt_stop_the_rest(w):
     has(out, "✗ Flatpaks", "Your Flatpaks: Unable to load summary from remote flathub", "✗ Distrobox",
         "arch: pacman failed", "2 steps failed", "What went wrong is in")
     expect("arch: arch:" not in out, "repeated the container name", out)
-    expect("flatpak update --system -y --noninteractive" in w.calls(), "the system Flatpaks were skipped")
+    expect("flatpak update --system -y" in w.calls(), "the system Flatpaks were skipped")
     expect("rustup update" in w.calls(), "a failure stopped later steps")
     expect((w.home / ".local/state/monolith/update-reminder/last-update").exists(),
            "a finished run with failures wasn't recorded")
@@ -542,7 +658,7 @@ def ctrl_c_stops_after_the_step(w):
     code, text = w.run_tty(interrupt="rpm-ostree upgrade", DELAY="0.5")
     expect(code == 130, f"exit {code}", text)
     calls = w.calls()
-    expect("flatpak update --user -y --noninteractive" not in calls, "kept going after Ctrl+C", "\n".join(calls))
+    expect("flatpak update --user -y" not in calls, "kept going after Ctrl+C", "\n".join(calls))
     summary = plain(text.split("\x1b[?1049l")[-1])
     has(summary, "Stopped before the end", "44.20261101.0 is ready", "Not run")
     expect(not (w.home / ".local/state/monolith/update-reminder/last-update").exists(), "a stopped run counted")
@@ -589,6 +705,14 @@ def frames_fit_every_window(w):
         step.state, step.result = states[min(i, 3)] if i < 3 else states[3]
         step.started, step.ended = 0.0, 75.0
         step.detail, step.sub = "Detail " * 20, "Output line " * 20
+    # The running step opens up with long, wide and many items.
+    running = steps[2]
+    for k in range(9):
+        running.items.append(module.Item(f"Ein sehr langer Name für eine App 日本語 {k}", "312.0 MB"))
+    for item in running.items[:4]:
+        item.finish("Something long " * 5, module.FAIL if item is running.items[1] else None)
+    running.items[4].state, running.items[4].fraction, running.items[4].rate = "running", 0.45, "17.1 MB/s"
+    running.total = 12
     look = module.Look(sys.stdout)
     look.motion, look.color, look.unicode = True, True, True
     screen = module.Screen(look, module.Paint(True), session)
@@ -602,6 +726,12 @@ def frames_fit_every_window(w):
                     expect(module.width(line) <= cols - 1, f"{cols}x{rows}: a line of {module.width(line)}", plain(line))
             final = screen.compose(cols, rows, now, final=True)
             expect(all(module.width(line) <= cols - 1 for line in final), f"{cols}x{rows}: summary too wide")
+    # A running step without items draws a download's bar under it.
+    running.items, running.bar = [], 0.37
+    for cols in (20, 30, 41, 67, 80, 100, 250):
+        for rows in (9, 13, 24):
+            for line in screen.compose(cols, rows, now + 1.0):
+                expect(module.width(line) <= cols - 1, f"{cols}x{rows}: a bar line of {module.width(line)}", plain(line))
     # Wide characters from a program's output count double.
     expect(module.width(module.fit("日本語のテキスト" * 5, 11)) <= 11, "wide characters")
     expect(module.clip("\x1b[31mabcdef", 3) == "\x1b[31mabc\x1b[0m", "clip keeps colors and resets them")
@@ -621,12 +751,258 @@ def the_art_shows_the_whole_mark(w):
         expect(not any("█" in line for line in start), f"{size}: the mark showed before rising")
 
 
+@test
+def flatpak_changes_from_real_runs(w):
+    m = load_module(w.env())
+    names = [("flatpak list --user", 0, FLATPAK_NAMES)]
+    nothing = ("flatpak update --system", 0, "Looking for updates…\n\nNothing to update.\n")
+    step = m.Flatpaks()
+    session = replay(m, step, [("flatpak update --user", 0, REAL_FLATPAK_UPDATE), nothing], names)
+    expect(items_of(step) == [("Test Platform 1", "done", "Updated", m.OK), ("Hello World", "done", "Updated", m.OK),
+                              ("Test Platform 2", "done", "Installed", m.OK), ("Paint Studio", "done", "Updated", m.OK)],
+           "flatpak's changes", items_of(step))
+    expect([item.size for item in step.items] == ["4.0 MB", "4.0 MB", "4.0 MB", "5.0 MB"], "sizes",
+           [item.size for item in step.items])
+    expect(step.result.kind == m.OK and step.result.text == "4 updated", "result", step.result.text)
+    expect(all(env == m.flatpak_english() for words, env in session.ran if words.startswith("flatpak")),
+           "flatpak didn't run in English", session.ran)
+    # Halfway through the first change, it has its own share and speed.
+    seen = {}
+
+    def peek(line, step):
+        if "77%  7.1" in line:
+            seen.update(state=[item.state for item in step.items], fraction=step.items[0].fraction,
+                        rate=step.items[0].rate)
+
+    replay(m, m.Flatpaks(), [("flatpak update --user", 0, REAL_FLATPAK_UPDATE), nothing], names, peek)
+    expect(seen == {"state": ["running", "waiting", "waiting", "waiting"], "fraction": 0.77, "rate": "7.1 MB/s"},
+           "halfway", seen)
+    # A change that fails says why in a few words, and the rest still count.
+    step = m.Flatpaks()
+    replay(m, step, [("flatpak update --user", 1, REAL_FLATPAK_FAILURE), nothing], names)
+    expect(items_of(step) == [("Paint Studio", "done", "Updated", m.OK), ("Hello World", "done", "Failed", m.FAIL)],
+           "a failed change", items_of(step))
+    expect(step.result.kind == m.FAIL and step.result.text == "Hello World: Server returned HTTP 404",
+           "the failure", step.result.text)
+    # The same through the real command, without a terminal.
+    w.flag("flatpak-replay", REAL_FLATPAK_FAILURE)
+    w.flag("flatpak-replay-exit", "1")
+    code, out, _ = w.run("--only", "flatpak")
+    expect(code == 1 and re.search(r"^✗ Flatpaks\s+Hello World: Server returned HTTP 404", out, re.M), "plain run", out)
+
+    names = {("org.gnome.Platform", "48"): "GNOME Application Platform version 48",
+             ("org.kde.Platform", "6.9"): "KDE Application Platform", ("org.mozilla.firefox", "stable"): "Firefox",
+             ("org.freedesktop.Platform.GL.default", "24.08"): "Mesa"}
+    names[("org.example.Old", "6.1")] = "Old Platform 6.1"
+    for ref, branch, label in (("org.gnome.Platform", "49", "GNOME Platform 49"),
+                               ("org.gnome.Platform", "48", "GNOME Platform 48"),
+                               ("org.kde.Platform", "6.10", "KDE Platform 6.10"),
+                               ("org.kde.Platform.Locale", "6.10", "KDE Platform 6.10 translations"),
+                               ("org.example.Old", "6.10", "Old Platform 6.10"),
+                               ("org.mozilla.firefox.Locale", "stable", "Firefox translations"),
+                               ("org.freedesktop.Platform.GL.default", "25.08", "Mesa 25.08"),
+                               ("org.example.New", "stable", "org.example.New"),
+                               ("org.example.New.Locale", "stable", "org.example.New.Locale")):
+        expect(m.flatpak_label(ref, branch, names) == label, f"{ref} {branch}", m.flatpak_label(ref, branch, names))
+    # Rows as flatpak-cli-transaction.c (1.18.4) formats them: a translation's
+    # size ends in "(partial)", and nothing to download is "0 bytes".
+    step = m.Flatpaks()
+    changes = m.FlatpakChanges(step, names)
+    for line in (" 1.\t   \torg.kde.Platform.Locale\t6.10\tu\tflathub\t< 18.5\xa0kB (partial)",
+                 " 2.\t   \torg.mozilla.firefox\tstable\tu\tflathub\t0 bytes"):
+        changes.note(m.plain(line), True)  # as Session hands lines over
+    expect([(item.name, item.size) for item in step.items] == [("KDE Platform 6.10 translations", "18.5 kB"),
+                                                               ("Firefox", "")],
+           "sizes from the table", [(item.name, item.size) for item in step.items])
+
+
+@test
+def flatpak_keeps_your_languages(w):
+    # Flatpak picks which translations to download from your languages, and
+    # with none at all it downloads every language. Its words are read in
+    # English, so LANGUAGE carries your languages: GLib reads it first, and
+    # glibc ignores it under C.UTF-8.
+    m = load_module(w.env())
+    for environ, language in (({"LANG": "de_DE.UTF-8"}, "de_DE.UTF-8"),
+                              ({"LANG": "en_US.UTF-8", "LANGUAGE": "de:en_US"}, "de:en_US"),
+                              ({"LANG": "en_US.UTF-8", "LC_TIME": "de_DE.UTF-8"}, "en_US.UTF-8:de_DE.UTF-8"),
+                              ({"LC_ALL": "fr_FR.UTF-8", "LANG": "en_US.UTF-8", "LC_TIME": "de_DE.UTF-8"}, "fr_FR.UTF-8"),
+                              ({"LANG": "de_DE.UTF-8", "LC_CTYPE": "C.UTF-8"}, "de_DE.UTF-8"),
+                              ({"LANG": "C.UTF-8"}, None), ({"LANG": "", "LANGUAGE": ""}, None), ({}, None)):
+        got = m.flatpak_english(environ)
+        expect(got == {"LC_ALL": "C.UTF-8", "LANGUAGE": language}, str(environ), got)
+    # Through the real command: flatpak and the catalog get them, ProtonPlus doesn't need them.
+    w.everything()
+    code, out, err = w.run("--only", "flatpak,apps", LANG="de_DE.UTF-8")
+    expect(code == 0, f"exit {code}", out + err)
+    env = Path(f"{w.calls_file}-env").read_text().splitlines()
+    expect(env == ["--user LC_ALL=C.UTF-8 LANGUAGE=de_DE.UTF-8", "--system LC_ALL=C.UTF-8 LANGUAGE=de_DE.UTF-8"],
+           "flatpak's environment", env)
+    expect("software update progress=1 locale=C.UTF-8 language=de_DE.UTF-8" in w.calls(), "the catalog's environment",
+           "\n".join(w.calls()))
+
+
+@test
+def apps_containers_and_proton_tools_list_what_they_update(w):
+    m = load_module(w.env())
+    catalog = "\n".join([
+        "Plan: Sidra | Epic Games Launcher | Tea", "", "(1/3) Sidra — Update", "", "==> Downloading Sidra 1.5.0",
+        "\r#######                      12.5%\r###################          47.3%",
+        "Updated Sidra from 1.4.2 to 1.5.0 at /home/u/AppImages/Sidra.AppImage.",
+        "", "(2/3) Epic Games Launcher — Update", "Epic Games Launcher 17.2.1 is already up to date.",
+        "", "(3/3) Tea — Update", "Error: Tea could not be downloaded",
+        "", "Results:", "  Sidra               Updated", "  Epic Games Launcher Up to date",
+        "  Tea                 Failed (exit 1)", "", "Some items did not complete; see the messages above."])
+    seen = {}
+
+    def peek(line, step):
+        if line.startswith("==>"):
+            seen["names"] = [item.name for item in step.items]
+            seen["doing"] = step.current().doing
+        if "47.3%" in line:
+            seen["fraction"] = step.current().fraction
+
+    apps = m.Apps()
+    session = replay(m, apps, [(str(m.SOFTWARE), 1, catalog)], peek=peek)
+    expect(seen == {"names": ["Sidra", "Epic Games Launcher", "Tea"], "doing": "Downloading Sidra 1.5.0",
+                    "fraction": 0.473}, "the catalog's apps while they update", seen)
+    expect(items_of(apps) == [("Sidra", "done", "1.4.2 → 1.5.0", m.OK),
+                              ("Epic Games Launcher", "done", "Up to date", m.OK),
+                              ("Tea", "done", "Tea could not be downloaded", m.FAIL)], "apps", items_of(apps))
+    expect(apps.result.kind == m.FAIL and apps.result.text == "Tea didn't update", "result", apps.result.text)
+    expect(session.ran[0][1] == dict(m.flatpak_english(), MONOLITH_PROGRESS="1"), "the catalog's environment",
+           session.ran)
+
+    box = m.Distrobox()
+    box.boxes = ["fedora", "arch"]
+    seen.clear()
+
+    def peek(line, step):
+        if line == "Upgrading arch...":
+            seen["arch"] = items_of(step)
+
+    replay(m, box, [("distrobox upgrade", 1, "Upgrading fedora...\nUpgraded: 12 packages\nComplete!\n"
+                     "Upgrading arch...\n:: Synchronizing package databases...\n"
+                     "error: failed to synchronize all databases")], peek=peek)
+    expect(seen["arch"] == [("fedora", "done", "Upgraded", m.OK), ("arch", "running", "", m.OK)], "containers", seen)
+    expect(items_of(box)[1] == ("arch", "done", "Failed", m.FAIL), "the failed container", items_of(box))
+    expect(box.result.kind == m.FAIL and box.result.text.startswith("arch: "), "result", box.result.text)
+
+    proton = m.Proton()
+    proton.argv = ["protonplus", "update", "all"]
+    seen.clear()
+
+    def peek(line, step):
+        if "55%" in line:
+            current = step.current()
+            seen.update(name=current.name, fraction=current.fraction, rate=current.rate)
+
+    replay(m, proton, [("protonplus", 1, "Updating all runners...\n"
+                        "Updating GE-Proton Latest...\r\r\x1b[2KUpdating GE-Proton10-25... 55% (9.1 MB/s) [ETA: 2s]\n"
+                        "\r\x1b[2K\rSuccessfully updated GE-Proton Latest\n"
+                        "Updating Proton-CachyOS Latest...\r\r\x1b[2K\r"
+                        "Error: Failed to update Proton-CachyOS Latest: API rate limit exceeded\n")], peek=peek)
+    expect(seen == {"name": "GE-Proton Latest", "fraction": 0.55, "rate": "9.1 MB/s"}, "a Proton tool downloading", seen)
+    expect(items_of(proton) == [("GE-Proton Latest", "done", "Updated", m.OK),
+                                ("Proton-CachyOS Latest", "done", "API rate limit exceeded", m.WARN)],
+           "Proton tools", items_of(proton))
+    expect(proton.result.kind == m.WARN, "Proton result", proton.result.text)
+
+
+@test
+def the_running_step_opens_and_folds(w):
+    m = load_module(w.env())
+    m.SYM.update(m.UNICODE_SYMBOLS)
+    session = m.Session(m.Log(None))
+    session.phase = "run"
+    system, flatpaks, apps = m.System(), m.Flatpaks(), m.Apps()
+    session.found = [system, flatpaks, apps]
+    now = time.monotonic()
+    system.state, system.result, system.started, system.ended = "done", m.Result(m.OK, "Up to date"), now - 30, now - 29
+    flatpaks.state, flatpaks.started = "running", now - 20
+    for name, size in (("Firefox", "89.4 MB"), ("Discord", "101 MB"), ("OBS Studio", "54.0 MB"), ("GNOME 49", "12.0 MB")):
+        flatpaks.items.append(m.Item(name, size))
+    for item in flatpaks.items[:2]:
+        item.finish("Updated")
+    obs = flatpaks.items[2]
+    obs.state, obs.fraction, obs.rate = "running", 0.45, "7.1 MB/s"
+    look = m.Look(sys.stdout)
+    look.motion, look.color, look.unicode = True, True, True
+    screen = m.Screen(look, m.Paint(True), session)
+    text = []
+
+    def row(*needles):
+        return next((line for line in text if all(needle in line for needle in needles)), None)
+
+    def draw(at):
+        text[:] = [plain(line) for line in screen.compose(100, 30, at)]
+        return "\n".join(text)
+
+    shown = draw(now)
+    expect(row("Flatpaks", "3 of 4", "0:20"), "the open step's line", shown)
+    expect(row("✓ Firefox", "Updated") and row("✓ Discord", "Updated"), "finished items", shown)
+    expect(row("● OBS Studio", "45%", "7.1 MB/s"), "the running item's bar", shown)
+    expect(row("○ GNOME 49", "12.0 MB"), "a waiting item and its size", shown)
+    expect(row("○   Monolith apps") and not row("Monolith apps", "of"), "a waiting step stays shut", shown)
+    # Done, it stays open a moment so the last tick shows, then folds to one line.
+    for item in flatpaks.items[2:]:
+        item.finish("Updated")
+    flatpaks.state, flatpaks.result, flatpaks.ended = "done", m.Result(m.OK, "4 updated"), now
+    shown = draw(now + 0.1)
+    expect(row("✓ GNOME 49", "Updated") and row("✓   Flatpaks", "4 updated"), "the last tick", shown)
+    shown = draw(now + m.FOLD + 0.1)
+    expect(row("✓   Flatpaks", "4 updated") and not row("Firefox"), "it didn't fold", shown)
+    # A long list keeps the current item in view and counts the rest.
+    apps.state, apps.started = "running", now
+    for k in range(12):
+        apps.items.append(m.Item(f"App {k + 1}"))
+    for item in apps.items[:6]:
+        item.finish("Up to date")
+    apps.items[6].state = "running"
+    shown = draw(now + 1)
+    expect(row("✓ 5 done") and row("✓ App 6") and row("● App 7") and row("○ App 8") and row("○ 4 more"),
+           "a long list", shown)
+    expect(not row("App 5") and not row("App 9"), "showed items that don't fit", shown)
+    # A step with a download but no items draws its bar under it.
+    apps.items, apps.state = [], "waiting"
+    flatpaks.state = "waiting"
+    system.state, system.started, system.detail = "running", now - 3, "Downloading the new build"
+    system.bar, system.sub = 0.5, "Layer 2 of 4 · 846.2 MB in all"
+    shown = draw(now + 2)
+    expect(row("╰", "50%", "Layer 2 of 4"), "the system's download", shown)
+
+
+@test
+def item_rows_keep_the_current_one(w):
+    m = load_module(w.env())
+    for n in range(13):
+        for focus in range(n + 1):
+            for unlisted in (0, 2):
+                for room in range(8):
+                    items = [m.Item(f"item {k}") for k in range(n)]
+                    for item in items[:focus]:
+                        item.finish("Done")
+                    if focus < n:
+                        items[focus].state = "running"
+                    rows = m.item_rows(items, unlisted, room)
+                    case = f"{n} items, {focus} done, {unlisted} unlisted, {room} rows: {rows}"
+                    expect(len(rows) <= room, "too many rows", case)
+                    shown = [value for kind, value in rows if kind == "item"]
+                    if n and room:
+                        expect(items[min(focus, n - 1)] in shown, "lost the current item", case)
+                    if room >= 3:
+                        counted = sum(value for kind, value in rows if kind != "item")
+                        expect(len(shown) + counted == n + unlisted, "lost count", case)
+                    if n + bool(unlisted) <= room:
+                        expect(len(shown) == n, "left out items that fit", case)
+
+
 def main():
     if sys.argv[1:] == ["demo"]:
         w = World()
         w.everything()
         w.flag("firmware-update")
-        env = w.env(DELAY="1.2", TERM=os.environ.get("TERM", "xterm-256color"))
+        env = w.env(DELAY="1.2", TICK="0.3", TERM=os.environ.get("TERM", "xterm-256color"))
         env.pop("MONOLITH_UPDATE_POLL")
         try:
             subprocess.run([str(w.update)], env=env)

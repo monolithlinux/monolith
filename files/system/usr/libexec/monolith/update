@@ -66,6 +66,11 @@ PROTONPLUS = "com.vysp3r.ProtonPlus"
 KEEP_LOGS = 10
 FPS = 15
 FLARE = 1.3  # seconds the sunburst plays at the end
+ITEM_ROWS = 5  # rows for the items under the running step; the rest are counted
+FOLD = 0.4  # seconds a finished step stays open, so its last tick shows
+# Programs whose words the steps read run in English, so the words don't
+# change with the language you use.
+ENGLISH = {"LC_ALL": "C.UTF-8", "LANGUAGE": None}
 
 HELP = """\
 Usage: monolith update [--list] [--only STEPS] [--skip STEPS]
@@ -93,9 +98,9 @@ Each run's full output is kept in ~/.local/state/monolith/update/."""
 OK, WARN, FAIL, STOPPED, NOT_RUN = "ok", "warn", "fail", "stopped", "not run"
 
 UNICODE_SYMBOLS = dict(ok="✓", warn="!", fail="✗", wait="○", stop="○", to="→", dot="·", more="…",
-                       sub="╰", bar="━", half="╸")
+                       sub="╰", bar="━", half="╸", now="●")
 ASCII_SYMBOLS = dict(ok="+", warn="!", fail="x", wait="-", stop="-", to="->", dot="-", more="...",
-                     sub="`", bar="=", half="-")
+                     sub="`", bar="=", half="-", now="*")
 SYM = dict(UNICODE_SYMBOLS)
 
 
@@ -551,15 +556,19 @@ class Session:
     def which(name):
         return shutil.which(name)
 
-    def run(self, argv, parse=None):
+    def run(self, argv, parse=None, env=None):
         """Run a program for the current step, showing its latest line under the
-        step. Returns its exit code and output lines."""
+        step. ENV changes its environment; None takes a variable away. Returns
+        its exit code and output lines."""
         argv = [str(a) for a in argv]
         self.log.command(argv)
         start = time.monotonic()
+        environ = None
+        if env:
+            environ = {key: value for key, value in {**os.environ, **env}.items() if value is not None}
         try:
             proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                    stderr=subprocess.STDOUT, start_new_session=True)
+                                    stderr=subprocess.STDOUT, start_new_session=True, env=environ)
         except OSError as error:
             self.log.write(f"{error}\n")
             return 127, [str(error)]
@@ -720,10 +729,33 @@ class Result:
         self.kind, self.text, self.more = kind, text, [m for m in more if m]
 
 
+class Item:
+    """One thing a step updates, such as an app, a runtime or a container."""
+
+    def __init__(self, name, size=""):
+        self.name = name
+        self.size = size         # its download, such as "26.1 MB", when known ahead
+        self.state = "waiting"   # waiting, running, done
+        self.kind = OK           # how it ended
+        self.text = ""           # how it ended, such as "Up to date"
+        self.doing = ""          # what it's doing while it runs
+        self.fraction = None     # how far along it is, when it can tell
+        self.rate = ""           # how fast it's downloading, such as "7.1 MB/s"
+
+    def finish(self, text=None, kind=None):
+        self.state, self.fraction, self.rate = "done", None, ""
+        if text is not None:
+            self.text = text
+        if kind is not None:
+            self.kind = kind
+
+
 class Step:
     id = title = ""
     weight = 1    # its share of the progress bar
     expect = 20   # seconds it usually takes, to keep the bar moving
+    done_text = "Updated"  # what an item shows when it ends without saying how
+    counted = True  # it knows how many items there are before they start
 
     def __init__(self):
         self.state = "waiting"   # waiting, running, done
@@ -732,6 +764,9 @@ class Step:
         self.sub = ""            # its program's latest line, under it
         self.fraction = None     # how far along it is, when it can tell
         self.started = self.ended = None
+        self.items = []          # what it updates, in order, when it can tell
+        self.total = 0           # how many items there are, when it knows before naming them
+        self.bar = None          # a download's progress, drawn under a step without items
 
     def ready(self, session):
         """Does this step apply here? Quick checks only."""
@@ -749,6 +784,34 @@ class Step:
             return min(0.97, max(0.0, self.fraction))
         elapsed = now - (self.started or now)
         return min(0.9, 1 - math.exp(-elapsed / self.expect))
+
+    def item(self, name, size=""):
+        """The item called NAME, added at the end if it's new."""
+        for item in self.items:
+            if item.name == name:
+                return item
+        self.items.append(Item(name, size))
+        return self.items[-1]
+
+    def current(self):
+        return next((item for item in self.items if item.state == "running"), None)
+
+    def start_item(self, item):
+        """ITEM is running now, so the one before it is done."""
+        for other in self.items:
+            if other.state == "running" and other is not item:
+                other.finish(other.text or self.done_text)
+        if item.state != "running":
+            item.state, item.fraction, item.rate = "running", None, ""
+
+    def items_done(self):
+        """How far along the items are, from 0 to 1."""
+        total = max(self.total, len(self.items))
+        if not total:
+            return 0.0
+        done = sum(1 for item in self.items if item.state == "done")
+        current = self.current()
+        return min(1.0, (done + ((current.fraction or 0.0) if current else 0.0)) / total)
 
 
 def deployments(status):
@@ -912,15 +975,188 @@ class System(Step):
             k, n = int(match.group(1)), max(1, int(match.group(2)))
             done = k if line.endswith("done") else k - 1
             self.fraction = 0.05 + 0.85 * min(1.0, done / n)
+            self.bar = min(1.0, done / n)
             self.sub = f"Layer {k} of {n}" + (f" {SYM['dot']} {self.size} in all" if self.size else "")
         elif line.startswith("Staging deployment"):
             self.detail, self.fraction = "Setting it up for the next restart", max(self.fraction or 0, 0.92)
+            self.bar = None
         elif line.startswith("No upgrade available"):
-            self.detail = "Up to date"
+            self.detail, self.bar = "Up to date", None
 
 
 def flatpak_installed(app):
     return (FLATPAK_USER / "app" / app).is_dir() or (FLATPAK_SYSTEM / "app" / app).is_dir()
+
+
+# `flatpak update -y` writing to a pipe (flatpak 1.18) first lists the changes
+# it will make, one numbered row each with tab-separated columns (ID, branch,
+# op, remote, download), then prints "Updating 2/3…" as each change starts and
+# the same words with a bar, a percentage and a speed as it moves:
+#
+#    1.	   	org.mozilla.firefox	stable	u	flathub	< 89.4 MB
+#   Updating 1/3… ███████████████▍      77%  7.1 MB/s
+#
+# With --noninteractive it prints only "Updating app/org.mozilla.firefox/…".
+# Sizes and speeds have a no-break space before the unit.
+FLATPAK_CHANGE = re.compile(r"^(\d+)\.\s+(\S+)\s+(\S+)\s+([a-z])\b(.*)$")
+# A translation's download ends in "(partial)"; a change with nothing to fetch says "0 bytes".
+FLATPAK_SIZE = re.compile(r"(\d[\d.,]*\s(?:bytes|[kMGTP]B))(?:\s+\(partial\))?\s*$")
+FLATPAK_MOVE = re.compile(r"^(Installing|Updating|Uninstalling)(?: (\d+)/(\d+))?(?:…|\.\.\.)(.*)$")
+FLATPAK_PERCENT = re.compile(r"(\d+)%(?:\s+(\d[\d.,]*\s\S+/s))?")
+# curl --progress-bar, which the catalog turns on for monolith update: "#####   45.3%".
+CURL_PERCENT = re.compile(r"^#*\s*(\d{1,3}(?:\.\d+)?)%$")
+
+
+def download_percent(line):
+    """How far along a download is, from curl's or flatpak's progress line, or None."""
+    if match := CURL_PERCENT.match(line):
+        return min(1.0, float(match.group(1)) / 100)
+    if (move := FLATPAK_MOVE.match(line)) and (percent := FLATPAK_PERCENT.search(move.group(4))):
+        return int(percent.group(1)) / 100
+    return None
+
+
+def flatpak_rate(line):
+    """The speed in a flatpak progress line, such as "7.1 MB/s", or nothing."""
+    if (move := FLATPAK_MOVE.match(line)) and (percent := FLATPAK_PERCENT.search(move.group(4))):
+        rate = (percent.group(2) or "").replace("\xa0", " ")
+        return "" if rate.startswith("0 ") else rate
+    return ""
+
+
+def past_tense(verb):
+    """The catalog's own words for how an app ended (`past_tense` in the catalog)."""
+    return {"Install": "Installed", "Update": "Updated", "Repair": "Repaired",
+            "Adopt and update": "Adopted and updated", "Remove": "Removed"}.get(verb, "Done")
+
+
+# The locale variables flatpak reads your languages from (flatpak_get_locale_categories).
+LOCALE_CATEGORIES = ("LANG", "LC_ALL", "LC_MESSAGES", "LC_ADDRESS", "LC_COLLATE", "LC_CTYPE",
+                     "LC_IDENTIFICATION", "LC_MONETARY", "LC_MEASUREMENT", "LC_NAME", "LC_NUMERIC",
+                     "LC_PAPER", "LC_TELEPHONE", "LC_TIME")
+
+
+def flatpak_english(environ=os.environ):
+    """ENGLISH for Flatpak, and for the catalog, which runs Flatpak. Flatpak
+    picks which translations to download from your languages, and with none
+    at all it downloads every language. LANGUAGE carries them: GLib reads it
+    before LC_ALL, while glibc ignores it under C.UTF-8 (since 2.39), so
+    Flatpak's messages stay in English."""
+    if environ.get("LANGUAGE"):
+        return dict(ENGLISH, LANGUAGE=environ["LANGUAGE"])
+    names = []
+    for category in LOCALE_CATEGORIES:
+        # Each the way GLib finds it: LC_ALL, then the variable itself, then LANG.
+        name = environ.get("LC_ALL") or environ.get(category) or environ.get("LANG")
+        # Flatpak skips C (flatpak_get_lang_from_locale), and so does this.
+        if name and name not in names and re.split(r"[@_.]", name)[0] != "C":
+            names.append(name)
+    return dict(ENGLISH, LANGUAGE=":".join(names) or None)
+
+
+def flatpak_names(session):
+    """What Flatpak calls each installed app and runtime, by ID and branch."""
+    names = {}
+    for scope in ("--user", "--system"):
+        code, out = session.capture(["flatpak", "list", scope, "--columns=application,branch,name"], timeout=60)
+        for line in out.splitlines() if code == 0 else []:
+            ref, _, rest = line.partition("\t")
+            branch, _, name = rest.partition("\t")
+            if name.strip():
+                names[(ref, branch)] = name.strip()
+    return names
+
+
+def flatpak_label(ref, branch, names):
+    """A change's name in the list: an app's own name, or a runtime's with its
+    version. Flatpak calls every runtime's translations just "Translations"."""
+    if ref.endswith(".Locale"):
+        base = flatpak_label(ref.removesuffix(".Locale"), branch, names)
+        return ref if base == ref.removesuffix(".Locale") else f"{base} translations"
+    name = names.get((ref, branch))
+    if not name:
+        # A runtime's new version isn't installed yet, but the one it replaces is.
+        old = next((b for r, b in names if r == ref), None)
+        if old is None:
+            return ref
+        name = names[(ref, old)]
+        if old not in ("stable", "beta", "master") and version_in(old, name):
+            name = version_in(old, name).re.sub(lambda _: branch, name)
+    # Room is short: "GNOME Application Platform version 49" is "GNOME Platform 49".
+    name = re.sub(r" Application Platform(?: version)?(?=\s|$)", " Platform", name)
+    if branch in ("stable", "beta", "master") or version_in(branch, name):
+        return name
+    return f"{name} {branch}"
+
+
+def version_in(version, text):
+    """VERSION as a word of its own in TEXT, so 6.1 isn't found in 6.10."""
+    return re.search(rf"(?<![\w.]){re.escape(version)}(?![\w.])", text)
+
+
+class FlatpakChanges:
+    """Follows one `flatpak update -y`, adding each change to the step's items."""
+
+    DONE = {"i": "Installed", "u": "Updated", "r": "Removed"}
+    DOING = {"i": "Installing", "u": "Updating", "r": "Removing"}
+
+    def __init__(self, step, names):
+        self.step, self.names = step, names
+        self.changes = []   # (item, op), in flatpak's order
+        self.errors = []
+
+    def note(self, line, final):
+        if not final:
+            return
+        if row := FLATPAK_CHANGE.match(line):
+            _number, ref, branch, op, rest = row.groups()
+            size = FLATPAK_SIZE.search(rest)
+            size = size.group(1).replace("\xa0", " ") if size else ""
+            item = Item(flatpak_label(ref, branch, self.names), "" if size.startswith("0 ") else size)
+            self.step.items.append(item)
+            self.changes.append((item, op))
+        elif move := FLATPAK_MOVE.match(line):
+            index = int(move.group(2)) - 1 if move.group(2) else 0
+            if not 0 <= index < len(self.changes):
+                return
+            item, op = self.changes[index]
+            if item.state == "waiting":
+                for other, other_op in self.changes:
+                    if other.state == "running":
+                        other.finish(self.DONE.get(other_op, "Done"))
+                item.state, item.doing = "running", self.DOING.get(op, "Updating") + SYM["more"]
+            if item.state == "running" and (percent := download_percent(line)) is not None:
+                item.fraction, item.rate = percent, flatpak_rate(line)
+        elif line.startswith("Error:"):
+            # The last part of the message says why, as in "While pulling app/…
+            # from remote flathub: While fetching https://…: Server returned 404".
+            message = line.removeprefix("Error:").strip()
+            item = self.step.current()
+            if item:
+                item.finish("Failed", FAIL)
+                self.errors.append(f"{item.name}: {message.rsplit(': ', 1)[-1]}")
+            else:
+                self.errors.append(message)
+        elif line in ("Updates complete.", "Changes complete.", "Installation complete."):
+            self.close()
+
+    def close(self, finished=True):
+        """What's running is done. FINISHED: what never started was skipped."""
+        for item, op in self.changes:
+            if item.state == "running":
+                item.finish(self.DONE.get(op, "Done"))
+            elif item.state == "waiting" and finished:
+                item.finish("Skipped", WARN)
+
+    def progress(self):
+        if not self.changes:
+            return 0.0
+        done = sum(1 for item, _op in self.changes if item.state == "done")
+        running = sum(item.fraction or 0.0 for item, _op in self.changes if item.state == "running")
+        return min(1.0, (done + running) / len(self.changes))
+
+    def changed(self):
+        return sum(1 for item, op in self.changes if op in "iu" and item.state == "done" and item.kind == OK)
 
 
 class Flatpaks(Step):
@@ -933,37 +1169,45 @@ class Flatpaks(Step):
         return "flatpak update, yours and the system's"
 
     def run(self, session):
-        changed, removed, failed = [], [], []
-
-        def note(line, final, into):
-            match = re.match(r"(Updating|Installing|Uninstalling) (\S+)", line)
-            if match:
-                parts = match.group(2).split("/")
-                self.sub = f"{match.group(1)} {parts[1] if len(parts) > 1 else parts[0]}"
-                if final:
-                    into.append(match.group(2))
-
+        updated, removed, failed = 0, [], []
         for unit, user in (("flatpak-user-update.service", True), ("flatpak-system-update.service", False)):
             if not session.wait_for_unit(self, unit, "Waiting for the daily Flatpak update to finish", user):
                 return Result(STOPPED, "Stopped while waiting")
-        for n, (scope, label) in enumerate((("user", "Your Flatpaks"), ("system", "System Flatpaks"))):
-            self.detail, self.fraction = label, n * 0.45
-            code, lines = session.run(["flatpak", "update", f"--{scope}", "-y", "--noninteractive"],
-                                      parse=lambda line, final: note(line, final, changed))
-            if code != 0:
+        names = flatpak_names(session)
+        for n, (scope, label, whose) in enumerate((("user", "Your Flatpaks", "your"),
+                                                   ("system", "System Flatpaks", "the system's"))):
+            self.detail, self.fraction = f"Checking {whose} Flatpaks", max(self.fraction or 0.0, n * 0.45)
+            changes = FlatpakChanges(self, names)
+
+            def note(line, final, changes=changes, n=n):
+                changes.note(line, final)
+                self.fraction = max(self.fraction or 0.0, 0.45 * (n + changes.progress()))
+
+            # Without --noninteractive, flatpak says how far along each change is.
+            code, lines = session.run(["flatpak", "update", f"--{scope}", "-y"], parse=note, env=flatpak_english())
+            changes.close(finished=not session.abort)
+            updated += changes.changed()
+            if changes.errors:
+                failed += changes.errors
+            elif code != 0:
                 failed.append(f"{label}: {last_error(lines) or f'exit {code}'}")
             if session.abort:
                 break
         if not session.abort:
             # The daily system job removes unused system runtimes as root.
             self.detail, self.fraction = "Removing unused runtimes", 0.9
+
+            def gone(line, final):
+                if final and (match := re.match(r"Uninstalling (\S+)", line)):
+                    removed.append(match.group(1))
+
             code, lines = session.run(["flatpak", "uninstall", "--user", "--unused", "-y", "--noninteractive"],
-                                      parse=lambda line, final: note(line, final, removed))
+                                      parse=gone, env=flatpak_english())
             if code != 0:
                 failed.append(f"Removing unused runtimes: {last_error(lines) or f'exit {code}'}")
         if failed:
             return Result(FAIL, failed[0], failed[1:])
-        text = f"{len(set(changed))} updated" if changed else "Up to date"
+        text = f"{updated} updated" if updated else "Up to date"
         if removed:
             text += f", {len(set(removed))} unused removed"
         return Result(OK, text)
@@ -979,25 +1223,60 @@ class Apps(Step):
         return "monolith update APP, for each app from the catalog"
 
     def run(self, session):
-        changes, outcome, results = [], {}, False
+        changes, outcome, results, verbs = [], {}, False, {}
 
         def note(line, final):
             nonlocal results
-            if match := re.match(r"\((\d+)/(\d+)\) (.+?) — ", line):
-                self.detail = match.group(3)
-                self.fraction = (int(match.group(1)) - 1) / max(1, int(match.group(2)))
+            current = self.current()
+            if final and line.startswith("Plan: "):
+                # MONOLITH_PROGRESS=1 makes the catalog name its apps first.
+                for name in line.removeprefix("Plan: ").split(" | "):
+                    if name.strip():
+                        self.item(name.strip())
+            elif match := re.match(r"\((\d+)/(\d+)\) (.+?) — (.+)$", line):
+                self.total = max(self.total, int(match.group(2)))
+                item = self.item(match.group(3))
+                verbs[item.name] = match.group(4)
+                self.start_item(item)
+                item.doing = {"Install": "Installing", "Repair": "Repairing", "Adopt and update": "Adopting",
+                              }.get(match.group(4), "Checking for updates") + SYM["more"]
+                self.detail = item.name
+            elif current and (percent := download_percent(line)) is not None:
+                current.fraction = percent
+                current.rate = flatpak_rate(line)
             elif not final:
                 return
+            elif current and line.startswith("==> "):
+                current.doing = line.removeprefix("==> ")
             elif match := re.match(r"Updated (.+?) from (\S+) to (\S+) at ", line):
                 changes.append(f"{match.group(1)} {match.group(2)} {SYM['to']} {match.group(3)}")
+                self.item(match.group(1)).finish(f"{match.group(2)} {SYM['to']} {match.group(3)}")
+            elif current and line.startswith(current.name + " ") and line.endswith(" is already up to date."):
+                current.finish("Up to date")
+            elif current and line == f"Installed {current.name}.":
+                current.finish(past_tense(verbs.get(current.name, "")))
+            elif current and line.startswith("Error: "):
+                current.finish(line.removeprefix("Error: "), FAIL)
             elif line == "Results:":
                 results = True
             elif results and (match := re.match(
                     r"(.+?)\s+(Up to date|Updated|Installed|Repaired|Adopted and updated|Done|"
                     r"Failed \(exit \d+\)|Cancelled|Not run|Skipped by user)$", line)):
                 outcome[match.group(1)] = match.group(2)
+            if self.items:
+                self.fraction = self.items_done()
 
-        code, lines = session.run([SOFTWARE, "update"], parse=note)
+        code, lines = session.run([SOFTWARE, "update"], parse=note, env=dict(flatpak_english(), MONOLITH_PROGRESS="1"))
+        for item in self.items:
+            state = outcome.get(item.name, "")
+            if state.startswith("Failed") or state == "Skipped by user":
+                item.finish(item.text if item.kind == FAIL else state, FAIL)
+            elif state in ("Cancelled", "Not run"):
+                item.finish(state, STOPPED)
+            elif state:
+                item.finish(item.text or state)
+            elif item.state == "running":
+                item.finish(item.text or "Done")
         failures = [name for name, state in outcome.items() if state.startswith("Failed") or state == "Skipped by user"]
         if code != 0 or failures:
             if failures:
@@ -1013,6 +1292,7 @@ class Apps(Step):
 
 class Proton(Step):
     id, title, weight, expect = "proton", "Proton tools", 1, 30
+    counted = False  # ProtonPlus names its tools one at a time
 
     def __init__(self):
         super().__init__()
@@ -1032,15 +1312,37 @@ class Proton(Step):
         updated, errors = [], []
 
         def note(line, final):
-            if match := re.match(r"Updating (.+?)\.\.\.$", line):
-                self.detail = match.group(1)
-            elif final and (match := re.match(r"Successfully updated (.+)$", line)):
+            current = self.current()
+            if match := re.match(r"(?:Updating|Installing) (.+?)\.\.\.(.*)$", line):
+                name, rest = match.groups()
+                if percent := re.search(r"(\d+)%", rest):
+                    # ProtonPlus 0.6.8: "Updating GE-Proton Latest... 45% (7.1 MB/s) [ETA: 3s]"
+                    if current:
+                        current.fraction = int(percent.group(1)) / 100
+                        rate = re.search(r"\(([^()]*/s)\)", rest)
+                        current.rate = rate.group(1) if rate else ""
+                elif not rest.strip() and name != "all runners" and not name.startswith("runners for "):
+                    self.detail = "Updating ProtonPlus's tools"
+                    self.start_item(self.item(name))
+            elif not final:
+                return
+            elif match := re.match(r"Successfully updated (.+)$", line):
                 updated.append(match.group(1))
-            elif final and line.startswith("Error:"):
+                self.item(match.group(1)).finish("Updated")
+            elif match := re.match(r"Already up to date: (.+)$", line):
+                self.item(match.group(1)).finish("Up to date")
+            elif line.startswith("Error:"):
                 errors.append(line.removeprefix("Error:").strip())
+                if match := re.match(r"Error: Failed to update (.+?): (.+)$", line):
+                    self.item(match.group(1)).finish(match.group(2), WARN)
+                elif current:
+                    current.finish(errors[-1], WARN)
 
         self.detail = "Checking ProtonPlus's tools"
-        code, lines = session.run(self.argv, parse=note)
+        code, lines = session.run(self.argv, parse=note, env=ENGLISH)
+        for item in self.items:
+            if item.state == "running":
+                item.finish("Done")
         if code != 0 or errors:
             # GitHub's rate limit often trips these, so it only gets a warning.
             return Result(WARN, f"Couldn't update: {errors[-1] if errors else last_error(lines)}")
@@ -1082,11 +1384,12 @@ class AppImages(Step):
 
         def note(line, final):
             if match := re.match(r"Status: (\d+)%", line):
-                self.sub = f"Downloading, {match.group(1)}%"
+                self.bar, self.sub = int(match.group(1)) / 100, ""
             elif line.startswith("Downloading update"):
-                self.detail = "Downloading an update"
+                self.detail, self.bar = "Downloading an update", 0.0
             elif final and (match := re.match(r"(.+) updated successfully$", line)):
                 updated.append(Path(match.group(1)).name)
+                self.bar = None
             elif final and "was skipped because the application is running" in line:
                 skipped.append(line)
 
@@ -1102,6 +1405,7 @@ class AppImages(Step):
 
 class Distrobox(Step):
     id, title, weight, expect = "distrobox", "Distrobox", 2, 90
+    done_text = "Upgraded"
 
     def __init__(self):
         super().__init__()
@@ -1120,19 +1424,29 @@ class Distrobox(Step):
 
     def run(self, session):
         seen = []
+        for box in self.boxes:
+            self.item(box)
 
         def note(line, final):
             if match := re.match(r"Upgrading (.+?)\.\.\.$", line):
                 if final:
                     seen.append(match.group(1))
                 self.detail = match.group(1)
+                self.start_item(self.item(match.group(1)))
+                # Its row shows the container's own output from here on.
+                self.sub = "Upgrading" + SYM["more"]
                 self.fraction = (len(seen) - 1) / max(1, len(self.boxes))
 
         code, lines = session.run(["distrobox", "upgrade", "--all"], parse=note)
         if code != 0:
             error = last_error(lines) or f"exit {code}"
+            if current := self.current():
+                current.finish("Failed", FAIL)
             where = f"{seen[-1]}: " if seen and seen[-1] not in error else ""
             return Result(FAIL, where + error)
+        for item in self.items:
+            if item.state != "done":
+                item.finish(self.done_text)
         return Result(OK, f"{plural(len(seen) or len(self.boxes), 'container')} upgraded")
 
 
@@ -1382,6 +1696,43 @@ def mark(kind, paint):
     return symbol.get(kind, paint.dim + SYM["stop"]) + paint.reset
 
 
+def item_rows(items, unlisted, room):
+    """Which of a step's items fit in ROOM rows, as ("item", item) rows plus
+    ("done", n) and ("more", n) rows that count the ones left out. All of them
+    when they fit; otherwise the one before the current item, the current one
+    and those after it. UNLISTED counts items the step can't name yet."""
+    rows = [("item", item) for item in items] + ([("more", unlisted)] if unlisted else [])
+    if room <= 0:
+        return []
+    if len(rows) <= room or not items:
+        return rows[:room]
+    n = len(items)
+    focus = next((i for i, item in enumerate(items) if item.state != "done"), n - 1)
+    if room < 3:
+        left = n - focus - 1 + unlisted
+        return [("item", items[focus])] + ([("more", left)] if room == 2 and left else [])
+    start = max(0, focus - 1)
+    while True:
+        top = 1 if start else 0
+        end = min(n, start + room - top)
+        if n - end + unlisted:
+            end = min(n, start + room - top - 1)
+        if end <= focus:
+            # No room for the one before the current item.
+            start = focus
+            continue
+        # Spare rows at the end show more of what's done instead.
+        if start and end == n and not unlisted and end - start < room - top:
+            start -= 1
+            continue
+        break
+    out = [("done", start)] if start else []
+    out += [("item", item) for item in items[start:end]]
+    if n - end + unlisted:
+        out.append(("more", n - end + unlisted))
+    return out
+
+
 def headline(session, paint):
     failed = sum(1 for s in session.found if s.result and s.result.kind == FAIL)
     if session.stop or session.abort or session.signal:
@@ -1421,7 +1772,9 @@ class Panel:
     def name_width(self):
         return max([10] + [min(15, width(s.title)) + 2 for s in self.session.found])
 
-    def block(self, step, w, now, final):
+    def block(self, step, w, now, final, rows=ITEM_ROWS):
+        """A step's lines. A running step that can name what it updates opens up
+        to show them, at most ROWS of them, and folds back to one line when done."""
         p, namew = self.paint, self.name_width()
         body = max(4, w - 4 - namew - 6)
         title = fit(step.title, namew - 2)
@@ -1432,14 +1785,83 @@ class Panel:
                 text = p.dim + text + p.reset
             took = clock(step.ended - step.started) if step.started and step.ended else ""
             head = pad(f"{mark(r.kind, p)}   {pad(title, namew)}{text}", w - 6) + f"{p.dim}{took:>6}{p.reset}"
+            if step.items and self.motion and not final and step.ended and now - step.ended < FOLD:
+                # Open a moment longer, so the last item's tick shows before it folds.
+                return [head] + self.item_lines(step, w, rows)
             return [head] + [f"    {p.dim}{SYM['sub']} {fit(more, w - 6)}{p.reset}" for more in r.more]
         if step.state == "running":
             spin = spinner(now - self.t0, self.motion and not final)
+            if step.items and not final:
+                return [self.open_head(step, w, now, spin)] + self.item_lines(step, w, rows)
             lines = [f"{p.accent}{spin}{p.reset} {p.bold}{pad(title, namew)}{p.reset}{fit(step.detail, body + 6)}"]
-            if step.sub and not final:
+            if final:
+                return lines
+            if step.bar is not None:
+                lines.append(f"    {p.dim}{SYM['sub']}{p.reset} {self.meter(step.bar, step.sub, w - 6)}")
+            elif step.sub:
                 lines.append(f"    {p.dim}{SYM['sub']} {fit(step.sub, w - 6)}{p.reset}")
             return lines
         return [f"{p.dim}{SYM['wait']}   {title}{p.reset}"]
+
+    def open_head(self, step, w, now, spin):
+        """An open step's own line: which item it's on, and how long it's taken."""
+        p, namew = self.paint, self.name_width()
+        items, current = step.items, step.current()
+        total = max(step.total, len(items))
+        if current and step.counted:
+            where = f"{items.index(current) + 1} of {total}"
+        else:
+            where = step.detail or f"{sum(1 for item in items if item.state == 'done')} of {total}"
+        took = clock(now - (step.started or now))
+        line = (f"{p.accent}{spin}{p.reset} {p.bold}{pad(fit(step.title, namew - 2), namew)}{p.reset}"
+                f"{p.dim}{fit(where, max(4, w - namew - 10))}{p.reset}")
+        return pad(line, w - 6) + f"{p.dim}{took:>6}{p.reset}"
+
+    def item_lines(self, step, w, rows):
+        if rows <= 0:
+            return []
+        # Item names line up with the steps' words when they're short enough.
+        longest = max(width(item.name) for item in step.items) + 2
+        itemw = max(self.name_width() - 2, min(longest, (w - 6) // 2))
+        return [self.item_line(kind, value, step, w, itemw)
+                for kind, value in item_rows(step.items, max(0, step.total - len(step.items)), rows)]
+
+    def item_line(self, kind, value, step, w, itemw):
+        p = self.paint
+        if kind == "done":
+            return f"    {p.good}{SYM['ok']}{p.reset} {p.dim}{value} done{p.reset}"
+        if kind == "more":
+            return f"    {p.dim}{SYM['wait']} {value} more{p.reset}"
+        item, room = value, max(0, w - 6 - itemw)
+        name = pad(fit(item.name, itemw - 1), itemw)
+        if item.state == "done":
+            text = fit(item.text, room)
+            if item.kind in (OK, STOPPED, NOT_RUN):
+                text = p.dim + text + p.reset
+            return f"    {mark(item.kind, p)} {name}{text}"
+        if item.state == "running":
+            if item.fraction is not None:
+                text = self.meter(item.fraction, item.rate, room)
+            else:
+                text = f"{p.dim}{fit(item.doing or step.sub, room)}{p.reset}"
+            return f"    {p.accent}{SYM['now']}{p.reset} {p.bold}{name}{p.reset}{text}"
+        return f"    {p.dim}{SYM['wait']} {name}{fit(item.size, room)}{p.reset}"
+
+    def meter(self, fraction, after, room):
+        """A bar, its percentage, then AFTER dimmed, in at most ROOM columns."""
+        p = self.paint
+        fraction = max(0.0, min(1.0, fraction))
+        percent = f"{int(fraction * 100):3d}%"
+        size = min(20, room - len(percent) - 1)
+        if after and size > 8:
+            size = max(8, min(size, room - len(percent) - 3 - width(after)))
+        if size < 4:
+            return f"{p.bold}{fit(percent.strip(), room)}{p.reset}"
+        text = f"{progress_bar(fraction, size, p)} {p.bold}{percent}{p.reset}"
+        left = room - size - len(percent) - 3
+        if after and left >= 4:
+            text += f"  {p.dim}{fit(after, left)}{p.reset}"
+        return text
 
     def steps(self, w, now, room, final):
         found, p = self.session.found, self.paint
@@ -1450,6 +1872,12 @@ class Panel:
         blocks = [b[:1] if step.state == "done" else b for step, b in zip(found, blocks)]
         if sum(map(len, blocks)) <= room:
             return [line for block in blocks for line in block]
+        # ...then show fewer of the running step's items...
+        for rows in (3, 1):
+            blocks = [self.block(step, w, now, final, rows) if step.state == "running" else b
+                      for step, b in zip(found, blocks)]
+            if sum(map(len, blocks)) <= room:
+                return [line for block in blocks for line in block]
         # ...then show the steps around the one running and count the rest.
         n = len(blocks)
         focus = next((i for i, step in enumerate(found) if step.state != "done"), n - 1)
@@ -1627,6 +2055,12 @@ class Screen:
 
     def end(self, step):
         self.dirty = True
+        if step.items and self.look.motion and self.active:
+            # The step stays open a moment, so its last item's tick shows.
+            until = time.monotonic() + FOLD
+            while time.monotonic() < until and not (self.session.abort or self.session.signal):
+                time.sleep(1 / FPS)
+                self.tick()
 
     def notice(self, text):
         self.dirty = True

@@ -64,6 +64,7 @@ tar -czf "$fixtures/bad-archive/superfile-linux-v2.0.0-amd64.tar.gz" -C "$fixtur
 cat >"$mock_bin/curl" <<'MOCK'
 #!/usr/bin/env bash
 set -euo pipefail
+printf '%s\n' "$*" >>"$MOCK_CURL_ARGS_LOG"
 output= url=
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -369,6 +370,7 @@ monolith_env() {
         XDG_RUNTIME_DIR="$case_root/runtime" TMPDIR="$case_root/tmp"
         MOCK_FIXTURES="$fixtures" MOCK_VERSION="$release_version"
         MOCK_CURL_LOG="$case_root/curl.log" MOCK_CURL_FAIL_MATCH="$fail_download_match"
+        MOCK_CURL_ARGS_LOG="$case_root/curl-args.log"
         MOCK_CORRUPT_MATCH="$corrupt_match" MOCK_DIGEST="$digest_mode" MOCK_SUMS="$sums_mode"
         MOCK_BAD_ARCHIVE="$bad_archive" MOCK_INSTALLER_FAIL="$installer_fail"
         MOCK_BLOCK_FILE="$block_file"
@@ -1715,6 +1717,39 @@ test_plezy_lifecycle() {
 # description, one category, a way to install it, an entry for what removal
 # keeps, an ID in monolith help, a row in monolith list, and a place in
 # docs/software.md. A new app that misses one fails here.
+# monolith update runs the catalog with MONOLITH_PROGRESS=1 to follow along:
+# the apps are named first, curl draws its progress bar into the pipe, and
+# Flatpak runs without --noninteractive so it prints how far along it is.
+# Without the variable, nothing changes.
+test_progress_for_monolith_update() {
+    run_monolith install prismlauncher
+    run_monolith install tea
+    flatpak_state '{"flathub": {"org.prismlauncher.PrismLauncher": "11.2.0"}}'
+    forget_flatpak_calls
+    : >"$case_root/curl-args.log"
+    run_monolith update >"$case_root/plain.log" 2>&1
+    if grep -q '^Plan:' "$case_root/plain.log"; then fail 'listed the apps without MONOLITH_PROGRESS'; fi
+    if grep -q -- '--progress-bar' "$case_root/curl-args.log"; then fail 'curl drew its bar into a log'; fi
+    assert_flatpak_called "update --user --noninteractive --assumeyes $prism_id"
+
+    release_version=v2.0.0
+    flatpak_state '{"flathub": {"org.prismlauncher.PrismLauncher": "11.3.0"}}'
+    forget_flatpak_calls
+    : >"$case_root/curl-args.log"
+    extra_env=(MONOLITH_PROGRESS=1)
+    run_monolith update >"$case_root/progress.log" 2>&1
+    extra_env=()
+    grep -Fxq 'Plan: Tea | Prism Launcher' "$case_root/progress.log" ||
+        fail "the apps weren't listed first: $(head -n 3 "$case_root/progress.log")"
+    grep -q -- '--progress-bar' "$case_root/curl-args.log" || fail "curl didn't show its progress"
+    assert_flatpak_called "update --user --assumeyes $prism_id"
+    grep -Eq '^  Tea +Updated' "$case_root/progress.log" || fail 'Tea was not updated'
+    grep -Eq '^  Prism Launcher +Updated' "$case_root/progress.log" || fail 'Prism Launcher was not updated'
+    grep -qx 'version=11.3.0' "$state_root/prismlauncher.managed" || fail 'Prism Launcher marker did not update'
+    assert_flatpak_modelled
+    assert_no_temp_leaks
+}
+
 test_catalog_entries_are_complete() {
     local tool kind name category id kept description arrays help
     local fallback='settings, authentication, sessions, and project files'
@@ -1878,7 +1913,7 @@ all_tests=(omp_lifecycle omp_unmanaged_launcher omp_replaced_launcher omp_checks
     overlapping_mutation_is_locked interrupt_rolls_back_and_cancels_batch terminate_cleans_staging
     prism_lifecycle prism_adopts_user_copy prism_leaves_system_copy_alone prism_repair_and_failures
     prism_with_broken_flatpak moonfin_lifecycle moonfin_refuses_unverified_bundles moonfin_runtime_sources
-    moonfin_existing_copies photocraft_lifecycle fluxer_channels
+    moonfin_existing_copies photocraft_lifecycle fluxer_channels progress_for_monolith_update
     sunshine_lifecycle sunshine_without_password sunshine_without_service
     plezy_lifecycle catalog_entries_are_complete "${app_failure_tests[@]}")
 # Test names on the command line run only those, such as app_failures:plezy.
