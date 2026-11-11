@@ -1212,7 +1212,9 @@ WowUp-CF release policy:
     2.24.0 or newer stable exists, then moves permanently to stable releases.
   - WowUp-CF's Application Release Channel is set to Stable; addon release
     settings are unchanged.
-  - Monolith, not Gear Lever, selects updates (monolith update wowup-cf).
+  - monolith update wowup-cf updates it. From 2.25.5 on its AppImage names
+    WowUp-CF's own stable releases as its update source, so Gear Lever can
+    update it from there too. Any other source set in Gear Lever is removed.
 EOF
             ;;
         r2modman)

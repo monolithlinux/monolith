@@ -39,7 +39,8 @@ developer tools such as rustup, npm and Claude Code. It also checks for firmware
 updates. Each step shows its progress, and one that fails doesn't stop the rest.
 The step that's running lists what it's updating, such as each Flatpak or app,
 with a bar for each download, and folds back to one line when it's done.
-At the end you get a short summary of what changed.
+At the end you get a short summary of what changed. An app from the catalog that
+couldn't update has its reason under the step.
 
 You don't need a password to update. If there's a new build of Monolith, it asks
 whether to restart now. The answer is no unless you type `y`, and the new build

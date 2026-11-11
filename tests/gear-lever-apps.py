@@ -261,6 +261,7 @@ def default_state(installed=None):
                deployment whose files/ directory holds /app.
     home: GLib home directory Gear Lever sees (default: the caller's $HOME).
     running: {AppImage path or "*": true|false|null} reported in the JSON `running` field.
+    updates: {AppImage path: file} what the AppImage's update source has now; without one it has no update.
     faults: {"list": "fail"|"bad-json"|"schema"|"hang", "integrate": "fail"|"partial"|"crash"|"corrupt"|"block",
              "remove": "fail"|"partial", "set-update-source": "fail", "app-install": "fail",
              "app-update": "fail", "app-uninstall": "fail"|"partial", "bundle-install": "fail",
@@ -443,6 +444,54 @@ class GearLeverModel:
             return "StaticFileUpdater", True
         return None, False
 
+    def write_launcher(self, desktop, embedded_text, title, icon, destination, exec_arguments, environment):
+        """install_file(): the AppImage's own launcher, started from DESTINATION."""
+        embedded = desktop_values(embedded_text) or {}
+        version = embedded.get("X-AppImage-Version", "")
+        exec_line = " ".join(["env " + " ".join(environment), shlex.quote(destination), *exec_arguments])
+        entry = dict(embedded, Name=title, Icon=icon, TryExec=destination, Exec=exec_line)
+        if version:
+            entry["X-AppImage-Version"] = version
+        entry["X-AppImage-Name"] = embedded["Name"]
+        # Each action keeps its names, but takes the AppImage's icon and runs the AppImage with the
+        # action's arguments, whatever program the action ran.
+        actions = {action: [(key, value) for key, value in values if key == "Name" or key.startswith("Name[")]
+                   + [("Icon", icon), ("Exec", shlex.join(
+                       [destination, *terminal_arguments(dict(values).get("Exec", ""))[2]]))]
+                   for action, values in desktop_actions(embedded_text).items()}
+        with open(desktop, "w+") as file:
+            file.write(launcher_text(entry, actions))
+
+    def replace(self, app, source):
+        """AppImageProvider.update_from_url(): install_file() with AppImageUpdateLogic.REPLACE keeps the
+        AppImage's and the launcher's file names and writes the launcher again from the new AppImage's
+        own. Exec arguments that differ from the old default, and the environment, are kept."""
+        sections = appimage_sections(source)
+        embedded_text = sections.get(".monolith.desktop", b"").decode()
+        embedded = desktop_values(embedded_text) or {}
+        destination, desktop = app["path"], app["desktop"]
+        prefix = os.path.splitext(os.path.basename(desktop))[0]
+        environment, _, arguments = terminal_arguments((desktop_entry(desktop) or {}).get("Exec", ""))
+        section = f"app.{self.digest(destination)}"
+        config = dict(self.parser[section]) if self.parser.has_section(section) else {}
+        shutil.copyfile(source, destination)
+        os.chmod(destination, 0o755)
+        icon = "applications-other"
+        if ".monolith.diricon" in sections:
+            os.makedirs(os.path.join(self.folder, ".icons"), exist_ok=True)
+            icon = os.path.join(self.folder, ".icons", prefix)  # .DirIcon has no extension
+            with open(icon, "wb") as file:
+                file.write(sections[".monolith.diricon"])
+        _, _, defaults = terminal_arguments(embedded.get("Exec", ""))
+        if not arguments or " ".join(arguments) == config.get("default_exec_arguments", ""):
+            arguments = defaults
+        if not any(variable.startswith("DESKTOPINTEGRATION=") for variable in environment):
+            environment.append("DESKTOPINTEGRATION=1")
+        self.write_launcher(desktop, embedded_text, embedded["Name"], icon, destination, arguments, environment)
+        # update_from_url() never refreshes the element, so it keeps the downloaded file's name.
+        downloaded = re.sub(r"\.appimage$", "", os.path.basename(source), count=1, flags=re.IGNORECASE)
+        self.set_app_config(destination, downloaded, dict(config, default_exec_arguments=" ".join(defaults)))
+
     # Cli
     def file_from_args(self, arguments):
         for argument in arguments:
@@ -454,7 +503,8 @@ class GearLeverModel:
         if "--help" in arguments:
             return None
         action = {"--list-installed": self.list_installed, "--integrate": self.integrate,
-                  "--remove": self.remove, "--set-update-source": self.set_update_source}.get(arguments[0])
+                  "--remove": self.remove, "--set-update-source": self.set_update_source,
+                  "--update": self.update}.get(arguments[0])
         return action(arguments) if action else None
 
     def list_installed(self, arguments):
@@ -532,19 +582,8 @@ class GearLeverModel:
             desktop = f"{os.path.join(self.apps, prefix)}.desktop".replace(" ", "_")
             _, _, exec_arguments = terminal_arguments(embedded.get("Exec", ""))
             title = f"{name} ({version or hashlib.md5(Path(source).read_bytes()).hexdigest()[:6]})" if keep else name
-            exec_line = " ".join(["env DESKTOPINTEGRATION=1", shlex.quote(destination), *exec_arguments])
-            entry = dict(embedded, Name=title, Icon=icon, TryExec=destination, Exec=exec_line)
-            if version:
-                entry["X-AppImage-Version"] = version
-            entry["X-AppImage-Name"] = name
-            # Each action keeps its names, but takes the AppImage's icon and runs the AppImage with the
-            # action's arguments, whatever program the action ran.
-            actions = {action: [(key, value) for key, value in values if key == "Name" or key.startswith("Name[")]
-                       + [("Icon", icon), ("Exec", shlex.join(
-                           [destination, *terminal_arguments(dict(values).get("Exec", ""))[2]]))]
-                       for action, values in desktop_actions(embedded_text).items()}
-            with open(desktop, "w+") as file:
-                file.write(launcher_text(entry, actions))
+            self.write_launcher(desktop, embedded_text, title, icon, destination, exec_arguments,
+                                ["DESKTOPINTEGRATION=1"])
             self.set_app_config(destination, name, {"default_exec_arguments": " ".join(exec_arguments)})
         except OSError as error:
             return 1, "", f"Traceback (most recent call last):\n{type(error).__name__}: {error}\n"
@@ -586,6 +625,48 @@ class GearLeverModel:
         self.delete_app_config(path)
         self.delete_update_section(path)
         return 0, f"{path} was removed sucessfully\n", ""
+
+    def update(self, arguments):
+        """Cli.update(): each AppImage, or the one named, is replaced by what its update source has."""
+        if "--yes" not in arguments and "-y" not in arguments:
+            return None
+        served = self.state.get("updates", {})
+        out = ""
+        if "--all" in arguments:
+            apps = [app for app in self.installed() if self.manager(app["path"])[0] and app["path"] in served
+                    and not same_bytes(app["path"], served[app["path"]])]
+            if not apps:
+                return 0, "No updates available\n", ""
+            rows = []
+            for app in apps:
+                manager, embedded = self.manager(app["path"])
+                rows.append([app["name"], f"[Update available, {manager}{'|embedded' if embedded else ''}]",
+                             app["path"]])
+            widths = [max(len(row[index]) for row in rows) + 3 for index in range(3)]
+            out = "".join("".join(f"{cell:<{width}}" for cell, width in zip(row, widths)) + "\n" for row in rows)
+        else:
+            source = self.file_from_args(arguments[1:])
+            if source is None:
+                return 1, "Error: please specify a valid AppImage file\n", ""
+            apps = [app for app in self.installed() if app["path"] == source]
+            if not apps:
+                return 1, "Error: AppImage not integrated\n", ""
+        running = self.state.get("running", {})
+        for app in apps:
+            if running.get(app["path"], running.get("*", False)) and "--force" not in arguments:
+                out += (f"{app['path']} was skipped because the application is running; use --force to skip "
+                        "this check.\n")
+                continue
+            manager, _ = self.manager(app["path"])
+            if manager is None:
+                return 0, out + "No update method was found for this AppImage\n", ""
+            out += f"Downloading update from: {manager}\n"
+            if app["path"] not in served:
+                return 1, out, ("Traceback (most recent call last):\n"
+                                f"Exception: Missing target_asset for {manager} instance\n")
+            self.replace(app, served[app["path"]])
+            out += f"\rStatus: 100%\n{app['path']} updated successfully\n"
+        return 0, out, ""
 
     def set_update_source(self, arguments):
         manager = None
@@ -1123,9 +1204,17 @@ class Result:
 
 
 RUNNING = "Close WowUp-CF and retry this action."
+# What WowUp-CF's AppImage embeds from 2.25.5 on: the newest stable release in its own repository.
+OWN_RELEASES = b"gh-releases-zsync|WowUp|WowUp.CF|latest|WowUp-CF-*.AppImage.zsync"
+# Embedded update sources that would take Gear Lever somewhere else.
 EMBEDDED = {
-    "GitHub zsync": b"gh-releases-zsync|WowUp|WowUp.CF|latest|WowUp-CF-*.AppImage.zsync",
-    "static zsync": b"zsync|https://example.invalid/WowUp-CF.AppImage.zsync",
+    "a static address": b"zsync|https://example.invalid/WowUp-CF.AppImage.zsync",
+    "the regular WowUp edition": b"gh-releases-zsync|WowUp|WowUp|latest|WowUp-*.AppImage.zsync",
+    "prereleases": b"gh-releases-zsync|WowUp|WowUp.CF|latest-pre|WowUp-CF-*.AppImage.zsync",
+    "every release": b"gh-releases-zsync|WowUp|WowUp.CF|latest-all|WowUp-CF-*.AppImage.zsync",
+    "one tag": b"gh-releases-zsync|WowUp|WowUp.CF|v2.25.5|WowUp-CF-*.AppImage.zsync",
+    "another file": b"gh-releases-zsync|WowUp|WowUp.CF|latest|WowUp-CF-*-arm64.AppImage.zsync",
+    "more fields": b"gh-releases-zsync|WowUp|WowUp.CF|latest|WowUp-CF-*.AppImage.zsync|other.zsync",
 }
 
 
@@ -2052,32 +2141,180 @@ class WowUpCfTests(GearLeverAppCase):
         self.assertEqual([(entry["manager"], entry["embedded_source"]) for entry in self.entries()],
                          [(None, False)])
 
-    def test_embedded_update_source_blocks_publication(self):
+    def sources(self):
+        """What Gear Lever follows for each WowUp-CF integration: (update manager, whether it's embedded)."""
+        return [(entry["manager"], entry["embedded_source"]) for entry in self.entries()]
+
+    def publish_embedded(self, version, update_info, *older):
+        """Publish VERSION with this update information embedded, beside these older releases."""
+        data = make_appimage(version, update_info=update_info)
+        self.web.routes.clear()
+        self.web.publish([release(item) for item in older] + [release(version, data=data)])
+        self.web.asset(version, data)
+        return data
+
+    def test_which_embedded_update_sources_are_its_own_stable_releases(self):
+        helper = self.helper
+
+        def own(fixture, source, version):
+            app = helper.APPS[fixture.id]
+            [found] = helper.parse_releases(app, [release(version, app=fixture)])
+            return helper.own_stable_releases(app, source, found)
+
+        source = OWN_RELEASES.decode()
+        self.assertTrue(own(WOWUP_CF, source, "2.25.5"))
+        # GitHub ignores case in owner and repository names.
+        self.assertTrue(own(WOWUP_CF, source.replace("WowUp|WowUp.CF", "wowup|wowup.cf"), "2.25.5"))
+        # Gear Lever would replace a beta with the newest stable release, which can be an older version.
+        self.assertFalse(own(WOWUP_CF, source, "2.24.0-beta.6"))
         for label, update_info in EMBEDDED.items():
             with self.subTest(label):
-                data = make_appimage("2.24.0-beta.6", update_info=update_info)
-                self.web.routes.clear()
-                self.web.publish([release("2.24.0-beta.6", data=data)])
-                self.web.asset("2.24.0-beta.6", data)
+                self.assertFalse(own(WOWUP_CF, update_info.decode(), "2.25.5"))
+        self.assertTrue(own(R2MODMAN, "gh-releases-zsync|ebkr|r2modmanPlus|latest|r2modman-*.AppImage.zsync", "3.2.20"))
+        self.assertTrue(own(SIDRA, "gh-releases-zsync|wimpysworld|sidra|latest|Sidra-linux-x86_64.AppImage.zsync",
+                            "1.1.2"))
+        self.assertFalse(own(R2MODMAN, source, "3.2.20"))
+
+    def test_embedded_update_source_for_its_own_stable_releases_stays(self):
+        """WowUp-CF 2.25.5 began naming its own stable releases for AppImage updaters such as Gear Lever."""
+        self.managed_install("2.25.4")
+        newer = self.publish_embedded("2.25.5", OWN_RELEASES, "2.25.4")
+        result = self.ok(self.update())
+        self.assertIn("Updated WowUp-CF from 2.25.4 to 2.25.5", result.stdout)
+        self.assertEqual(self.cf.read_bytes(), newer)
+        self.assertEqual(self.sources(), [("GithubUpdater", True)])
+        self.assertEqual((self.read_receipt()["version"], self.read_receipt()["channel"]), ("2.25.5", "stable"))
+        # Nothing is left to change, so the next update leaves it alone, even while WowUp-CF is open.
+        installed = self.snapshot()
+        self.flatpak.update(running={str(self.cf): True})
+        result = self.update()
+        self.assertEqual((result.code, result.stdout, result.stderr),
+                         (self.helper.UP_TO_DATE, "WowUp-CF 2.25.5 is already up to date.\n", ""))
+        self.assertEqual(self.snapshot(), installed)
+        self.flatpak.update(running={})
+        # A source someone set in Gear Lever is still removed, and Gear Lever is back on the embedded one.
+        self.assertEqual(self.flatpak.gear_lever(
+            "--set-update-source", str(self.cf), "--manager", "GithubUpdater", "repo=WowUp/WowUp",
+            "repo_filename=WowUp-*.AppImage", "allow_prereleases=true")[0], 0)
+        self.assertEqual(self.sources(), [("GithubUpdater", False)])
+        result = self.ok(self.update())
+        self.assertIn("Removed Gear Lever's custom update source for WowUp-CF", result.stdout)
+        self.assertEqual(self.sources(), [("GithubUpdater", True)])
+        self.assertEqual(self.snapshot(), installed)
+        self.assertEqual(self.update().code, self.helper.UP_TO_DATE)
+        self.assertEqual(self.web.requests.count(download_url("2.25.5")), 1)
+
+    def test_install_adoption_and_self_update_with_its_own_embedded_update_source(self):
+        newer = self.publish_embedded("2.25.5", OWN_RELEASES, "2.25.4")
+        result = self.ok(self.install())
+        self.assertIn("Installed WowUp-CF 2.25.5 with Gear Lever", result.stdout)
+        self.assertEqual((self.cf.read_bytes(), self.sources()), (newer, [("GithubUpdater", True)]))
+        self.assertEqual(self.update().code, self.helper.UP_TO_DATE)
+        # The same build integrated by hand in Gear Lever is adopted as it is.
+        self.ok(self.remove())
+        self.integrate(newer)
+        result = self.ok(self.install())
+        self.assertIn("Monolith now manages this existing Gear Lever integration", result.stdout)
+        self.assertEqual((self.cf.read_bytes(), self.sources()), (newer, [("GithubUpdater", True)]))
+        self.assertEqual(self.update().code, self.helper.UP_TO_DATE)
+        self.assertEqual(self.web.requests.count(download_url("2.25.5")), 1)
+        # WowUp-CF, or Gear Lever through that source, replaced an older copy with this release: Monolith
+        # records it and downloads nothing.
+        self.ok(self.remove())
+        self.managed_install("2.25.4")
+        self.publish_embedded("2.25.5", OWN_RELEASES, "2.25.4")
+        del self.web.routes[download_url("2.25.5")]
+        self.cf.write_bytes(newer)
+        self.ok(self.update())
+        self.assertEqual(self.read_receipt()["version"], "2.25.5")
+        self.assertEqual(desktop_entry(self.cf_desktop)["X-AppImage-Version"], "2.25.5")
+        self.assertEqual(self.sources(), [("GithubUpdater", True)])
+        self.assertEqual(self.update().code, self.helper.UP_TO_DATE)
+
+    def test_gear_lever_updating_it_from_its_own_embedded_source_is_recognized(self):
+        """Gear Lever follows the embedded source from its window and in monolith update's AppImages step
+        (--update --all --yes): the same file names, and a launcher written again from the new AppImage.
+        Monolith then records that release without downloading it."""
+        self.publish_embedded("2.25.5", OWN_RELEASES)
+        self.ok(self.install())
+        newer = self.publish_embedded("2.25.6", OWN_RELEASES, "2.25.5")
+        del self.web.routes[download_url("2.25.6")]
+        served = self.root / "Downloads/WowUp-CF-2.25.6.AppImage"
+        served.write_bytes(newer)
+        self.flatpak.update(updates={str(self.cf): str(served)})
+        code, out, err = self.flatpak.gear_lever("--update", "--all", "--yes")
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("[Update available, GithubUpdater|embedded]", out)
+        self.assertIn(f"{self.cf} updated successfully", out)
+        self.assertEqual(self.cf.read_bytes(), newer)
+        self.assertEqual(desktop_entry(self.cf_desktop)["X-AppImage-Version"], "2.25.6")
+        self.assertEqual(self.status(), "installed")
+        result = self.ok(self.update())
+        self.assertIn(f"WowUp-CF 2.25.6 is installed at {self.cf}.", result.stdout)
+        receipt = self.read_receipt()
+        self.assertEqual((receipt["version"], receipt["sha256"]), ("2.25.6", sha256(newer)))
+        self.assertEqual(self.sources(), [("GithubUpdater", True)])
+        self.assertEqual(self.update().code, self.helper.UP_TO_DATE)
+        self.assertEqual(self.web.requests.count(download_url("2.25.6")), 0)
+        # Gear Lever finds nothing more to do, and leaves alone what has no update source.
+        self.assertEqual(self.flatpak.gear_lever("--update", "--all", "--yes"), (0, "No updates available\n", ""))
+
+    def test_a_source_gear_lever_follows_that_monolith_did_not_allow_is_never_kept(self):
+        """Gear Lever reads the AppImage itself. Should it find a source where Monolith's own check found
+        none, or still follow a custom one, each later check stops the install and puts everything back."""
+        self.publish_embedded("2.25.5", OWN_RELEASES)
+        before = self.snapshot()
+        with mock.patch.object(self.helper, "embedded_source", return_value=None):
+            result = self.failed(self.install())
+            self.assertIn("embeds an update source that Gear Lever cannot unset", result.stderr)
+            self.assertEqual(self.snapshot(), before)
+            with mock.patch.object(self.helper, "clear_update_source"):
+                result = self.failed(self.install())
+            self.assertIn("Gear Lever still has update source GithubUpdater", result.stderr)
+            self.assertEqual(self.snapshot(), before)
+        self.ok(self.install())
+        self.assertEqual(self.flatpak.gear_lever(
+            "--set-update-source", str(self.cf), "--manager", "GithubUpdater", "repo=WowUp/WowUp",
+            "repo_filename=WowUp-*.AppImage", "allow_prereleases=true")[0], 0)
+        installed = self.snapshot()
+        with mock.patch.object(self.helper, "clear_update_source"):
+            result = self.failed(self.update())
+        self.assertIn("Gear Lever still has update source GithubUpdater", result.stderr)
+        self.assertEqual(self.snapshot(), installed)
+
+    def test_other_embedded_update_sources_block_publication(self):
+        refused = dict(EMBEDDED, **{"its own releases in a beta": OWN_RELEASES})
+        for label, update_info in refused.items():
+            with self.subTest(label):
+                version = "2.24.0-beta.6" if update_info == OWN_RELEASES else "2.25.5"
+                self.publish_embedded(version, update_info)
                 before = self.snapshot()
                 calls = len(self.flatpak.calls())
-                self.failed(self.install())
+                result = self.failed(self.install())
+                self.assertIn("embeds an AppImage update source", result.stderr)
                 self.assertEqual(self.snapshot(), before)
                 self.assertEqual(self.integrations_attempted(calls), [])  # refused before publication
-        # An existing embedded build that is already the target is not adopted ...
-        data = make_appimage("2.24.0-beta.6", update_info=EMBEDDED["GitHub zsync"])
-        self.integrate(data)
-        self.web.routes.clear()
-        self.web.publish([release("2.24.0-beta.6", data=data)])
+        # An existing build with such a source that is already the target is not adopted ...
+        update_info = EMBEDDED["the regular WowUp edition"]
+        self.integrate(make_appimage("2.25.4", update_info=update_info))
+        self.publish_embedded("2.25.4", update_info)
         before = self.snapshot()
         self.failed(self.install())
         self.assertEqual(self.snapshot(), before)
+        # ... and Monolith doesn't call a managed copy complete once it has one ...
+        self.assertEqual(self.flatpak.gear_lever("--remove", str(self.cf), "--yes", "--delete")[0], 0)
+        self.managed_install("2.25.4")
+        self.publish_embedded("2.25.4", update_info)
+        self.cf.write_bytes(make_appimage("2.25.4", update_info=update_info))
+        before = self.snapshot()
+        self.failed(self.update())
+        self.assertEqual(self.snapshot(), before)
         # ... but a newer target without one replaces it in place, leaving no update source.
-        self.web.publish([release("2.24.0-beta.6", data=data), release("2.24.0-beta.10")])
-        self.web.asset("2.24.0-beta.10", make_appimage("2.24.0-beta.10"))
+        self.web.publish([release("2.25.4", data=make_appimage("2.25.4", update_info=update_info)),
+                          release("2.25.5")])
+        self.web.asset("2.25.5", make_appimage("2.25.5"))
         self.ok(self.install())
-        self.assertEqual([(entry["manager"], entry["embedded_source"]) for entry in self.entries()],
-                         [(None, False)])
+        self.assertEqual(self.sources(), [(None, False)])
 
     def test_gear_lever_failures_change_nothing(self):
         self.managed_install()
@@ -2652,6 +2889,23 @@ class EpicGamesLauncherTests(GearLeverAppCase):
         for path in (self.epic, self.epic_desktop, self.epic_icon, self.receipt, self.snapshots):
             self.assertFalse(path.exists(), path)
         self.assertEqual(self.status(), "not installed")
+
+    def test_embedded_update_source_is_refused(self):
+        """Epic's launcher has no GitHub releases, so no update source in its AppImage is its own."""
+        update_info = b"gh-releases-zsync|EpicGames|launcher|latest|EpicGamesLauncher-x86_64.AppImage.zsync"
+        self.serve_epic(EPIC.old, epic_appimage(EPIC.old, update_info=update_info))
+        before = self.snapshot()
+        result = self.failed(self.install())
+        self.assertIn("embeds an AppImage update source", result.stderr)
+        self.assertEqual(self.snapshot(), before)
+        # The launcher updating itself to such a build is noticed too: update doesn't call the copy complete.
+        self.managed_install()
+        self.epic.write_bytes(epic_appimage(EPIC.new, update_info=update_info))
+        self.offline()
+        before = self.snapshot()
+        result = self.failed(self.update())
+        self.assertIn("embeds an AppImage update source", result.stderr)
+        self.assertEqual(self.snapshot(), before)
 
     def test_missing_appimage_is_downloaded_again(self):
         self.managed_install()

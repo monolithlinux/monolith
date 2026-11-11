@@ -68,6 +68,7 @@ FPS = 15
 FLARE = 1.3  # seconds the sunburst plays at the end
 ITEM_ROWS = 5  # rows for the items under the running step; the rest are counted
 FOLD = 0.4  # seconds a finished step stays open, so its last tick shows
+REASON_ROWS = 6  # rows for one reason under a failed step; the log has the rest
 # Programs whose words the steps read run in English, so the words don't
 # change with the language you use.
 ENGLISH = {"LC_ALL": "C.UTF-8", "LANGUAGE": None}
@@ -159,6 +160,38 @@ def fit(text, limit):
     if limit <= width(more):
         return clip(text, max(0, limit))
     return clip(text, limit - width(more)).rstrip() + more
+
+
+def wrap(text, limit, most=0):
+    """Plain text as lines of at most `limit` columns, broken at spaces. A word
+    longer than a line, such as a link, carries on in the next, from after a
+    slash or other mark when one is near. With `most`, no more lines than that,
+    the last ending in an ellipsis when text is left."""
+    limit = max(1, limit)
+    lines, line = [], ""
+    for word in text.split():
+        while width(word) > limit:
+            if line:
+                lines.append(line)
+                line = ""
+            head = clip(word, limit) or word[0]
+            mark = max(head.rfind(ch) for ch in "/|\\-_.,:;=&?") + 1
+            if mark > len(head) // 2:
+                head = head[:mark]
+            lines.append(head)
+            word = word[len(head):]
+        if not line:
+            line = word
+        elif width(line) + 1 + width(word) <= limit:
+            line += " " + word
+        else:
+            lines.append(line)
+            line = word
+    if line:
+        lines.append(line)
+    if most and len(lines) > most:
+        lines[most - 1:] = [fit(" ".join(lines[most - 1:]), limit)]
+    return lines
 
 
 def pad(text, size):
@@ -1223,7 +1256,7 @@ class Apps(Step):
         return "monolith update APP, for each app from the catalog"
 
     def run(self, session):
-        changes, outcome, results, verbs = [], {}, False, {}
+        changes, outcome, results, verbs, said = [], {}, False, {}, {}
 
         def note(line, final):
             nonlocal results
@@ -1263,24 +1296,33 @@ class Apps(Step):
                     r"(.+?)\s+(Up to date|Updated|Installed|Repaired|Adopted and updated|Done|"
                     r"Failed \(exit \d+\)|Cancelled|Not run|Skipped by user)$", line)):
                 outcome[match.group(1)] = match.group(2)
+            elif current and not results:
+                # Anything else an app says may be why it fails, such as "Close Sidra and retry".
+                said.setdefault(current.name, []).append(line)
             if self.items:
                 self.fraction = self.items_done()
 
         code, lines = session.run([SOFTWARE, "update"], parse=note, env=dict(flatpak_english(), MONOLITH_PROGRESS="1"))
+        failures = [name for name, state in outcome.items() if state.startswith("Failed") or state == "Skipped by user"]
+        why = []
         for item in self.items:
             state = outcome.get(item.name, "")
-            if state.startswith("Failed") or state == "Skipped by user":
-                item.finish(item.text if item.kind == FAIL else state, FAIL)
+            if item.name in failures:
+                # Its Error line, or else the likeliest of what it said.
+                reason = item.text if item.kind == FAIL else last_error(said.get(item.name, []))
+                item.finish(reason or state, FAIL)
+                if reason:
+                    named = len(failures) == 1 or re.search(rf"(?<!\w){re.escape(item.name)}(?!\w)", reason)
+                    why.append(reason if named else f"{item.name}: {reason}")
             elif state in ("Cancelled", "Not run"):
                 item.finish(state, STOPPED)
             elif state:
                 item.finish(item.text or state)
             elif item.state == "running":
                 item.finish(item.text or "Done")
-        failures = [name for name, state in outcome.items() if state.startswith("Failed") or state == "Skipped by user"]
         if code != 0 or failures:
             if failures:
-                return Result(FAIL, f"{', '.join(failures)} didn't update")
+                return Result(FAIL, f"{', '.join(failures)} didn't update", why)
             return Result(FAIL, last_error(lines) or f"The catalog stopped with exit {code}")
         if changes:
             return Result(OK, ", ".join(changes))
@@ -1788,7 +1830,12 @@ class Panel:
             if step.items and self.motion and not final and step.ended and now - step.ended < FOLD:
                 # Open a moment longer, so the last item's tick shows before it folds.
                 return [head] + self.item_lines(step, w, rows)
-            return [head] + [f"    {p.dim}{SYM['sub']} {fit(more, w - 6)}{p.reset}" for more in r.more]
+            notes = []
+            for more in r.more:
+                # Why a step failed is worth reading whole; other notes keep to a line.
+                shown = wrap(more, w - 6, REASON_ROWS) if r.kind == FAIL else [fit(more, w - 6)]
+                notes += [f"    {p.dim}{' ' if k else SYM['sub']} {row}{p.reset}" for k, row in enumerate(shown)]
+            return [head] + notes
         if step.state == "running":
             spin = spinner(now - self.t0, self.motion and not final)
             if step.items and not final:

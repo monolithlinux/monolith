@@ -76,8 +76,8 @@ doesn't need repair, it shows `Up to date` and nothing is downloaded.
 app that already has it.
 
 If an app needs an update but can't get one right now, such as WowUp-CF while
-it's open, `monolith update` lists it as failed in its summary and still updates
-the rest.
+it's open, `monolith update` lists it as failed in its summary, with the reason
+under it, and still updates the rest.
 
 ## What Monolith keeps safe
 
@@ -174,9 +174,14 @@ sets WowUp-CF's own Application Release Channel to Stable and doesn't change you
 addon release settings.
 
 Use **Update** in the dashboard or `monolith update wowup-cf` to update the app.
-Monolith turns off Gear Lever's update source for WowUp-CF, so only one updater is
-in charge. Close WowUp-CF before updating or removing it. An update with nothing
-new to install leaves it alone, so it can stay open then.
+Close WowUp-CF before updating or removing it. An update with nothing new to
+install leaves it alone, so it can stay open then.
+
+From 2.25.5 on, WowUp-CF's AppImage names its own stable releases as its update
+source, and Gear Lever has no setting to ignore that. So Gear Lever can update
+WowUp-CF too, from the same releases Monolith uses, and Monolith picks up the new
+version on its next update. Any other update source you set for WowUp-CF in Gear
+Lever is removed.
 
 Removing it keeps your WowUp-CF settings, game installations and addons.
 
