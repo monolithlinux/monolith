@@ -76,8 +76,8 @@ doesn't need repair, it shows `Up to date` and nothing is downloaded.
 app that already has it.
 
 If an app needs an update but can't get one right now, such as WowUp-CF while
-it's open, `monolith update` lists it as failed in its summary and still updates
-the rest.
+it's open, `monolith update` lists it as failed in its summary, with the reason
+under it, and still updates the rest.
 
 ## What Monolith keeps safe
 

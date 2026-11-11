@@ -3,6 +3,8 @@
 
     python3 tests/monolith-update.py        run the tests
     python3 tests/monolith-update.py demo   play a slow run in this terminal
+    python3 tests/monolith-update.py demo catalog-fails='Error: No room left'
+                                            the same, with scenario files (NAME=TEXT)
 
 The stand-ins log their arguments to one file and answer from files in a
 scenario folder, so each test sets up only what it changes.
@@ -154,6 +156,17 @@ printf 'software %s progress=%s locale=%s language=%s\n' "$*" "${MONOLITH_PROGRE
 [ "$1" = update ] || exit 0
 [ "${MONOLITH_PROGRESS:-}" != 1 ] || echo "Plan: Sidra | Epic Games Launcher"
 printf '\n(1/2) Sidra — Update\n'
+if [ -e "$SCENARIO/catalog-fails" ]; then
+  # Sidra can't update, and says what the file says.
+  sleep "${DELAY:-0}"
+  cat "$SCENARIO/catalog-fails"
+  printf '\n(2/2) Epic Games Launcher — Update\n'
+  sleep "${DELAY:-0}"
+  echo "Epic Games Launcher 17.2.1 is already up to date."
+  printf '\nResults:\n  %-19s %s\n  %-19s %s\n' Sidra "Failed (exit 1)" "Epic Games Launcher" "Up to date"
+  printf '\nSome items did not complete; see the messages above.\n'
+  exit 1
+fi
 printf '\n==> Downloading Sidra 1.5.0\n'
 for p in 12.5 47.3 81.0 100.0; do printf '\r#######################                           %s%%' "$p"; sleep "${TICK:-0}"; done
 printf '\n'
@@ -699,8 +712,10 @@ def frames_fit_every_window(w):
     steps = module.all_steps({"A command with a really long name indeed": "true"})
     for step in steps:
         session.found.append(step)
+    # A failed step's notes say why, on as many rows as they need, up to REASON_ROWS each.
+    why = ["A reason that goes on " * 9 + "https://example.invalid/" + "long" * 30, "理由 " * 60, "Short"]
     states = [("done", module.Result(module.OK, "Something long " * 8, ["More notes " * 9])),
-              ("done", module.Result(module.FAIL, "Broke")), ("running", None), ("waiting", None)]
+              ("done", module.Result(module.FAIL, "Broke", why)), ("running", None), ("waiting", None)]
     for i, step in enumerate(steps):
         step.state, step.result = states[min(i, 3)] if i < 3 else states[3]
         step.started, step.ended = 0.0, 75.0
@@ -870,6 +885,7 @@ def apps_containers_and_proton_tools_list_what_they_update(w):
                               ("Epic Games Launcher", "done", "Up to date", m.OK),
                               ("Tea", "done", "Tea could not be downloaded", m.FAIL)], "apps", items_of(apps))
     expect(apps.result.kind == m.FAIL and apps.result.text == "Tea didn't update", "result", apps.result.text)
+    expect(apps.result.more == ["Tea could not be downloaded"], "why it didn't", apps.result.more)
     expect(session.ran[0][1] == dict(m.flatpak_english(), MONOLITH_PROGRESS="1"), "the catalog's environment",
            session.ran)
 
@@ -907,6 +923,106 @@ def apps_containers_and_proton_tools_list_what_they_update(w):
                                 ("Proton-CachyOS Latest", "done", "API rate limit exceeded", m.WARN)],
            "Proton tools", items_of(proton))
     expect(proton.result.kind == m.WARN, "Proton result", proton.result.text)
+
+
+@test
+def a_failed_app_says_why(w):
+    m = load_module(w.env())
+    m.SYM.update(m.UNICODE_SYMBOLS)
+    refusal = ("WowUp-CF 2.26.0 embeds an AppImage update source (gh-releases-zsync|WowUp|WowUp.CF|latest-pre|"
+               "WowUp-CF-*.AppImage.zsync) that Gear Lever would follow outside Monolith's release policy and "
+               "that cannot be removed. Nothing was changed.")
+    curl = "curl: (22) The requested URL returned error: 503"
+    failed = ["", "Results:", "  WowUp-CF            Failed (exit 1)", "  Sidra               Failed (exit 1)",
+              "  Tea                 Failed (exit 22)", "  Superfile           Up to date",
+              "", "Some items did not complete; see the messages above."]
+    apps = m.Apps()
+    session = replay(m, apps, [(str(m.SOFTWARE), 1, "\n".join([
+        "Plan: WowUp-CF | Sidra | Tea | Superfile", "", "(1/4) WowUp-CF — Update",
+        "Selected WowUp-CF 2.26.0 (stable channel) from WowUp/WowUp.CF.",
+        "Downloading WowUp-CF-2.26.0.AppImage (128.0 MiB)...", f"Error: {refusal}",
+        # An open app is refused without an Error line. curl doesn't say whose download it was, and
+        # what a program prints after its error isn't the reason.
+        "", "(2/4) Sidra — Update", "Close Sidra and retry this action.",
+        "", "(3/4) Tea — Update", "", "==> Downloading Tea 0.12.0", curl, "Removed the unfinished download.",
+        "", "(4/4) Superfile — Update", "Superfile 1.4.0 is already up to date.", *failed]))])
+    reasons = [refusal, "Close Sidra and retry this action.", f"Tea: {curl}"]
+    expect(apps.result.text == "WowUp-CF, Sidra, Tea didn't update", "result", apps.result.text)
+    expect(apps.result.more == reasons, "why they didn't", apps.result.more)
+    expect(items_of(apps) == [("WowUp-CF", "done", refusal, m.FAIL), ("Sidra", "done", reasons[1], m.FAIL),
+                              ("Tea", "done", curl, m.FAIL), ("Superfile", "done", "Up to date", m.OK)],
+           "the apps", items_of(apps))
+    # One failed app needs no name before its reason; one that said nothing has no reason to show.
+    alone = m.Apps()
+    replay(m, alone, [(str(m.SOFTWARE), 1, "\n".join([
+        "Plan: Tea | Superfile", "", "(1/2) Tea — Update", curl, "", "(2/2) Superfile — Update",
+        "Superfile 1.4.0 is already up to date.", "", "Results:", "  Tea                 Failed (exit 22)",
+        "  Superfile           Up to date", *failed[-2:]]))])
+    expect(alone.result.more == [curl], "one failed app", alone.result.more)
+    quiet = m.Apps()
+    replay(m, quiet, [(str(m.SOFTWARE), 1, "\n".join([
+        "Plan: Tea", "", "(1/1) Tea — Update", "", "Results:", "  Tea                 Failed (exit 1)",
+        *failed[-2:]]))])
+    expect(quiet.result.text == "Tea didn't update" and quiet.result.more == [], "a silent failure",
+           quiet.result.more)
+    expect(items_of(quiet) == [("Tea", "done", "Failed (exit 1)", m.FAIL)], "a silent failure", items_of(quiet))
+
+    # The reasons stay under the step, wrapped to the window instead of cut.
+    session.found, session.phase = [apps], "run"
+    apps.state, apps.ended = "done", 7.0
+    look = m.Look(sys.stdout)
+    look.motion, look.color, look.unicode = True, True, True
+    screen = m.Screen(look, m.Paint(True), session)
+
+    def notes(cols, rows, final):
+        text = [plain(line) for line in screen.compose(cols, rows, time.monotonic(), final=final)]
+        head = next(i for i, line in enumerate(text) if "Monolith apps" in line)
+        left, found = min(text[head].index(mark) for mark in "✗!" if mark in text[head]), []
+        for line in text[head + 1:]:
+            if not line[left + 6:].strip() or line[left:left + 4].strip() or line[left + 4] not in "╰ ":
+                break
+            found.append((line[left + 4], line[left + 6:].rstrip()))
+        expect(all(m.width(line) <= cols - 1 for line in text), f"{cols}x{rows}: too wide", "\n".join(text))
+        return found, "\n".join(text)
+
+    squeezed = "".join("".join(reasons).split())
+    for cols, rows in ((140, 40), (100, 26), (80, 24), (60, 20)):
+        for final in (True, False):
+            found, shown = notes(cols, rows, final)
+            expect([mark for mark, _ in found].count("╰") == 3, f"{cols}x{rows}: three reasons", shown)
+            expect(len(found) > 3 and "".join("".join(row.split()) for _, row in found) == squeezed,
+                   f"{cols}x{rows}: cut, not wrapped", shown)
+    # A short window drops them before it drops steps; the summary afterwards has them all.
+    found, shown = notes(100, 12, False)
+    expect(found == [] and "didn't update" in shown, "a short window", shown)
+    expect(len(notes(100, 12, True)[0]) > 3, "the summary in a short window", notes(100, 12, True)[1])
+    # No reason takes more than REASON_ROWS rows; the log has the rest.
+    apps.result = m.Result(m.FAIL, "Tea didn't update", ["It goes on and on " * 200])
+    found, shown = notes(100, 40, True)
+    expect(len(found) == m.REASON_ROWS and found[-1][1].endswith("…"), "a very long reason", shown)
+    # Notes under a step that didn't fail keep to one line each, as before.
+    apps.result = m.Result(m.WARN, "Sidra skipped", ["It goes on and on " * 200, "Short"])
+    found, shown = notes(100, 40, True)
+    expect([row[-1] for _, row in found] == ["…", "t"] and [mark for mark, _ in found] == ["╰", "╰"],
+           "other notes", shown)
+
+    for text, limit, most, rows in (("a bb ccc dddd", 4, 0, ["a bb", "ccc", "dddd"]), ("", 9, 0, []),
+                                    ("see " + "x" * 10 + " now", 4, 0, ["see", "xxxx", "xxxx", "xx", "now"]),
+                                    ("see /var/home/max/AppImages/wowup-cf.appimage now", 20, 0,
+                                     ["see", "/var/home/max/", "AppImages/wowup-cf.", "appimage now"]),
+                                    ("日本語のテキスト abc", 5, 0, ["日本", "語の", "テキ", "スト", "abc"]),
+                                    ("one two three four five", 5, 2, ["one", "two…"])):
+        expect(m.wrap(text, limit, most) == rows, f"wrap {text!r} to {limit}", m.wrap(text, limit, most))
+
+    # Without a terminal the reason follows the step's line, whole.
+    w.catalog_app()
+    w.flag("catalog-fails", f"Error: {refusal}\n")
+    code, out, _ = w.run("--only", "apps")
+    expect(code == 1, f"exit {code}", out)
+    has(out, "✗ Monolith apps", "Sidra didn't update", refusal, "What went wrong is in")
+    w.flag("catalog-fails", "Close Sidra and retry this action.\n")
+    code, out, _ = w.run("--only", "apps")
+    has(out, "Sidra didn't update", "Close Sidra and retry this action.")
 
 
 @test
@@ -998,10 +1114,13 @@ def item_rows_keep_the_current_one(w):
 
 
 def main():
-    if sys.argv[1:] == ["demo"]:
+    if sys.argv[1:2] == ["demo"]:
         w = World()
         w.everything()
         w.flag("firmware-update")
+        for scenario in sys.argv[2:]:
+            name, _, text = scenario.partition("=")
+            w.flag(name, text + "\n")
         env = w.env(DELAY="1.2", TICK="0.3", TERM=os.environ.get("TERM", "xterm-256color"))
         env.pop("MONOLITH_UPDATE_POLL")
         try:
