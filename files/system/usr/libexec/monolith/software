@@ -37,6 +37,13 @@ SUNSHINE_MODULES_TEXT=$'# Sunshine needs uhid for descriptor-driven gamepad emul
 QUIT_TOKEN=__monolith_quit__
 # The Python helpers' update action exits with this when it changed nothing.
 HELPER_UP_TO_DATE=3
+# monolith update sets MONOLITH_PROGRESS=1 to follow along: the apps are named
+# before the first one starts, and downloads and Flatpak installs say how far
+# along they are. Flatpak only does that without --noninteractive.
+FLATPAK_QUIET=(--noninteractive)
+if [ "${MONOLITH_PROGRESS:-}" = 1 ]; then
+    FLATPAK_QUIET=()
+fi
 ACTIVE_TEMP=""
 GEAR_LEVER_SCOPE=""
 RUN_INTERRUPTED=0
@@ -580,7 +587,7 @@ curl_fetch() {
         download)
             [ -n "$destination" ] || die "internal error: downloads need an output path"
             options+=(--speed-limit 1024 --speed-time 60)
-            if [ -t 2 ]; then
+            if [ -t 2 ] || [ "${MONOLITH_PROGRESS:-}" = 1 ]; then
                 options+=(--progress-bar)
             else
                 options+=(--silent --show-error)
@@ -1322,7 +1329,7 @@ ensure_gear_lever() {
                 ;;
         esac
         note "Installing Gear Lever from Flathub for your account"
-        flatpak install --user --noninteractive --assumeyes "$GEAR_LEVER_REF" 9>&- ||
+        flatpak install --user "${FLATPAK_QUIET[@]}" --assumeyes "$GEAR_LEVER_REF" 9>&- ||
             die "Gear Lever could not be installed; $name was not changed"
         scope="$(flatpak_scope "$GEAR_LEVER_ID")" || die "Gear Lever is still missing after installation; $name was not changed"
     fi
@@ -1378,7 +1385,7 @@ install_flatpak_app() {
         if updating "$tool"; then
             commit="$(flatpak_commit "$id")"
         fi
-        flatpak update --user --noninteractive --assumeyes "$id" 9>&- ||
+        flatpak update --user "${FLATPAK_QUIET[@]}" --assumeyes "$id" 9>&- ||
             die "$name could not be updated; Flatpak kept the installed version"
         if [ -n "$commit" ] && [ "$(flatpak_commit "$id")" = "$commit" ]; then
             # Another updater, such as monolith update's Flatpak step, may have moved it.
@@ -1395,7 +1402,7 @@ install_flatpak_app() {
         die "$name is already installed system-wide and updates with the system's Flatpaks, so Monolith left it alone. To have Monolith manage a per-user copy instead, uninstall the system copy first; your $(kept_data "$tool") in ~/.var/app/$id are kept"
     else
         note "Installing $name from $(flatpak_app_source "$tool") for your account"
-        flatpak install --user --noninteractive --assumeyes "$ref" 9>&- ||
+        flatpak install --user "${FLATPAK_QUIET[@]}" --assumeyes "$ref" 9>&- ||
             die "$name could not be installed from $(flatpak_app_source "$tool")"
     fi
     flatpak_installed user "$id" || die "Flatpak does not list $name for your account; Monolith recorded nothing"
@@ -1468,7 +1475,7 @@ install_flatpak_bundle() {
     note "Installing $name $latest for your account"
     # Over an installed copy, Flatpak deploys the new release in place and keeps
     # the old files while an instance still runs from them.
-    if ! flatpak install --user --noninteractive --assumeyes --bundle "$bundle" 9>&-; then
+    if ! flatpak install --user "${FLATPAK_QUIET[@]}" --assumeyes --bundle "$bundle" 9>&-; then
         if [ "$had_copy" -eq 1 ] && flatpak_installed user "$id"; then
             die "$name $latest could not be installed; Flatpak kept the installed version"
         fi
@@ -1732,6 +1739,15 @@ run_actions() {
             die "$(tool_name "$tool") is not installed by Monolith"
         fi
     done
+    if [ "${MONOLITH_PROGRESS:-}" = 1 ]; then
+        # monolith update lists the apps before the first one starts.
+        local plan="Plan:" separator=" "
+        for tool in "${tools[@]}"; do
+            plan+="$separator$(tool_name "$tool")"
+            separator=" | "
+        done
+        printf '%s\n' "$plan"
+    fi
     # Each child writes "current" here when its update found nothing newer.
     result_file="$(mktemp)"
 

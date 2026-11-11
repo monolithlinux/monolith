@@ -37,6 +37,8 @@ takes effect the next time you restart.
 apps from the catalog, Proton tools, AppImages, Distrobox containers, and
 developer tools such as rustup, npm and Claude Code. It also checks for firmware
 updates. Each step shows its progress, and one that fails doesn't stop the rest.
+The step that's running lists what it's updating, such as each Flatpak or app,
+with a bar for each download, and folds back to one line when it's done.
 At the end you get a short summary of what changed.
 
 You don't need a password to update. If there's a new build of Monolith, it asks
