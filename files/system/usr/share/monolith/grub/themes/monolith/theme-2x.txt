@@ -1,0 +1,66 @@
+# Monolith's boot menu at twice the size, for a screen that is
+# 1800 pixels tall or more. It is theme.txt with every number doubled and the
+# -2x pictures. The text is unifont-32.pf2, GRUB's own font with each pixel
+# drawn two by two, which the image build makes
+# (files/scripts/make-boot-menu-font.py). GRUB only reads a font from the disk
+# when Secure Boot is off, so user.cfg loads it and picks this file only then.
+
+title-text: ""
+desktop-color: "#000000"
+terminal-left: "0"
+terminal-top: "0"
+terminal-width: "100%"
+terminal-height: "100%"
+terminal-border: "0"
+terminal-font: "Unifont Regular 32"
+
+# The logo, with its lower edge at 40% of the screen's height.
++ image {
+  left = 50%-378
+  top = 40%-512
+  file = "logo-2x.png"
+}
+
+# The entries, as in theme.txt with every number doubled. A letter is 16
+# pixels wide here, so item_icon_space is twice theme.txt's as well;
+# libexec/monolith/boot-menu sets both.
++ boot_menu {
+  left = 50%-560
+  top = 46%
+  width = 1120
+  height = 36%
+  item_font = "Unifont Regular 32"
+  item_color = "#b0b4ba"
+  selected_item_color = "#ffffff"
+  icon_width = 0
+  icon_height = 0
+  item_icon_space = 232
+  item_height = 88
+  item_padding = 0
+  item_spacing = 12
+  selected_item_pixmap_style = "select-2x_*.png"
+  # As in theme.txt: no room kept for a scrollbar GRUB doesn't draw.
+  scrollbar_left_pad = 0
+}
+
+# The countdown. GRUB hides it once a key is pressed.
++ label {
+  id = "__timeout__"
+  top = 84%
+  left = 0
+  width = 100%
+  align = "center"
+  font = "Unifont Regular 32"
+  text = "Starting in %ds"
+  color = "#969ca4"
+}
+
++ label {
+  top = 89%
+  left = 0
+  width = 100%
+  align = "center"
+  font = "Unifont Regular 32"
+  text = "Up/Down select | Enter start | e edit | c command line"
+  color = "#60646c"
+}

@@ -178,7 +178,8 @@ monolith boot-menu off   # GRUB's plain list, shown for one second
 monolith boot-menu on    # Monolith's look again
 ```
 
-A change shows the next time the computer starts.
+A change shows the next time the computer starts. On a 4K screen the first
+command also says how the menu is drawn larger there.
 [What's built in](desktop.md#boot-menu) says how it works.
 
 ## Switching editions

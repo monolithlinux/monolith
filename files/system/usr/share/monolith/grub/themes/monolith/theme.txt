@@ -3,6 +3,9 @@
 # The text is GRUB's own 16 pixel font. With Secure Boot on, GRUB refuses
 # font files from disk, so this theme names none and keeps its text ASCII.
 # Everything that has to look good is a picture.
+#
+# theme-2x.txt and theme-2x-logo.txt are this menu for screens with twice
+# the pixels. user.cfg says which of the three GRUB uses.
 
 title-text: ""
 desktop-color: "#000000"

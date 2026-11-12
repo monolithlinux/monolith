@@ -28,8 +28,22 @@ and `monolith boot-menu on` returns to Monolith's look. A GRUB password set with
 `grub2-setpassword` stays either way. Settings of your own, such as a longer
 wait (`set timeout=10`), go in `/boot/grub2/custom.cfg`, which GRUB reads last.
 
-The text is small on a 4K screen. With Secure Boot on, GRUB only has its one
-built-in size of text, and Monolith keeps Secure Boot working.
+On a screen that is 1800 pixels tall or more, such as a 4K monitor, the menu
+would come out small, so Monolith draws it larger. How depends on Secure Boot:
+
+- With Secure Boot off, everything is drawn at twice the size and stays sharp.
+- With Secure Boot on, GRUB may only use its one built-in size of text. So it
+  shows the menu at half the screen's resolution and the screen scales it up.
+  That is a little softer, and the screen changes mode once more on the way to
+  the desktop.
+- If the firmware doesn't offer that resolution, only the logo is drawn larger
+  and the entries stay small.
+
+`monolith boot-menu` says which of these your computer uses. Monolith reads the
+screen's size each time the computer starts, so after you change the screen the
+menu follows one start later. With Secure Boot on, a change to a smaller screen
+can go unnoticed. If the menu looks soft after one, run
+`monolith boot-menu off`, restart, and run `monolith boot-menu on`.
 
 ## The terminal
 

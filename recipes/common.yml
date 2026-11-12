@@ -281,6 +281,12 @@ modules:
     scripts:
       - sign-kernel.sh
 
+  # The boot menu's text for screens with twice the pixels, made from the
+  # font GRUB ships. See the script.
+  - type: script
+    scripts:
+      - make-boot-menu-font.py
+
   - type: systemd
     system:
       enabled:
