@@ -52,6 +52,9 @@ below with `kde` or `kde-nvidia`.
    ```
 
 `latest` always points to the newest build for the Fedora version Monolith is on.
+A build becomes `latest` once its tests have passed and it is signed. The
+`candidate` tags in the registry are builds that haven't got that far, so don't
+switch to those.
 
 ## First steps
 
