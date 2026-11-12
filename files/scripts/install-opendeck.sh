@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-version=2.14.1
-revision=66db15d9d5d41597772a4f209cd6a93b498fc7df
+version=2.14.2
+revision=3ddecc1ce8952a423916cf066724356267b97410
 license_checksum=cc5470feed66192387f06ae93aed0bd4fefae5a5fd7c1e54a4acf4ea64f1028b
 architecture="$(uname -m)"
 case "$architecture" in
-  x86_64) checksum=bb1861b71d6ce97b498dd22a7a1793077c6fc8019cffff09fb672dc0d4336142 ;;
-  aarch64) checksum=eb40b0bea7adbaf796157ee56cbb6b42abad26237e6fd4adf901b7875a226b37 ;;
+  x86_64) checksum=cbe867f9f235c96259cc241546b4a9e9bc7d2d77b106e76e4a273de7c471ad6e ;;
+  aarch64) checksum=f495b487662d482c5ab9f96039904e9e3498feb28eeecad1e3e55d38e00dc3b8 ;;
   *) printf 'Unsupported OpenDeck architecture: %s\n' "$architecture" >&2; exit 1 ;;
 esac
 
@@ -36,9 +36,10 @@ test "$(rpm -q --queryformat '%{VERSION}' opendeck)" = "$version"
 if ldd /usr/bin/opendeck | grep -F 'not found'; then exit 1; fi
 
 # The package installs its copy of the Stream Deck rules in /etc, where it
-# replaces Monolith's copy of the same name in /usr/lib (see udev(7)). OpenDeck
-# 2.14.1's copy lacks the Stream Deck MK.2 Module with scissor keys (00e4), so
-# keep Monolith's, and fail once the package lists a device it does not.
+# replaces Monolith's copy of the same name in /usr/lib (see udev(7)). The
+# package's copy has been behind before: 2.14.1's lacked the Stream Deck MK.2
+# Module with scissor keys (00e4). 2.14.2's is the same file as Monolith's.
+# Keep Monolith's, and fail once the package lists a device it does not.
 product_ids() { sed -n 's/.*idProduct}=="\([0-9a-f]*\)".*/\1/p' "$1" | sort -u; }
 if [ ! -f "$package_rules" ]; then
   printf 'OpenDeck no longer installs %s; check where its Stream Deck rules went\n' "$package_rules" >&2
