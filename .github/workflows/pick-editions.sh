@@ -36,6 +36,7 @@ while IFS= read -r f; do
     .github/workflows/generate-iso.yml) ;;
     .github/workflows/generate_release.yml|.github/workflows/changelog.py) ;;
     .github/workflows/check-app-downloads.yml|.github/workflows/check-app-downloads.py) ;;
+    .github/workflows/check-app-downloads.sh) ;;
     .github/workflows/prune-buildkit.yml|.github/workflows/pr-rebase-hint.yml) ;;
     # Unknown paths fail safe by rebuilding every edition.
     *) mark "${ALL[@]}" ;;
