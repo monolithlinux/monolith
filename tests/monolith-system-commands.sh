@@ -124,13 +124,42 @@ case "$*" in
     *) exit 1 ;;
 esac
 EOF
-cat >"$bin/curl" <<EOF
+# The registry. Like ghcr.io, it wants the token it hands out, lists tags
+# oldest first, sends at most TAG_PAGE of them at a time (1000 there, whatever
+# n asks for), and links to the next page in a header.
+cat >"$bin/curl" <<'EOF'
 #!/usr/bin/env bash
-[ -z "\${OFFLINE-}" ] || exit 7
-case "\$*" in
-    *"/token?scope=repository:monolithlinux/"*) echo '{"token": "anonymous"}' ;;
-    *"/tags/list"*) cat "$test_root/tags.json" ;;
-    *) exit 22 ;;
+root="${0%/*}/.."
+[ -z "${OFFLINE-}" ] || exit 7
+url="${*: -1}"
+printf '%s\n' "$url" >>"$root/log/curl"
+case "$url" in
+    *"/token?scope=repository:monolithlinux/"*)
+        echo '{"token": "anonymous"}'
+        exit 0
+        ;;
+esac
+case "$*" in
+    *"Authorization: Bearer anonymous"*) ;;
+    *) echo "curl: (22) The requested URL returned error: 401" >&2; exit 22 ;;
+esac
+case "$url" in
+    *"/tags/list"*)
+        last="$(sed -n 's/.*[?&]last=\([^&]*\).*/\1/p' <<<"$url")"
+        page="$(jq -c --arg last "$last" --argjson size "${TAG_PAGE:-1000}" '
+            (if $last == "" then 0 else (.tags | index($last)) + 1 end) as $from
+            | {name, tags: .tags[$from:$from + $size], more: ((.tags | length) > $from + $size)}' "$root/tags.json")"
+        jq -c 'del(.more)' <<<"$page"
+        case "$*" in
+            *'%header{link}'*)
+                printf '\n'
+                path="/v2/${url#*/v2/}"
+                [ "$(jq .more <<<"$page")" = false ] ||
+                    printf '<%s?last=%s&n=1000>; rel="next"' "${path%%\?*}" "$(jq -r '.tags[-1]' <<<"$page")"
+                ;;
+        esac
+        ;;
+    *) echo "curl: (22) The requested URL returned error: 404" >&2; exit 22 ;;
 esac
 EOF
 printf '#!/bin/sh\nexec "$@"\n' >"$bin/sudo"
@@ -483,6 +512,17 @@ has "$out" '  20261025  Sun, Oct 25, 2026'
 lacks "$out" 'latest'
 lacks "$out" 'pr-50'
 [ "$(grep -c '^  2026' <<<"$out")" = 5 ] || fail "list: $out"
+# Newest first, although the registry lists the oldest first.
+[ "$(sed -n -E 's/^  ([0-9]{8})  .*/\1/p' <<<"$out" | tr '\n' ' ')" = '20261029 20261028 20261027 20261026 20261025 ' ] ||
+    fail "the list isn't newest first: $out"
+
+# The registry sends the tags in pages, and the newest builds are on the last.
+rm "$log/curl"
+out="$(TAG_PAGE=4 run rollback list)"
+[ "$(grep -c '^  2026' <<<"$out")" = 5 ] || fail "a tag list in pages: $out"
+has "$out" '  20261029  Thu, Oct 29, 2026  (running now)'
+[ "$(grep -c '/tags/list' "$log/curl")" = 3 ] || fail "expected three pages of tags, asked for: $(cat "$log/curl")"
+[ "$(grep -c '/token' "$log/curl")" = 1 ] || fail "expected one token for all pages, asked for: $(cat "$log/curl")"
 
 out="$(yes_run rollback)" || fail "$out"
 has "$out" 'pauses system updates'

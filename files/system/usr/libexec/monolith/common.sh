@@ -352,13 +352,50 @@ registry_token() {
         jq -er .token
 }
 
+# registry_login EDITION: get the edition's token once, for every request
+# that follows in this shell.
+declare -gA REGISTRY_TOKENS=()
+registry_login() {
+    [[ -n ${REGISTRY_TOKENS[$1]-} ]] || REGISTRY_TOKENS[$1]="$(registry_token "$1")"
+}
+
+# registry_get EDITION PATH [CURL OPTION...]: GET PATH of the edition's image
+# from the registry. PATH is relative to the image, such as manifests/latest,
+# or a whole path the registry handed out, starting with /v2/.
+registry_get() {
+    local edition="$1" path="$2" token
+    shift 2
+    [[ $path == /v2/* ]] || path="/v2/monolithlinux/$edition/$path"
+    token="${REGISTRY_TOKENS[$edition]-}"
+    [[ $token ]] || token="$(registry_token "$edition")" || return 1
+    curl -fsSL --max-time 30 -H "Authorization: Bearer $token" "$@" "$MONOLITH_REGISTRY$path"
+}
+
+# registry_tags EDITION: every tag of the edition's image, oldest first. The
+# registry sends at most 1000 tags at a time, whatever n says, with a link to
+# the next page, and the newest tags come last.
+registry_tags() {
+    local path="tags/list?n=1000" answer pages=0
+    # link: </v2/monolithlinux/kde/tags/list?last=TAG&n=1000>; rel="next"
+    local next='^<(/v2/[^>]*)>; *rel="next"'
+    registry_login "$1" || return 1
+    while [[ $path ]]; do
+        # Give up if the registry never runs out of pages.
+        ((++pages <= 100)) || return 1
+        answer="$(registry_get "$1" "$path" -w '\n%header{link}')" || return 1
+        jq -r '.tags[]' <<<"${answer%$'\n'*}" || return 1
+        path=""
+        if [[ ${answer##*$'\n'} =~ $next ]]; then
+            path="${BASH_REMATCH[1]}"
+        fi
+    done
+}
+
 # registry_dates EDITION: the dated builds, newest first.
 registry_dates() {
-    local token
-    token="$(registry_token "$1")" || return 1
-    curl -fsS --max-time 30 -H "Authorization: Bearer $token" \
-        "$MONOLITH_REGISTRY/v2/monolithlinux/$1/tags/list?n=10000" |
-        jq -r '.tags[] | select(test("^[0-9]{8}$"))' | sort -r
+    local tags
+    tags="$(registry_tags "$1")" || return 1
+    sed -n -E '/^[0-9]{8}$/p' <<<"$tags" | sort -r
 }
 
 # has_nvidia_gpu: is there an NVIDIA display controller?
