@@ -3,17 +3,19 @@
 # shellcheck disable=SC2034
 
 # Shared helpers for Monolith's system commands (status, scheduler, rollback,
-# edition, report-bug). Sourced, not run.
+# pr, edition, report-bug). Sourced, not run.
 #
 # Tests point these at stand-ins:
 #   MONOLITH_SYSFS       /sys
 #   MONOLITH_OS_RELEASE  /usr/lib/os-release
 #   MONOLITH_REGISTRY    https://ghcr.io
+#   MONOLITH_GITHUB_API  https://api.github.com
 #   MONOLITH_MOK_KEY     Monolith's Secure Boot key (DER)
 
 MONOLITH_SYSFS="${MONOLITH_SYSFS:-/sys}"
 MONOLITH_OS_RELEASE="${MONOLITH_OS_RELEASE:-/usr/lib/os-release}"
 MONOLITH_REGISTRY="${MONOLITH_REGISTRY:-https://ghcr.io}"
+MONOLITH_GITHUB_API="${MONOLITH_GITHUB_API:-https://api.github.com}"
 MONOLITH_MOK_KEY="${MONOLITH_MOK_KEY:-/etc/pki/akmods/certs/akmods-monolith.der}"
 # ostree keeps this file while a downloaded update waits for the next restart.
 MONOLITH_STAGED="${MONOLITH_STAGED:-/run/ostree/staged-deployment}"
@@ -21,6 +23,8 @@ MONOLITH_STAGED="${MONOLITH_STAGED:-/run/ostree/staged-deployment}"
 MONOLITH_UPDATE_RECORD="${XDG_STATE_HOME:-$HOME/.local/state}/monolith/update-reminder/last-update"
 # Keep in sync with ALL in .github/workflows/pick-editions.sh.
 MONOLITH_EDITIONS=(kde kde-nvidia)
+# What build.yml calls each edition: its build job is "Build KDE NVIDIA".
+declare -gA MONOLITH_EDITION_LABELS=([kde]="KDE" [kde-nvidia]="KDE NVIDIA")
 MONOLITH_IMAGE_PREFIX=ghcr.io/monolithlinux
 
 BOLD="" DIM="" RESET="" ACCENT="" GOOD="" WARN=""
@@ -177,6 +181,8 @@ days_ago() {
 #   IMAGE_NAME      ghcr.io/monolithlinux/kde
 #   IMAGE_EDITION   kde (empty when the image isn't Monolith's)
 #   IMAGE_TAG       latest, a date such as 20261029, or pr-52-44
+#   IMAGE_BUILT     when the image was built, in seconds since 1970, or empty.
+#                   rpm-ostree keeps the time the image itself records.
 #   PENDING         yes when another build waits for the next restart: a
 #                   downloaded update, or a switch that monolith rollback,
 #                   monolith edition or rpm-ostree rebase set up
@@ -204,9 +210,13 @@ load_image_info() {
             (if $at == null then "" else (.deployments[$at + 1].version // "") end),
             (($booted["requested-packages"] // []) + ($booted["requested-local-packages"] // []) | join(" ")),
             (if $next == null then "no" else "yes" end),
-            (if $next == null then "" else ($next | ref) end)
+            (if $next == null then "" else ($next | ref) end),
+            # With packages layered on top, the image is the base.
+            ($booted["base-timestamp"] // $booted.timestamp // "" | tostring)
           ] | join("\u001f")' <<<"$json")" || return 1
-    IFS="$sep" read -r IMAGE_REF IMAGE_VERSION NEXT_VERSION STAGED PREVIOUS_VERSION LAYERED PENDING NEXT_REF <<<"$fields"
+    IFS="$sep" read -r IMAGE_REF IMAGE_VERSION NEXT_VERSION STAGED PREVIOUS_VERSION LAYERED PENDING NEXT_REF \
+        IMAGE_BUILT <<<"$fields"
+    [[ $IMAGE_BUILT =~ ^[0-9]+$ ]] || IMAGE_BUILT=""
     parse_image_ref "$IMAGE_REF" IMAGE
     parse_image_ref "$NEXT_REF" NEXT
 }
@@ -389,6 +399,27 @@ registry_tags() {
             path="${BASH_REMATCH[1]}"
         fi
     done
+}
+
+# registry_created EDITION TAG: when the image with that tag was built, the way
+# its configuration records it, such as 2026-11-11T09:31:15Z.
+registry_created() {
+    local manifest digest sha='^sha256:[0-9a-f]{64}$'
+    local accept="Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json"
+    accept+=", application/vnd.docker.distribution.manifest.list.v2+json"
+    accept+=", application/vnd.docker.distribution.manifest.v2+json"
+    manifest="$(registry_get "$1" "manifests/$2" -H "$accept")" || return 1
+    # A tag can name an index of images, one for each kind of computer.
+    # Monolith's are for x86_64 only.
+    digest="$(jq -r '[.manifests[]? | select(.platform.architecture == "amd64" and .platform.os == "linux")
+        | .digest][0] // ""' <<<"$manifest")" || return 1
+    if [[ $digest ]]; then
+        [[ $digest =~ $sha ]] || return 1
+        manifest="$(registry_get "$1" "manifests/$digest" -H "$accept")" || return 1
+    fi
+    digest="$(jq -er '.config.digest' <<<"$manifest")" || return 1
+    [[ $digest =~ $sha ]] || return 1
+    registry_get "$1" "blobs/$digest" | jq -er '.created | strings'
 }
 
 # registry_dates EDITION: the dated builds, newest first.

@@ -21,6 +21,12 @@ changelogs:
 rollback DATE="":
     "$MONOLITH_LIBEXEC/rollback" "$@"
 
+# Try the test build of an open pull request
+[group('Updates')]
+[positional-arguments]
+pr NUMBER="":
+    "$MONOLITH_LIBEXEC/pr" "$@"
+
 alias auto-update := toggle-updates
 
 # Turn the daily automatic updates on or off

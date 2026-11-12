@@ -318,12 +318,28 @@ pending kde pr-50-44 44.20261028.0
 out="$(run status)" || fail "a test build that waits needs attention: $out"
 has "$out" '  ^ Updates       switching to the test build of pull request #50'
 has "$out" 'To stay on the regular builds instead:'
-has "$out" '-> monolith rollback latest'
+has "$out" '-> monolith pr latest'
+lacks "$out" 'monolith rollback latest'
 pending kde-nvidia latest 44.20261029.0
 out="$(run status)" || fail "an edition switch that waits needs attention: $out"
 has "$out" '  ^ Updates       switching to the newest build of the kde-nvidia edition'
 has "$out" 'It starts at your next restart.'
 lacks "$out" 'monolith rollback latest'
+
+# On a test build, updates follow its pull request, and monolith pr is the
+# way back.
+reset
+deployments signed kde pr-50-44 44.20261028.0
+out="$(run status)" && fail 'a test build passed'
+has "$out" '  ! Updates       on the test build of pull request #50'
+has "$out" "It gets that pull request's builds, not the daily ones."
+has "$out" 'To return to the newest regular build:'
+has "$out" '-> monolith pr latest'
+lacks "$out" 'monolith rollback latest'
+pending kde 20261027 44.20261027.0
+out="$(run status)" && fail 'a switch from a test build to an older build passed'
+has "$out" '  ! Updates       switching to the build from Tue, Oct 27, 2026'
+has "$out" '-> monolith rollback latest'
 
 # On an older build with the return to the newest one waiting, updates are no
 # longer something to fix.

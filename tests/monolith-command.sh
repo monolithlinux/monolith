@@ -33,7 +33,7 @@ EOF
 }
 stand_in "$usr/libexec/monolith/software" catalog \
     '[ "${1-}" != __ids ] || printf "sidra\tSidra\nepic-games\tEpic Games Launcher\n"'
-for script in status scheduler rollback edition report-bug; do
+for script in status scheduler rollback pr edition report-bug; do
     stand_in "$usr/libexec/monolith/$script" "$script" \
         '[ "${1-}" != --help ] || echo "Usage: monolith '"$script"' [details]"'
 done
@@ -71,6 +71,7 @@ help="$(monolith help)"
 groups="$(grep -E '^[A-Z][a-z]+$' <<<"$help" | tr '\n' ' ')"
 [ "$groups" = 'Apps Updates System Setup Troubleshooting ' ] || fail "help groups: $groups"
 for command in list 'install <app>...' 'remove <app>...' 'update <app>...' update changelogs 'rollback \[date\]' \
+    'pr \[number\]' \
     'toggle-updates \[action\]' update-firmware status 'edition \[name\]' 'scheduler \[mode\]' clean-system \
     check-idle-power-draw bios bios-info adopt enroll-secure-boot-key setup-luks-tpm-unlock \
     remove-luks-tpm-unlock report-bug logs-this-boot logs-last-boot check-local-overrides; do
@@ -142,6 +143,12 @@ fresh
 monolith rollback 20261027
 logged rollback 20261027
 fresh
+monolith pr
+logged pr ''
+fresh
+monolith pr 63
+logged pr 63
+fresh
 monolith report-bug
 logged report-bug ''
 # Old names of commands still work.
@@ -168,6 +175,9 @@ out="$(monolith rollback 20261027 status 2>&1)" && fail 'a second command ran'
 grep -q 'monolith rollback takes at most one argument' <<<"$out" || fail "too many arguments: $out"
 not_called status
 not_called rollback
+out="$(monolith pr 63 64 2>&1)" && fail 'two pull requests at once were accepted'
+grep -q 'monolith pr takes at most one argument' <<<"$out" || fail "too many pull requests: $out"
+not_called pr
 
 # monolith help COMMAND explains one command.
 out="$(monolith help scheduler)"
@@ -198,12 +208,14 @@ menu="$(monolith __menu)"
     fail "menu commands: $(cut -f1 <<<"$menu" | tr '\n' ' ')"
 grep -q $'^scheduler\t[^\t]*\t-=Show the current scheduler;gaming=' <<<"$menu" || fail 'menu lacks scheduler choices'
 grep -q $'^edition\t[^\t]*\t-=Show your edition;kde=[^;]*;kde-nvidia=' <<<"$menu" || fail 'menu lacks edition choices'
+grep -q $'^pr\t[^\t]*\t-=Show the pull requests you can try, and pick one;list=[^;]*;latest=' <<<"$menu" ||
+    fail 'menu lacks pr choices'
 grep -q $'^status\t[^\t]*\t$' <<<"$menu" || fail 'status should not have choices'
 
 # Tab completion.
 words() { monolith __complete "$@" | cut -f1 | tr '\n' ' '; }
 first="$(words)"
-for command in list install remove update help status scheduler rollback edition report-bug; do
+for command in list install remove update help status scheduler rollback pr edition report-bug; do
     [[ " $first " == *" $command "* ]] || fail "completion lacks $command"
 done
 [ "$(grep -o ' update ' <<<" $first " | wc -l)" = 1 ] || fail 'update is offered twice'
@@ -216,6 +228,7 @@ done
 [ "$(words scheduler)" = 'gaming powersave auto off lowlatency ' ] || fail "scheduler completion: $(words scheduler)"
 [ "$(words edition)" = 'kde kde-nvidia ' ] || fail "edition completion: $(words edition)"
 [ "$(words rollback)" = 'list latest ' ] || fail "rollback completion: $(words rollback)"
+[ "$(words pr)" = 'list latest ' ] || fail "pr completion: $(words pr)"
 [ "$(words status)" = '' ] || fail 'status completes arguments'
 
 completions="$repo_root/files/system/usr/share"
@@ -286,13 +299,13 @@ mkdir -p "$menu_usr/bin" "$menu_usr/libexec/monolith" "$menu_usr/share" "$test_r
 cp "$repo_root/files/system/usr/bin/monolith" "$menu_usr/bin/"
 cp "$repo_root/files/system/usr/libexec/monolith/"{software,common.sh,gear-lever-app,ghostty-themes} "$menu_usr/libexec/monolith/"
 cp -r "$repo_root/files/system/usr/share/monolith" "$menu_usr/share/"
-for script in status scheduler rollback edition report-bug; do
+for script in status scheduler rollback pr edition report-bug; do
     stand_in "$menu_usr/libexec/monolith/$script" "$script"
 done
 stand_in "$test_root/menu/bin/sudo" sudo 'exit 1'
 fresh
-# 10 System tools, 8 scheduler, 2 gaming, Enter, 21 Back, 11 Exit.
-printf '10\n8\n2\n\n21\n11\n' | PATH="$test_root/menu/bin:$PATH" HOME="$test_root/menu/home" TERM=dumb \
+# 10 System tools, 9 scheduler, 2 gaming, Enter, 22 Back, 11 Exit.
+printf '10\n9\n2\n\n22\n11\n' | PATH="$test_root/menu/bin:$PATH" HOME="$test_root/menu/home" TERM=dumb \
     MONOLITH_SELECTOR=numbered timeout 60 script -qec "$menu_usr/bin/monolith" /dev/null >"$test_root/menu.out" 2>&1 ||
     fail "the catalog menu did not finish: $(tail -n 5 "$test_root/menu.out")"
 menu_out="$(tr -d '\r' <"$test_root/menu.out")"

@@ -415,7 +415,7 @@ modules:
         test "$(HOME=/nonexistent /usr/bin/mjust)" = "$help"
         test "$(HOME=/nonexistent /usr/bin/ujust)" = "$help"
         commands="$(HOME=/nonexistent /usr/bin/monolith __complete | cut -f1)"
-        for command in list install remove update status scheduler rollback edition report-bug \
+        for command in list install remove update status scheduler rollback pr edition report-bug \
             adopt enroll-secure-boot-key changelogs toggle-updates check-idle-power-draw \
             setup-luks-tpm-unlock remove-luks-tpm-unlock; do
           grep -qx "$command" <<<"$commands"
@@ -424,7 +424,7 @@ modules:
             auto-update; do
           HOME=/nonexistent /usr/bin/monolith help "$command" >/dev/null
         done
-        for command in status scheduler rollback edition report-bug greeting; do
+        for command in status scheduler rollback pr edition report-bug greeting; do
           HOME=/nonexistent "/usr/libexec/monolith/$command" --help >/dev/null
         done
         # The Monolith mark in fastfetch, monolith help and status, and the greeting.
