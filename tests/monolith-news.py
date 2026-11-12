@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Offline checks for Monolith News feeds, read state, and the login check."""
+"""Offline checks for Monolith News feeds, read state, the login check, and the window's colors."""
 
+import ast
 import configparser
 import datetime
 import importlib.machinery
@@ -20,6 +21,28 @@ sys.dont_write_bytecode = True
 
 ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / "files/kde/usr/bin/monolith-news"
+# QPalette::ColorRole in Qt 6.6 and later, without NoRole.
+QT_PALETTE_ROLES = {
+    "WindowText", "Button", "Light", "Midlight", "Dark", "Mid", "Text", "BrightText", "ButtonText",
+    "Base", "Window", "Shadow", "Highlight", "HighlightedText", "Link", "LinkVisited",
+    "AlternateBase", "ToolTipBase", "ToolTipText", "PlaceholderText", "Accent",
+}
+# What the window builds from QtWidgets and from its own classes that isn't a widget.
+NOT_WIDGETS = {"QApplication", "QVBoxLayout", "QHBoxLayout", "FlowLayout", "QListWidgetItem",
+               "QSizePolicy", "NewsDelegate", "Bridge"}
+# CI's runner has no PySide6; a machine that has it also builds the real window.
+try:
+    from PySide6 import QtCore, QtGui, QtWidgets
+except ImportError:
+    QtWidgets = None
+
+
+def load_app(name):
+    loader = importlib.machinery.SourceFileLoader(name, str(APP))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
 
 
 def entry(identifier, date="2026-01-01", title="Title", body="Body.", links=None, **fields):
@@ -56,10 +79,7 @@ class NewsTests(unittest.TestCase):
         # Nothing here may open a real window.
         os.environ.pop("DISPLAY", None)
         os.environ.pop("WAYLAND_DISPLAY", None)
-        loader = importlib.machinery.SourceFileLoader("monolith_news_test", str(APP))
-        spec = importlib.util.spec_from_loader(loader.name, loader)
-        self.app = importlib.util.module_from_spec(spec)
-        loader.exec_module(self.app)
+        self.app = load_app("monolith_news_test")
         self.gui = mock.Mock(return_value=0)
         self.app.run_gui = self.gui
         self.responses = []
@@ -265,6 +285,156 @@ class NewsTests(unittest.TestCase):
         self.gui.reset_mock()
         self.assertEqual(self.app.main(["--preview", str(path)]), 1)
         self.gui.assert_not_called()
+
+    def test_palette_has_a_color_for_every_role(self):
+        # A role the table leaves out would follow the desktop's color scheme.
+        self.assertEqual(set(self.app.PALETTE), QT_PALETTE_ROLES)
+        self.assertLessEqual(set(self.app.PALETTE_UNFOCUSED), QT_PALETTE_ROLES)
+        for role, color in [*self.app.PALETTE.items(), *self.app.PALETTE_UNFOCUSED.items()]:
+            self.assertRegex(color, r"\A#[0-9a-f]{6}\Z", role)
+
+    def test_every_widget_is_created_with_the_palette(self):
+        tree = ast.parse(APP.read_text(encoding="utf-8"))
+        parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
+        widgets = []
+        bare = []
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and isinstance(node.func.value, ast.Name)
+                    and node.func.value.id in ("QtWidgets", "ui")
+                    and node.func.attr not in NOT_WIDGETS):
+                continue
+            created = f"{node.func.value.id}.{node.func.attr}() on line {node.lineno}"
+            widgets.append(created)
+            parent = parents[node]
+            if not (isinstance(parent, ast.Call) and isinstance(parent.func, ast.Name)
+                    and parent.func.id == "themed" and parent.args[:1] == [node]):
+                bare.append(created)
+        # The scan found the window's widgets, and each one is themed(...)'s first argument.
+        self.assertGreater(len(widgets), 10)
+        self.assertEqual(bare, [], "wrap these in themed(...), or add a class that isn't a widget "
+                                   "to NOT_WIDGETS")
+        # Nothing else sets a palette, so no widget gets colors that skip the table.
+        setters = [node.lineno for node in ast.walk(tree)
+                   if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                   and node.func.attr == "setPalette"]
+        self.assertEqual(len(setters), 1, setters)
+        themed = next(node for node in ast.walk(tree)
+                      if isinstance(node, ast.FunctionDef) and node.name == "themed")
+        self.assertTrue(themed.lineno < setters[0] <= themed.end_lineno)
+
+    def test_focus_frame_takes_the_selection_color(self):
+        # Breeze builds this widget itself, so only the style sheet can reach it.
+        self.assertIn(f"QFocusFrame {{ selection-background-color: {self.app.Color.SELECTION}; }}",
+                      self.app.STYLESHEET)
+
+
+@unittest.skipIf(QtWidgets is None, "PySide6 is not installed")
+class WindowTests(unittest.TestCase):
+    """Build the real window off screen and read back every widget's palette."""
+
+    BODY = "A paragraph with **bold**, `code` and [a link](https://example.com/).\n\n- a bullet"
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="monolith news window ")
+        self.addCleanup(self.temp.cleanup)
+        root = Path(self.temp.name)
+        env = {name: str(root / name) for name in (
+            "HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_RUNTIME_DIR")}
+        env["QT_QPA_PLATFORM"] = "offscreen"
+        patch = mock.patch.dict(os.environ, env)
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.app = load_app("monolith_news_window_test")
+        self.qt = QtWidgets.QApplication.instance() or QtWidgets.QApplication(["monolith-news-test"])
+        self.roles = [role for role in QtGui.QPalette.ColorRole
+                      if role.name not in ("NoRole", "NColorRoles")]
+        self.groups = [QtGui.QPalette.ColorGroup.Active, QtGui.QPalette.ColorGroup.Inactive,
+                       QtGui.QPalette.ColorGroup.Disabled]
+
+    def system_palette(self, color):
+        palette = QtGui.QPalette()
+        for role in self.roles:
+            palette.setColor(role, QtGui.QColor(color))
+        return palette
+
+    def colors(self, widgets):
+        return [{(group.name, role.name): widget.palette().color(group, role).name()
+                 for group in self.groups for role in self.roles} for widget in widgets]
+
+    def check_window(self):
+        """Stands in for QApplication.exec: the window is built and shown, look at it."""
+        window = next(widget for widget in self.qt.topLevelWidgets()
+                      if widget.objectName() == "newsWindow")
+        news_list = window.findChild(QtWidgets.QListWidget)
+
+        def widgets():
+            return [window, *window.findChildren(QtWidgets.QWidget)]
+
+        def assert_all_roles_set():
+            for widget in widgets():
+                unset = [f"{group.name} {role.name}" for group in self.groups for role in self.roles
+                         if not widget.palette().isBrushSet(group, role)]
+                self.assertEqual(unset, [], f"{widget.metaObject().className()} leaves these roles "
+                                            "to the desktop's color scheme")
+
+        assert_all_roles_set()
+        body = window.findChild(QtWidgets.QTextBrowser)
+        active, inactive = self.groups[:2]
+        role = QtGui.QPalette.ColorRole
+        self.assertEqual(body.palette().color(active, role.Text).name(), self.app.Color.BODY)
+        self.assertEqual(body.palette().color(active, role.Highlight).name(), self.app.Color.SELECTION)
+        self.assertEqual(body.palette().color(inactive, role.Highlight).name(),
+                         self.app.Color.SELECTION_UNFOCUSED)
+        self.assertEqual(body.viewport().palette().color(active, role.Window).name(),
+                         self.app.Color.WINDOW)
+        self.assertEqual(news_list.viewport().palette().color(active, role.Base).name(),
+                         self.app.Color.SIDEBAR)
+        reading = window.findChild(QtWidgets.QScrollArea)
+        self.assertEqual(reading.viewport().palette().color(active, role.Window).name(),
+                         self.app.Color.GUTTER)
+        # Breeze outlines a body that Tab moved to with a QFocusFrame it builds like this.
+        frame = QtWidgets.QFocusFrame(body)
+        frame.setWidget(body)
+        frame.ensurePolished()
+        self.assertEqual(frame.palette().color(active, role.Highlight).name(),
+                         self.app.Color.SELECTION)
+        frame.setWidget(None)
+        frame.setParent(None)
+        # The desktop's color scheme changes while the window is open.
+        before = widgets()
+        colors = self.colors(before)
+        QtWidgets.QApplication.setPalette(self.system_palette("#00ff00"))
+        QtCore.QCoreApplication.sendEvent(self.qt, QtCore.QEvent(QtCore.QEvent.Type.ApplicationPaletteChange))
+        self.qt.processEvents()
+        self.assertEqual(self.colors(before), colors)
+        # Opening another announcement replaces the article's widgets with new ones.
+        news_list.setCurrentRow(1)
+        QtCore.QCoreApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+        self.qt.processEvents()
+        self.assertEqual([view.toPlainText() for view in window.findChildren(QtWidgets.QTextBrowser)],
+                         ["Second body."])
+        assert_all_roles_set()
+        self.checked = True
+        return 0
+
+    def test_no_widget_takes_colors_from_the_system_palette(self):
+        announcements, problems = self.app.parse_feed(feed(
+            entry("a", "2026-02-01", body=self.BODY, category="Gaming", note="A note.",
+                  install_path=["monolith", "Gaming"], links=[("Docs", "https://example.com/docs")]),
+            entry("b", "2026-01-01", body="Second body.")))
+        self.assertEqual(problems, [])
+        QtWidgets.QApplication.setPalette(self.system_palette("#ff00ff"))
+        self.checked = False
+        with mock.patch.object(QtWidgets.QApplication, "exec", lambda *args: self.check_window()):
+            # "cache" also shows the note about saved announcements.
+            code = self.app.run_gui(self.app.FeedResult(tuple(announcements), "cache"),
+                                    self.app.NewsState(frozenset(), frozenset()),
+                                    refresh=False, record=False)
+        self.assertEqual(code, 0)
+        self.assertTrue(self.checked)
+        # This Qt has the roles that the test without Qt expects the table to have.
+        self.assertEqual({role.name for role in self.roles}, QT_PALETTE_ROLES)
 
 
 if __name__ == "__main__":

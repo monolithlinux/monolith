@@ -76,7 +76,6 @@ class Color:
     INSET_BORDER = "#2a2e34"
     RING = "#33373e"
     TEXT = "#e6e4df"
-    BODY = "#c9cbd0"
     SECONDARY = "#b9bcc2"
     TERTIARY = "#a9adb4"
     MUTED = "#8b9099"
@@ -88,9 +87,39 @@ class Color:
     SWITCH_OFF = "#3a3f46"
     # rgba(232, 163, 61, 0.14) over WINDOW, the only background behind the pill.
     PILL = "#383126"
+    # Not from the handoff: Breeze Dark's colors for text, selected text and window
+    # backgrounds. The body, selections and the strip behind the reading pane's scroll
+    # bar were drawn in them while they still followed the desktop's color scheme, and
+    # they stay so the default look doesn't change. The handoff's body color, #c9cbd0,
+    # never reached the screen.
+    BODY = "#fcfcfc"
+    SELECTION = "#3daee9"
+    SELECTION_UNFOCUSED = "#1b4155"
+    ON_SELECTION = "#fcfcfc"
+    GUTTER = "#202326"
 
 
+# The design is dark whatever the desktop color scheme, so the window has a color of
+# its own for every Qt palette role. What a widget doesn't paint itself is drawn from
+# these: body text, list bullets, selected text, the strip behind a scroll bar. A role
+# left out would follow the desktop's color scheme.
+PALETTE = {
+    "Window": Color.WINDOW, "WindowText": Color.BODY, "Base": Color.WINDOW,
+    "AlternateBase": Color.SIDEBAR, "Text": Color.BODY, "BrightText": Color.WHITE,
+    "Button": Color.SELECTED, "ButtonText": Color.TEXT, "Highlight": Color.SELECTION,
+    "HighlightedText": Color.ON_SELECTION, "Accent": Color.ACCENT, "Link": Color.ACCENT,
+    "LinkVisited": Color.ACCENT, "PlaceholderText": Color.MUTED, "ToolTipBase": Color.CHROME,
+    "ToolTipText": Color.TEXT, "Light": Color.RING, "Midlight": Color.RING,
+    "Mid": Color.DIVIDER, "Dark": Color.CHROME, "Shadow": "#000000",
+}
+# Roles with another color while a different window has the focus.
+PALETTE_UNFOCUSED = {"Highlight": Color.SELECTION_UNFOCUSED}
+
+
+# QFocusFrame is the outline Breeze draws around the body when Tab moves to it. Breeze
+# builds that widget itself, so it gets the selection color here and not from PALETTE.
 STYLESHEET = f"""
+QFocusFrame {{ selection-background-color: {Color.SELECTION}; }}
 QFrame#sidebar {{ background: {Color.SIDEBAR}; border: none; border-right: 1px solid {Color.DIVIDER}; }}
 QFrame#olderBar {{ background: {Color.SIDEBAR}; border: none; border-top: 1px solid {Color.DIVIDER}; }}
 QFrame#getIt {{ background: {Color.INSET}; border: 1px solid {Color.INSET_BORDER}; border-radius: 8px; }}
@@ -867,8 +896,29 @@ def run_gui(result: FeedResult, state: NewsState, *, refresh: bool, record: bool
     body_font = font(15)
     code_font = font(13, fixed_pitch=True)
 
+    def themed(widget, **colors):
+        """Give a new widget the window's palette, with the given roles replaced.
+
+        Qt stops handing a window's palette down to its child widgets once the window
+        has a style sheet; each child takes the desktop's color scheme instead. So
+        every widget gets all roles set on itself, and so do the viewport and scroll
+        bars Qt builds inside it. Call this when the widget is created, before it
+        gets children of its own: it would replace their palettes too.
+        """
+        role = QtGui.QPalette.ColorRole
+        palette = QtGui.QPalette()
+        for name, color in (PALETTE | colors).items():
+            palette.setColor(getattr(role, name), QtGui.QColor(color))
+        for name, color in PALETTE_UNFOCUSED.items():
+            if name not in colors:
+                palette.setColor(QtGui.QPalette.ColorGroup.Inactive, getattr(role, name),
+                                 QtGui.QColor(color))
+        for part in (widget, *widget.findChildren(QtWidgets.QWidget)):
+            part.setPalette(palette)
+        return widget
+
     def label(text, label_font, ink, *, wrap=False, rich=False):
-        widget = QtWidgets.QLabel(text)
+        widget = themed(QtWidgets.QLabel(text), WindowText=ink)
         widget.setTextFormat(Qt.TextFormat.RichText if rich else Qt.TextFormat.PlainText)
         widget.setFont(label_font)
         widget.setWordWrap(wrap)
@@ -877,9 +927,6 @@ def run_gui(result: FeedResult, state: NewsState, *, refresh: bool, record: bool
             size_policy = widget.sizePolicy()
             size_policy.setHorizontalPolicy(QtWidgets.QSizePolicy.Policy.Ignored)
             widget.setSizePolicy(size_policy)
-        palette = widget.palette()
-        palette.setColor(QtGui.QPalette.ColorRole.WindowText, QtGui.QColor(ink))
-        widget.setPalette(palette)
         return widget
 
     def open_url(url):
@@ -887,27 +934,11 @@ def run_gui(result: FeedResult, state: NewsState, *, refresh: bool, record: bool
         if url.startswith("https://"):
             QtGui.QDesktopServices.openUrl(QtCore.QUrl(url))
 
-    # The design is dark whatever the desktop color scheme; native parts such as
-    # text selection follow this palette.
-    palette = QtGui.QPalette()
-    role = QtGui.QPalette.ColorRole
-    for color_role, value in (
-            (role.Window, Color.WINDOW), (role.WindowText, Color.TEXT), (role.Base, Color.WINDOW),
-            (role.AlternateBase, Color.SIDEBAR), (role.Text, Color.BODY),
-            (role.Button, Color.SELECTED), (role.ButtonText, Color.TEXT),
-            (role.Highlight, Color.ACCENT), (role.HighlightedText, Color.ON_ACCENT),
-            (role.Link, Color.ACCENT), (role.LinkVisited, Color.ACCENT),
-            (role.PlaceholderText, Color.MUTED), (role.ToolTipBase, Color.CHROME),
-            (role.ToolTipText, Color.TEXT), (role.Light, Color.RING), (role.Midlight, Color.RING),
-            (role.Mid, Color.DIVIDER), (role.Dark, Color.CHROME), (role.Shadow, "#000000")):
-        palette.setColor(color_role, QtGui.QColor(value))
-
-    window = QtWidgets.QWidget()
+    window = themed(QtWidgets.QWidget())
     window.setObjectName("newsWindow")
     window.setWindowTitle("Monolith News")
     window.resize(900, 640)
     window.setMinimumSize(720, 480)
-    window.setPalette(palette)
     window.setStyleSheet(STYLESHEET)
     layout = QtWidgets.QVBoxLayout(window)
     layout.setContentsMargins(0, 0, 0, 0)
@@ -916,7 +947,7 @@ def run_gui(result: FeedResult, state: NewsState, *, refresh: bool, record: bool
     panes.setSpacing(0)
     layout.addLayout(panes, 1)
 
-    sidebar = QtWidgets.QFrame()
+    sidebar = themed(QtWidgets.QFrame())
     sidebar.setObjectName("sidebar")
     sidebar.setFixedWidth(270)
     side = QtWidgets.QVBoxLayout(sidebar)
@@ -929,14 +960,15 @@ def run_gui(result: FeedResult, state: NewsState, *, refresh: bool, record: bool
     heading_font = font(20, weight.Bold, spacing=-0.3)
     header.addWidget(label("News", heading_font, Color.TEXT), 0, Qt.AlignmentFlag.AlignBottom)
     header.addStretch()
-    mark_all = ui.TextButton("Mark all read", small_font, ink=Color.MUTED, hover_ink=Color.TEXT)
+    mark_all = themed(ui.TextButton("Mark all read", small_font, ink=Color.MUTED,
+                                    hover_ink=Color.TEXT))
     # Raise the smaller text onto the heading's baseline.
     mark_all.setContentsMargins(0, 0, 0, QtGui.QFontMetrics(heading_font).descent()
                                 - QtGui.QFontMetrics(small_font).descent())
     header.addWidget(mark_all, 0, Qt.AlignmentFlag.AlignBottom)
     side.addLayout(header)
 
-    news_list = ui.NewsList()
+    news_list = themed(ui.NewsList(), Window=Color.SIDEBAR, Base=Color.SIDEBAR)
     news_list.setAccessibleName("Announcements")
     news_list.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
     news_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -945,20 +977,16 @@ def run_gui(result: FeedResult, state: NewsState, *, refresh: bool, record: bool
     news_list.setMouseTracking(True)
     news_list.viewport().setAttribute(Qt.WidgetAttribute.WA_Hover)
     news_list.viewport().setCursor(Qt.CursorShape.PointingHandCursor)
-    list_palette = news_list.palette()
-    for color_role in (role.Window, role.Base):
-        list_palette.setColor(color_role, QtGui.QColor(Color.SIDEBAR))
-    news_list.setPalette(list_palette)
     delegate = ui.NewsDelegate(news_list, font(14, weight.DemiBold), small_font)
     news_list.setItemDelegate(delegate)
     side.addWidget(news_list, 1)
 
-    older_bar = QtWidgets.QFrame()
+    older_bar = themed(QtWidgets.QFrame())
     older_bar.setObjectName("olderBar")
     older_layout = QtWidgets.QVBoxLayout(older_bar)
     older_layout.setContentsMargins(0, 0, 0, 0)
-    older = ui.TextButton("Older announcements on GitHub →", small_font, ink=Color.MUTED,
-                          hover_ink=Color.TEXT, padding=(18, 12))
+    older = themed(ui.TextButton("Older announcements on GitHub →", small_font, ink=Color.MUTED,
+                                 hover_ink=Color.TEXT, padding=(18, 12)))
     older.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding,
                         QtWidgets.QSizePolicy.Policy.Fixed)
     older.clicked.connect(lambda: open_url(HISTORY_URL))
@@ -966,24 +994,25 @@ def run_gui(result: FeedResult, state: NewsState, *, refresh: bool, record: bool
     side.addWidget(older_bar)
 
     def note(text):
-        frame = QtWidgets.QFrame()
+        frame = themed(QtWidgets.QFrame())
         frame.setObjectName("note")
         row = QtWidgets.QHBoxLayout(frame)
         row.setContentsMargins(14, 12, 14, 12)
         row.setSpacing(10)
         line_height = QtGui.QFontMetrics(button_font).height()
-        row.addWidget(ui.InfoIcon(13, line_height), 0, Qt.AlignmentFlag.AlignTop)
+        row.addWidget(themed(ui.InfoIcon(13, line_height)), 0, Qt.AlignmentFlag.AlignTop)
         row.addWidget(label(text, button_font, Color.TERTIARY, wrap=True), 1)
         return frame
 
-    reading = QtWidgets.QScrollArea()
+    # Breeze fills the strip behind the scroll bar with this widget's Window color.
+    reading = themed(QtWidgets.QScrollArea(), Window=Color.GUTTER)
     reading.setWidgetResizable(True)
     reading.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
     reading.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-    page = QtWidgets.QWidget()
+    page = themed(QtWidgets.QWidget())
     page_layout = QtWidgets.QHBoxLayout(page)
     page_layout.setContentsMargins(36, 28, 36, 32)
-    column = QtWidgets.QWidget()
+    column = themed(QtWidgets.QWidget())
     column.setMaximumWidth(600)
     page_layout.addWidget(column, 1)
     page_layout.addStretch(0)
@@ -996,12 +1025,12 @@ def run_gui(result: FeedResult, state: NewsState, *, refresh: bool, record: bool
     reading.setWidget(page)
     panes.addWidget(reading, 1)
 
-    footer = QtWidgets.QFrame()
+    footer = themed(QtWidgets.QFrame())
     footer.setObjectName("footerBar")
     bar = QtWidgets.QHBoxLayout(footer)
     bar.setContentsMargins(18, 12, 14, 12)
     bar.setSpacing(16)
-    login = ui.LoginSwitch("Show at login", button_font, login_check_enabled())
+    login = themed(ui.LoginSwitch("Show at login", button_font, login_check_enabled()))
 
     def toggle_login(checked):
         try:
@@ -1018,14 +1047,14 @@ def run_gui(result: FeedResult, state: NewsState, *, refresh: bool, record: bool
     footer_links = QtWidgets.QHBoxLayout()
     footer_links.setSpacing(4)
     for text, url in FOOTER_LINKS:
-        button = ui.TextButton(text, button_font, ink=Color.SECONDARY, hover_ink=Color.TEXT,
-                               hover_fill=Color.SELECTED, padding=(10, 7))
+        button = themed(ui.TextButton(text, button_font, ink=Color.SECONDARY, hover_ink=Color.TEXT,
+                                      hover_fill=Color.SELECTED, padding=(10, 7)))
         button.clicked.connect(lambda _checked=False, url=url: open_url(url))
         footer_links.addWidget(button)
     bar.addLayout(footer_links)
-    done = ui.TextButton("Done", font(13, weight.DemiBold), ink=Color.ON_ACCENT,
-                         hover_ink=Color.ON_ACCENT, fill=Color.ACCENT, hover_fill=Color.ACCENT_LIGHT,
-                         padding=(18, 8), focus=Color.TEXT)
+    done = themed(ui.TextButton("Done", font(13, weight.DemiBold), ink=Color.ON_ACCENT,
+                                hover_ink=Color.ON_ACCENT, fill=Color.ACCENT,
+                                hover_fill=Color.ACCENT_LIGHT, padding=(18, 8), focus=Color.TEXT))
     done.setObjectName("doneButton")
     done.clicked.connect(window.close)
     bar.addWidget(done)
@@ -1102,12 +1131,12 @@ def run_gui(result: FeedResult, state: NewsState, *, refresh: bool, record: bool
             if start > document.findBlock(start).position():
                 restyle(start - 1, start, padding)
             restyle(end - 1, end, padding)
-        view = ui.Body(document, chips, code_font, has_links)
+        view = themed(ui.Body(document, chips, code_font, has_links))
         view.anchorClicked.connect(lambda url: open_url(url.toString()))
         return view
 
     def build_article(announcement):
-        widget = QtWidgets.QWidget()
+        widget = themed(QtWidgets.QWidget())
         box = QtWidgets.QVBoxLayout(widget)
         box.setContentsMargins(0, 0, 0, 0)
         box.setSpacing(16)
@@ -1116,18 +1145,18 @@ def run_gui(result: FeedResult, state: NewsState, *, refresh: bool, record: bool
         meta = QtWidgets.QHBoxLayout()
         meta.setSpacing(10)
         if announcement.id not in state.dismissed:
-            meta.addWidget(ui.Pill("NEW", font(11, weight.DemiBold, spacing=0.3)))
+            meta.addWidget(themed(ui.Pill("NEW", font(11, weight.DemiBold, spacing=0.3))))
         meta.addWidget(label(long_date(announcement.date), small_font, Color.MUTED))
         if announcement.category:
             meta.addWidget(label("·", small_font, Color.MUTED))
             meta.addWidget(label(announcement.category, small_font, Color.MUTED))
         meta.addStretch()
         head.addLayout(meta)
-        head.addWidget(ui.Heading(announcement.title, font(26, weight.Bold, spacing=-0.4),
-                                  Color.TEXT))
+        head.addWidget(themed(ui.Heading(announcement.title, font(26, weight.Bold, spacing=-0.4),
+                                         Color.TEXT)))
         box.addLayout(head)
         if announcement.install_path:
-            strip = QtWidgets.QFrame()
+            strip = themed(QtWidgets.QFrame())
             strip.setObjectName("getIt")
             row = QtWidgets.QHBoxLayout(strip)
             row.setContentsMargins(14, 12, 14, 12)
@@ -1143,9 +1172,9 @@ def run_gui(result: FeedResult, state: NewsState, *, refresh: bool, record: bool
         if announcement.links:
             buttons = ui.FlowLayout(8)
             for link in announcement.links:
-                button = ui.TextButton(link.label, button_font, ink=Color.TEXT, hover_ink=Color.WHITE,
-                                       hover_fill=Color.SELECTED, border=Color.RING,
-                                       padding=(12, 7), arrow=True)
+                button = themed(ui.TextButton(link.label, button_font, ink=Color.TEXT,
+                                              hover_ink=Color.WHITE, hover_fill=Color.SELECTED,
+                                              border=Color.RING, padding=(12, 7), arrow=True))
                 button.clicked.connect(lambda _checked=False, url=link.url: open_url(url))
                 buttons.addWidget(button)
             box.addLayout(buttons)
