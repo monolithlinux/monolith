@@ -28,6 +28,27 @@
 #   files/kde/usr/bin/monolith-news --preview news/announcements.toml
 
 [[announcements]]
+id = "2026-11-11-epic-games-launcher-paused"
+date = 2026-11-11
+title = "The Epic Games Launcher is out of Monolith Software for now"
+category = "Gaming"
+body = """
+Epic stopped publishing its Linux launcher as an AppImage, the file Monolith
+installed, so installing it from `monolith` stopped working. The launcher is
+off the list until Epic brings the AppImage back, which Epic has said will be
+this month.
+
+If you already installed it, nothing is removed. It stays in your application
+menu, but Monolith no longer repairs or removes it. To remove it yourself, open
+Gear Lever, select the launcher and choose **Remove**.
+
+It disappears from `monolith` after you update Monolith and restart.
+"""
+links = [
+  { label = "What Epic said (GamingOnLinux)", url = "https://www.gamingonlinux.com/2026/11/epic-games-comments-on-planned-linux-distribution-support/" },
+]
+
+[[announcements]]
 id = "2026-11-03-fedora-45"
 date = 2026-11-03
 title = "Monolith moves to Fedora 45, its first new Fedora version"
