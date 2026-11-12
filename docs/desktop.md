@@ -3,12 +3,33 @@
 These are part of the Monolith image itself, so there's nothing to install and
 they update along with Monolith.
 
+- [Boot menu](#boot-menu)
 - [The terminal](#the-terminal)
 - [OpenDeck](#opendeck)
 - [Node.js](#nodejs)
 - [Waywallen wallpapers](#waywallen-wallpapers)
 - [Update reminder](#update-reminder)
 - [Monolith News](#monolith-news)
+
+## Boot menu
+
+When the computer starts, GRUB lists the builds you can start: the newest one,
+the one before it, and your firmware's setup. Monolith styles that menu with its
+logo, puts the entries in the middle of the screen and waits five seconds before
+it starts the first one. Any key stops the countdown.
+
+The look is kept on `/boot`, which isn't part of the image. Monolith copies it
+there when the computer starts, so after the update that brings it, or changes
+it, you see it from the second start on. Going back to an earlier build leaves
+the menu as it is.
+
+`monolith boot-menu off` brings back GRUB's plain list, shown for one second,
+and `monolith boot-menu on` returns to Monolith's look. A GRUB password set with
+`grub2-setpassword` stays either way. Settings of your own, such as a longer
+wait (`set timeout=10`), go in `/boot/grub2/custom.cfg`, which GRUB reads last.
+
+The text is small on a 4K screen. With Secure Boot on, GRUB only has its one
+built-in size of text, and Monolith keeps Secure Boot working.
 
 ## The terminal
 

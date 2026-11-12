@@ -1,0 +1,65 @@
+# Monolith's boot menu (a GRUB gfxmenu theme).
+#
+# The text is GRUB's own 16 pixel font. With Secure Boot on, GRUB refuses
+# font files from disk, so this theme names none and keeps its text ASCII.
+# Everything that has to look good is a picture.
+
+title-text: ""
+desktop-color: "#000000"
+terminal-left: "0"
+terminal-top: "0"
+terminal-width: "100%"
+terminal-height: "100%"
+terminal-border: "0"
+
+# The logo, with its lower edge at 40% of the screen's height.
++ image {
+  left = 50%-189
+  top = 40%-256
+  file = "logo.png"
+}
+
+# The entries. GRUB starts every line at the same place and can't centre
+# them one by one, so the highlight is a fixed 560 pixels wide and
+# item_icon_space pushes the text in until the longest entry sits in the
+# middle of it. There are no icons: the entries ostree writes name none.
+# libexec/monolith/boot-menu sets the number from the entries on the disk;
+# 116 fits "Monolith KDE 45.20261112.0 (ostree:0)".
++ boot_menu {
+  left = 50%-280
+  top = 46%
+  width = 560
+  height = 36%
+  item_color = "#b0b4ba"
+  selected_item_color = "#ffffff"
+  icon_width = 0
+  icon_height = 0
+  item_icon_space = 116
+  item_height = 44
+  item_padding = 0
+  item_spacing = 6
+  selected_item_pixmap_style = "select_*.png"
+  # GRUB keeps two pixels free for a scrollbar even when it draws none,
+  # which would leave the highlight a pixel off centre.
+  scrollbar_left_pad = 0
+}
+
+# The countdown. GRUB hides it once a key is pressed.
++ label {
+  id = "__timeout__"
+  top = 84%
+  left = 0
+  width = 100%
+  align = "center"
+  text = "Starting in %ds"
+  color = "#969ca4"
+}
+
++ label {
+  top = 89%
+  left = 0
+  width = 100%
+  align = "center"
+  text = "Up/Down select | Enter start | e edit | c command line"
+  color = "#60646c"
+}

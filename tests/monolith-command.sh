@@ -72,7 +72,7 @@ groups="$(grep -E '^[A-Z][a-z]+$' <<<"$help" | tr '\n' ' ')"
 [ "$groups" = 'Apps Updates System Setup Troubleshooting ' ] || fail "help groups: $groups"
 for command in list 'install <app>...' 'remove <app>...' 'update <app>...' update changelogs 'rollback \[date\]' \
     'pr \[number\]' \
-    'toggle-updates \[action\]' update-firmware status 'edition \[name\]' 'scheduler \[mode\]' clean-system \
+    'toggle-updates \[action\]' update-firmware status 'edition \[name\]' 'scheduler \[mode\]' 'boot-menu \[mode\]' clean-system \
     check-idle-power-draw bios bios-info adopt enroll-secure-boot-key setup-luks-tpm-unlock \
     remove-luks-tpm-unlock report-bug logs-this-boot logs-last-boot check-local-overrides; do
     grep -Eq "^  $command +[A-Z]" <<<"$help" || fail "help does not list $command"
@@ -210,6 +210,7 @@ grep -q $'^scheduler\t[^\t]*\t-=Show the current scheduler;gaming=' <<<"$menu" |
 grep -q $'^edition\t[^\t]*\t-=Show your edition;kde=[^;]*;kde-nvidia=' <<<"$menu" || fail 'menu lacks edition choices'
 grep -q $'^pr\t[^\t]*\t-=Show the pull requests you can try, and pick one;list=[^;]*;latest=' <<<"$menu" ||
     fail 'menu lacks pr choices'
+grep -q $'^boot-menu\t[^\t]*\t-=Show whether Monolith\'s look is on;on=[^;]*;off=' <<<"$menu" || fail 'menu lacks boot-menu choices'
 grep -q $'^status\t[^\t]*\t$' <<<"$menu" || fail 'status should not have choices'
 
 # Tab completion.
@@ -304,8 +305,8 @@ for script in status scheduler rollback pr edition report-bug; do
 done
 stand_in "$test_root/menu/bin/sudo" sudo 'exit 1'
 fresh
-# 10 System tools, 9 scheduler, 2 gaming, Enter, 22 Back, 11 Exit.
-printf '10\n9\n2\n\n22\n11\n' | PATH="$test_root/menu/bin:$PATH" HOME="$test_root/menu/home" TERM=dumb \
+# 10 System tools, 9 scheduler, 2 gaming, Enter, 23 Back, 11 Exit.
+printf '10\n9\n2\n\n23\n11\n' | PATH="$test_root/menu/bin:$PATH" HOME="$test_root/menu/home" TERM=dumb \
     MONOLITH_SELECTOR=numbered timeout 60 script -qec "$menu_usr/bin/monolith" /dev/null >"$test_root/menu.out" 2>&1 ||
     fail "the catalog menu did not finish: $(tail -n 5 "$test_root/menu.out")"
 menu_out="$(tr -d '\r' <"$test_root/menu.out")"

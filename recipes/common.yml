@@ -286,6 +286,8 @@ modules:
       enabled:
         - tailscaled.service
         - monolith-firstboot-label.service
+        # Copies the boot menu's look to /boot, which isn't part of the image.
+        - monolith-boot-menu.service
         # scx_loader picks the default sched-ext scheduler at boot.
         - scx_loader.service
         # Socket-activated modular libvirt daemons.
