@@ -13,6 +13,9 @@ publishes:
   epic-games  The Epic Games Launcher comes from Epic's own download link, which publishes no
               checksum, so only HTTPS downloads from Epic's build server are accepted. It updates
               itself, so `update` keeps a working copy and only repairs.
+              Monolith Software doesn't offer it at the moment: Epic's AppImage link has answered
+              404 since at least November 11, 2026. It stays here so that the daily App downloads
+              check (.github/workflows/check-app-downloads.py) reports the day the AppImage is back.
 
 An application only ever inspects and changes its own integration, receipt, snapshots and processes.
 """

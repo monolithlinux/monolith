@@ -57,7 +57,7 @@ monolith remove codex
 ```
 
 `monolith help` lists the ID of every app, such as `prismlauncher` or
-`epic-games`.
+`wowup-cf`.
 
 Each app is handled in its own step. If one fails, Monolith reports it, carries on
 with the rest, and exits with an error at the end. Ctrl-C cancels the current app
@@ -85,8 +85,7 @@ under it, and still updates the rest.
   addons and mods, Minecraft instances, media downloads and projects.
 - Tea, Superfile and Oh My Pi, and every AppImage and Flatpak bundle Monolith
   takes from a GitHub release, are checked against the SHA256 checksum the project
-  publishes. The Epic Games Launcher is the one exception, explained in
-  [its section](#epic-games-launcher).
+  publishes.
 - Updates to Tea, Superfile, Oh My Pi and Herdr keep the old version in place
   until the new one is completely set up.
 - Claude Code, Codex CLI and OpenCode use their official installers. If an
@@ -121,12 +120,12 @@ If the app needs a runtime, Flatpak takes it from the system's Flatpaks when the
 have the right version, and otherwise downloads it from Flathub. Monolith adds
 Flathub to your account's Flatpak sources if it's missing.
 
-**AppImages through Gear Lever** (WowUp-CF, r2modman, Sidra, the Epic Games
-Launcher). Monolith downloads the official AppImage and hands it to Gear Lever,
-which adds it to your application menu like any other app. If Gear Lever is
-missing, Monolith asks before installing it from Flathub for your account. If you
-already added the app to Gear Lever yourself, Monolith adopts that copy instead of
-creating a second launcher.
+**AppImages through Gear Lever** (WowUp-CF, r2modman, Sidra). Monolith downloads
+the official AppImage and hands it to Gear Lever, which adds it to your
+application menu like any other app. If Gear Lever is missing, Monolith asks
+before installing it from Flathub for your account. If you already added the app
+to Gear Lever yourself, Monolith adopts that copy instead of creating a second
+launcher.
 
 For the Flatpak apps, a copy you already installed for your account is adopted.
 A copy installed system-wide, for example through Bazaar, is left alone rather
@@ -136,29 +135,12 @@ is lost.
 
 ## Gaming
 
-### Epic Games Launcher
-
-**Gaming → Epic Games Launcher** installs Epic's
-[new launcher](https://launcher.epicgames.com/), which runs natively on Linux.
-It's a preview from Epic, so expect rough edges; Epic ships fixes almost every day.
-Your library, cloud saves and progress come from your Epic account, and
-Windows-only games run through Proton, which the launcher downloads the first time
-a game needs it.
-
-Monolith downloads the AppImage from Epic's own download link. Epic doesn't publish
-a checksum, so unlike the other apps, Monolith can't check the download against
-one. It only accepts the file over HTTPS from Epic's build server and checks that
-it's a real AppImage. If you already have the launcher in Gear Lever, Monolith
-adopts it and replaces the AppImage with a fresh download from Epic.
-
-After that, the launcher keeps itself up to date. `monolith update epic-games`,
-`monolith update` and **Update** in the dashboard leave a working copy alone, and
-only repair a missing launcher, icon or AppImage. `monolith install epic-games`
-downloads Epic's current build again over whatever is installed.
-
-Close the launcher, including its tray icon, before installing or removing it.
-Removing it deletes only the AppImage and its launcher. Your sign-in, settings
-and installed games stay where the launcher put them.
+The Epic Games Launcher isn't offered at the moment. Epic stopped publishing the
+AppImage Monolith installed, and has
+[said](https://www.gamingonlinux.com/2026/11/epic-games-comments-on-planned-linux-distribution-support/)
+it will bring it back. A copy you installed earlier stays in your application
+menu, but Monolith no longer repairs or removes it. To remove it, open Gear Lever,
+select the launcher and choose **Remove**.
 
 ### WowUp-CF
 
