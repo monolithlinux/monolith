@@ -11,6 +11,7 @@ and `ujust` still work.
 - [Apps](#apps)
 - [Updates](#updates)
 - [Going back to an earlier build](#going-back-to-an-earlier-build)
+- [Trying a test build](#trying-a-test-build)
 - [Checking this computer](#checking-this-computer)
 - [The CPU scheduler](#the-cpu-scheduler)
 - [Switching editions](#switching-editions)
@@ -86,6 +87,45 @@ monolith rollback latest
 
 If you change your mind before you've restarted, the same command cancels the
 rollback, and you stay on the build you're running.
+
+## Trying a test build
+
+Changes to Monolith start as pull requests on GitHub. Each open pull request that
+changes your edition gets its own test build, so you can try a change before it
+reaches the regular builds:
+
+```bash
+monolith pr
+```
+
+This lists the open pull requests. The ones you can try come first, with when
+their test build was made and whether it's behind or ahead of latest, the newest
+regular build. Behind means it was built before latest, so it may lack that
+build's newest packages. That's fine for trying something out. The others follow
+with the reason, such as a build that's still running or one that failed. Type a
+number to switch to that pull request, or press Enter to leave everything as it
+is. `monolith pr list` only shows the list, and `monolith pr 63` switches to
+pull request #63 directly.
+
+Test builds can be broken. While you're on one, this computer gets that pull
+request's builds instead of the daily ones, and a new one comes whenever the
+pull request changes. Your apps, files and settings stay, and the switch takes
+effect when you restart. Once the pull request is merged or closed, its test
+build gets no more updates, and `monolith pr` tells you so. To return to the
+newest build and the daily updates:
+
+```bash
+monolith pr latest
+```
+
+That's the same as `monolith rollback latest`, and before you've restarted it
+cancels the switch instead.
+
+A test build is the image `ghcr.io/monolithlinux/kde:pr-63-45`: your edition,
+the pull request's number and its Fedora version. Switching is an
+`rpm-ostree rebase` to it, and its signature is checked like any other build's.
+The list comes from GitHub, which answers a limited number of lookups an hour
+from one internet address. If you run out, `monolith pr` says when to try again.
 
 ## Checking this computer
 

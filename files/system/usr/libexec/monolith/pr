@@ -1,0 +1,577 @@
+#!/usr/bin/bash
+# monolith pr [NUMBER|list|latest]: switch to the test build of an open pull
+# request, or back to the newest build.
+#
+# CI builds a signed test image for every pull request that changes an
+# edition, ghcr.io/monolithlinux/EDITION:pr-NUMBER-FEDORA, and builds it again
+# on every push. This asks GitHub which pull requests are open and whether the
+# build of their newest commit passed, asks the registry when each image was
+# built, and switches the way monolith rollback does. GitHub is asked without
+# an account, which allows 60 requests an hour from one address: the list
+# takes one, and each open pull request one more.
+set -euo pipefail
+# shellcheck source-path=SCRIPTDIR source=common.sh
+. "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/common.sh"
+
+REPOSITORY=monolithlinux/monolith
+
+usage() {
+    cat <<'EOF'
+Usage: monolith pr [number|list|latest]
+
+  monolith pr          show the open pull requests you can try, and pick one
+  monolith pr list     only show them
+  monolith pr 63       switch to the test build of pull request #63
+  monolith pr latest   return to the newest build and daily updates
+
+A pull request is a change to Monolith that isn't in the regular builds yet.
+Each one that changes your edition gets a test build, so you can try it early.
+The list says how each test build compares with the newest regular build:
+behind latest means it was built before that one and may lack its newest
+packages.
+
+Test builds can be broken. On one, this computer follows that pull request's
+builds instead of the daily ones, until you run monolith pr latest. Your apps,
+files and settings stay. Nothing changes until you restart.
+EOF
+}
+
+# busy TEXT: a note on the terminal while the lookups run. rested takes it
+# away again.
+BUSY=""
+busy() {
+    [[ -t 2 ]] || return 0
+    if [[ ${TERM:-dumb} == dumb ]]; then
+        printf '%s\n' "$1" >&2
+    else
+        printf '%s' "$1" >&2
+        BUSY="$1"
+    fi
+}
+rested() {
+    [[ -z $BUSY ]] || printf '\r%*s\r' "${#BUSY}" '' >&2
+    BUSY=""
+}
+
+# wrap TEXT WIDTH: TEXT on as many lines as it takes to fit WIDTH columns.
+wrap() {
+    local words=() word line=""
+    read -r -a words <<<"$1"
+    for word in "${words[@]}"; do
+        if [[ $line ]] && ((${#line} + 1 + ${#word} > $2)); then
+            printf '%s\n' "$line"
+            line="$word"
+        else
+            line+="${line:+ }$word"
+        fi
+    done
+    printf '%s\n' "$line"
+}
+
+# stop MESSAGE: give up before anything was switched, and say so. On a
+# terminal the message breaks between words; elsewhere it's one line.
+stop() {
+    rested
+    [[ -t 2 ]] || die "$1 Nothing was changed."
+    monolith_columns
+    wrap "$1 Nothing was changed." $((MONOLITH_COLUMNS < 80 ? MONOLITH_COLUMNS : 80)) >&2
+    exit 1
+}
+unexpected() {
+    stop "GitHub's answer wasn't what monolith expected. Try again later."
+}
+
+# GitHub -----------------------------------------------------------------------
+
+# github PATH: ask GitHub about Monolith's repository. Sets ANSWER to the
+# answer and ANSWER_STATUS to its HTTP status, or to "unreachable". Succeeds
+# when GitHub said 200.
+github() {
+    local out sep=$'\x1f'
+    ANSWER="" ANSWER_STATUS=unreachable ANSWER_LEFT="" ANSWER_RESET="" ANSWER_RETRY=""
+    out="$(curl -sS --max-time 30 -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' \
+        -w $'\n%{http_code}\x1f%header{x-ratelimit-remaining}\x1f%header{x-ratelimit-reset}\x1f%header{retry-after}' \
+        "$MONOLITH_GITHUB_API/repos/$REPOSITORY/$1" 2>/dev/null)" || return 1
+    ANSWER="${out%$'\n'*}"
+    IFS="$sep" read -r ANSWER_STATUS ANSWER_LEFT ANSWER_RESET ANSWER_RETRY <<<"${out##*$'\n'}"
+    [[ $ANSWER_STATUS =~ ^[0-9]{3}$ ]] || ANSWER_STATUS=000
+    [[ $ANSWER_STATUS == 200 ]]
+}
+
+# github_failed: say in plain words why GitHub gave no answer, and stop.
+# GitHub refuses with 403 or 429 when it asks for a pause (retry-after), or
+# when an address has used up its requests for the hour (none remaining; the
+# reset time says when there are more).
+github_failed() {
+    local used="GitHub limits how many lookups one internet address gets an hour, and this one has used them up."
+    case "$ANSWER_STATUS" in
+        unreachable)
+            stop "Couldn't reach GitHub to look up Monolith's pull requests. Check your connection and try again."
+            ;;
+        403 | 429)
+            if [[ $ANSWER_RETRY =~ ^[0-9]+$ ]]; then
+                stop "GitHub asked for a pause between lookups. Try again in $(span "$ANSWER_RETRY")."
+            elif [[ $ANSWER_LEFT == 0 && $ANSWER_RESET =~ ^[0-9]+$ ]]; then
+                stop "$used Try again in $(span $((ANSWER_RESET - NOW)))."
+            elif [[ $ANSWER_LEFT == 0 ]]; then
+                stop "$used Try again in an hour."
+            fi
+            ;;
+    esac
+    stop "GitHub didn't give the answer monolith expected (HTTP $ANSWER_STATUS). Try again later."
+}
+
+# github_read FILTER [JQ OPTION...]: run jq over GitHub's last answer. Fails
+# when the answer isn't what the filter expects, or is empty.
+github_read() {
+    local filter="$1"
+    shift
+    jq -rn "$@" "input | ($filter)" <<<"$ANSWER" 2>/dev/null
+}
+
+# Other people write pull request titles: no control characters, and nothing
+# that reorders text, reaches the terminal.
+TITLE='.title | gsub("\\p{Cc}|[\\x{202A}-\\x{202E}\\x{2066}-\\x{2069}]"; " ")'
+# Several fields of one answer come out with a separator between them, so
+# none may carry it, or any other control character.
+FIELDS='map(gsub("\\p{Cc}"; "")) | join("\u001f")'
+
+# Times --------------------------------------------------------------------------
+
+# epoch TIME: a time such as 2026-11-11T09:31:15.52361437Z in seconds since
+# 1970. Fails for anything that isn't written that way.
+epoch() {
+    local form='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$'
+    [[ $1 =~ $form ]] || return 1
+    date -d "$1" +%s 2>/dev/null
+}
+
+# span SECONDS: a length of time in plain units, such as "5 minutes".
+span() {
+    local seconds="$1" count unit
+    ((seconds >= 0)) || seconds=0
+    if ((seconds < 3570)); then
+        count=$(((seconds + 30) / 60)) unit=minute
+        ((count > 0)) || count=1
+    elif ((seconds < 171000)); then
+        count=$(((seconds + 1800) / 3600)) unit=hour
+    else
+        count=$(((seconds + 43200) / 86400)) unit=day
+    fi
+    ((count == 1)) || unit+=s
+    printf '%s %s\n' "$count" "$unit"
+}
+
+# ago TIME: how long ago TIME was. Times are in seconds since 1970.
+ago() {
+    local seconds=$((NOW - $1))
+    if ((seconds < 60)); then
+        printf 'just now\n'
+    else
+        printf '%s ago\n' "$(span "$seconds")"
+    fi
+}
+
+# against_latest TIME: how a build made at TIME compares with the newest
+# build. Built before it means behind: the newest build has newer system
+# packages, and maybe newer changes of Monolith's own.
+against_latest() {
+    local seconds=$(($1 - LATEST_BUILT))
+    if ((seconds > -60 && seconds < 60)); then
+        printf 'as new as latest\n'
+    elif ((seconds < 0)); then
+        printf '%s behind latest\n' "$(span $((-seconds)))"
+    else
+        printf '%s ahead of latest\n' "$(span "$seconds")"
+    fi
+}
+
+# Builds -----------------------------------------------------------------------
+
+# image_built TAG: when the edition's image with that tag was built.
+image_built() {
+    local created
+    created="$(registry_created "$EDITION" "$1" 2>/dev/null)" || return 1
+    epoch "$created"
+}
+
+# load_registry: read the edition's tags and the newest build's time, once.
+TAGS="" LATEST_BUILT=""
+load_registry() {
+    local problem="Couldn't read Monolith's builds from ghcr.io. Check your connection and try again."
+    [[ -z $LATEST_BUILT ]] || return 0
+    registry_login "$EDITION" 2>/dev/null || stop "$problem"
+    TAGS="$(registry_tags "$EDITION" 2>/dev/null)" || stop "$problem"
+    LATEST_BUILT="$(image_built latest)" || stop "$problem"
+}
+
+# look_at NUMBER COMMIT AUTHOR: can this computer try the pull request? The
+# build job of its newest commit must have passed, and the image that job
+# pushed for this edition must be there. Sets
+#   BUILD   ready or no
+#   TAG     the image's tag, such as pr-63-45
+#   BUILT   when the image was built
+#   WHY     a few words on why not, when BUILD is no
+look_at() {
+    local number="$1" commit="$2" author="$3" check state started="" tag built found=no
+    BUILD=no TAG="" BUILT="" WHY=""
+    [[ $commit =~ ^[0-9a-f]{40}$ ]] || unexpected
+    github "commits/$commit/check-runs?per_page=100" || github_failed
+    # build.yml names the jobs: "Check if a rebuild is needed" decides which
+    # editions to build, and "Build KDE" builds one. When it builds none, the
+    # build job shows up once, skipped, under the name it has in the workflow.
+    # Each job counts with its newest run.
+    # shellcheck disable=SC2016 # jq's variables
+    check="$(github_read '
+        def newest($name): [.check_runs[] | select(.name == $name)] | sort_by(.started_at // "") | last;
+        if any(.check_runs[]; (.name | type) != "string") then error("not check runs") else . end
+        | newest("Build " + $label) as $build
+        | newest("Check if a rebuild is needed") as $check
+        | (if $build != null and $build.conclusion != "skipped" then
+             if $build.status != "completed" then "building"
+             elif $build.conclusion == "success" then "passed"
+             elif $build.conclusion == "cancelled" then "cancelled"
+             else "failed" end
+           elif $check == null then "none"
+           elif $check.status != "completed" then "starting"
+           elif $check.conclusion != "success" then "unchecked"
+           elif any(.check_runs[]; .name | startswith("Build ")) then "unaffected"
+           else "starting" end)
+          + "\u001f" + ($build.started_at // "")' \
+        --arg label "${MONOLITH_EDITION_LABELS[$EDITION]-$EDITION}")" || unexpected
+    state="${check%%$'\x1f'*}"
+    if [[ ${check#*$'\x1f'} ]]; then
+        started="$(epoch "${check#*$'\x1f'}")" || unexpected
+    fi
+    case "$state" in
+        building) WHY="still building${started:+, started $(ago "$started")}" ;;
+        starting) WHY="its checks are still starting" ;;
+        unchecked) WHY="its checks failed" ;;
+        failed) WHY="its build failed" ;;
+        cancelled) WHY="its build was cancelled" ;;
+        none) WHY="not built yet" ;;
+        unaffected)
+            WHY="doesn't change this edition"
+            # build.yml builds nothing for Dependabot, whatever it changes.
+            [[ $author != "dependabot[bot]" ]] || WHY="gets no test builds"
+            ;;
+    esac
+    [[ $state == passed ]] || return 0
+    [[ $started ]] || unexpected
+    # The tag ends in the Fedora version the pull request builds on, which the
+    # registry knows. An image from before this build job started belongs to
+    # an earlier commit.
+    load_registry
+    WHY="no test build found for this edition"
+    while read -r tag; do
+        [[ $tag ]] || continue
+        found=yes
+        built="$(image_built "$tag")" || continue
+        if ((built > started)); then
+            BUILD=ready TAG="$tag" BUILT="$built" WHY=""
+            return 0
+        fi
+        WHY="its test build is out of date"
+    done < <(sed -n -E "/^pr-$number-[0-9]+\$/p" <<<"$TAGS")
+    [[ $found == no || $WHY == *"out of date" ]] || WHY="its test build couldn't be read"
+}
+
+# The list -------------------------------------------------------------------
+
+# load_pulls: the open pull requests, newest first, and what look_at says
+# about each.
+NUMBERS=() TITLES=() BUILDS=() BUILD_TAGS=() BUILT_AT=() REASONS=()
+load_pulls() {
+    local rows number commit author title
+    # 100 is the most GitHub lists at once, and far more than are ever open.
+    github "pulls?state=open&per_page=100" || github_failed
+    rows="$(github_read 'if type != "array" then error("not a list") else .[] end
+        | [(.number | tostring), .head.sha, (.user.login // ""), ('"$TITLE"')] | '"$FIELDS")" || unexpected
+    while IFS=$'\x1f' read -r number commit author title; do
+        [[ $number ]] || continue
+        [[ $number =~ ^[0-9]+$ ]] || unexpected
+        look_at "$number" "$commit" "$author"
+        NUMBERS+=("$number") TITLES+=("$title") BUILDS+=("$BUILD") BUILD_TAGS+=("$TAG") BUILT_AT+=("$BUILT") REASONS+=("$WHY")
+    done <<<"$rows"
+}
+
+# newer_than_running INDEX: has that pull request been built again since this
+# computer got its build of it? rpm-ostree and the registry report the same
+# time for one image, give or take a second. The other edition's builds are
+# other images, made minutes apart.
+newer_than_running() {
+    [[ $EDITION == "$IMAGE_EDITION" && ${BUILDS[$1]} == ready && $IMAGE_BUILT ]] &&
+        ((BUILT_AT[$1] > IMAGE_BUILT + 60))
+}
+
+# yours INDEX: what ties this computer to that pull request, if anything.
+yours() {
+    local number="${NUMBERS[$1]}"
+    if [[ $EDITION == "$IMAGE_EDITION" && $IMAGE_TAG =~ ^pr-$number(-[0-9]+)?$ ]]; then
+        if [[ ${BUILDS[$1]} != ready ]] || newer_than_running "$1"; then
+            printf "you're on an earlier build of this one\n"
+        else
+            printf "you're on this one\n"
+        fi
+    elif [[ $PENDING == yes && $EDITION == "$NEXT_EDITION" && $NEXT_TAG =~ ^pr-$number(-[0-9]+)?$ ]]; then
+        printf 'starts at your next restart\n'
+    fi
+}
+
+# clip TEXT WIDTH: TEXT, cut short with an ellipsis when it's wider than WIDTH
+# columns.
+clip() {
+    local text="$1" width="$2" dots="..."
+    ((MONOLITH_UNICODE)) && dots="…"
+    (($(wc -L <<<"$text") > width)) || { printf '%s\n' "$text"; return 0; }
+    text="${text:0:width - ${#dots}}"
+    # Wide characters take two columns each.
+    while [[ $text ]] && (($(wc -L <<<"$text$dots") > width)); do
+        text="${text%?}"
+    done
+    printf '%s\n' "${text%"${text##*[! ]}"}$dots"
+}
+
+# here TEXT: add TEXT to HERE, the lines about the build this computer runs,
+# on as many lines as it takes to fit HERE_ROOM columns.
+HERE=() HERE_ROOM=80
+here() {
+    mapfile -t -O "${#HERE[@]}" HERE < <(wrap "$1" "$HERE_ROOM")
+}
+
+# where_now: fill HERE.
+where_now() {
+    local number i title="" state=""
+    HERE=()
+    if [[ $IMAGE_TAG == latest ]]; then
+        here "You're on the newest build."
+    elif [[ $IMAGE_TAG =~ ^pr-([0-9]+)(-[0-9]+)?$ ]]; then
+        number="${BASH_REMATCH[1]}"
+        for i in "${!NUMBERS[@]}"; do
+            [[ ${NUMBERS[i]} == "$number" ]] || continue
+            title="${TITLES[i]}" state=open
+            ! newer_than_running "$i" || state=newer
+        done
+        if [[ -z $state ]]; then
+            # Not in the list of open ones: one more question for GitHub.
+            if github "pulls/$number"; then
+                state="$(github_read 'if .merged == true then "merged" else .state end')" || unexpected
+                title="$(github_read "$TITLE")" || unexpected
+            elif [[ $ANSWER_STATUS != 404 ]]; then
+                github_failed
+            fi
+        fi
+        here "You're on the test build of pull request #$number${title:+:}"
+        if [[ $title ]]; then
+            [[ ! -t 1 ]] || title="$(clip "$title" "$HERE_ROOM")"
+            HERE+=("$title")
+        fi
+        if [[ $IMAGE_BUILT ]]; then
+            load_registry
+            here "Built $(ago "$IMAGE_BUILT"), $(against_latest "$IMAGE_BUILT")."
+        fi
+        case "$state" in
+            open) ;;
+            newer) here "A newer test build is out. It comes with your next update." ;;
+            merged) here "#$number was merged, so this build gets no more updates." ;;
+            closed) here "#$number was closed, so this build gets no more updates." ;;
+            *) here "#$number isn't open any more, so this build gets no more updates." ;;
+        esac
+    elif [[ $IMAGE_TAG =~ ^[0-9]{8}$ ]]; then
+        here "You're on $(describe_build "$IMAGE_TAG"), with system updates paused."
+    else
+        here "You're on $(describe_build "$IMAGE_TAG")."
+    fi
+    if [[ $PENDING == yes && ($NEXT_EDITION != "$IMAGE_EDITION" || $NEXT_TAG != "$IMAGE_TAG") ]]; then
+        here "Your next restart starts $(next_build)."
+    fi
+}
+
+# row SYMBOL INDEX NOTE: one pull request, with a line about it underneath.
+# WIDTH is that of the longest number and ROOM what is left for a title.
+row() {
+    local title="${TITLES[$2]}" mine
+    [[ ! -t 1 ]] || title="$(clip "$title" "$ROOM")"
+    printf '  %s %s%s#%-*s%s  %s\n' "$1" "$BOLD" "$ACCENT" "$WIDTH" "${NUMBERS[$2]}" "$RESET" "$title"
+    printf '%*s%s%s%s\n' $((WIDTH + 7)) '' "$DIM" "$3" "$RESET"
+    mine="$(yours "$2")"
+    [[ -z $mine ]] || printf '%*s%s%s%s\n' $((WIDTH + 7)) '' "$ACCENT" "$mine" "$RESET"
+}
+
+# show: where this computer is, the pull requests it can try, and the rest.
+# READY lists the ones it can try.
+READY=()
+show() {
+    local i other=()
+    busy "Looking up Monolith's open pull requests..."
+    load_pulls
+    # Beside the mark there's less room for the lines about this computer.
+    monolith_columns
+    HERE_ROOM=$MONOLITH_COLUMNS
+    if mark_fits small; then
+        HERE_ROOM=$((MONOLITH_COLUMNS - MARK_WIDTH - 4))
+    fi
+    where_now
+    rested
+    WIDTH=0
+    for i in "${!NUMBERS[@]}"; do
+        ((${#NUMBERS[i]} <= WIDTH)) || WIDTH=${#NUMBERS[i]}
+        if [[ ${BUILDS[i]} == ready ]]; then READY+=("$i"); else other+=("$i"); fi
+    done
+    # "  + #63  " comes before each title.
+    ROOM=$((MONOLITH_COLUMNS - WIDTH - 7))
+
+    beside small "$BOLD$(os_pretty_name)$RESET $DIM$SYM_DOT test builds$RESET" "${HERE[@]}"
+    if ((${#NUMBERS[@]} == 0)); then
+        printf '\nThere are no open pull requests right now.\n'
+    elif ((${#READY[@]} == 0)); then
+        printf '\nNo open pull request has a test build for this computer right now.\n'
+    else
+        printf '\n%sPull requests you can try%s\n' "$BOLD" "$RESET"
+        for i in "${READY[@]}"; do
+            row "$GOOD$SYM_OK$RESET" "$i" "built $(ago "${BUILT_AT[i]}") $SYM_DOT $(against_latest "${BUILT_AT[i]}")"
+        done
+    fi
+    if ((${#other[@]} > 0)); then
+        printf '\n%sOther open pull requests%s\n' "$BOLD" "$RESET"
+        for i in "${other[@]}"; do
+            row "$DIM$SYM_NOTE$RESET" "$i" "${REASONS[i]}"
+        done
+    fi
+}
+
+# hints [asked]: how to act on the list. How to switch is left out when the
+# question that follows says it. The way back is there whenever the next
+# restart doesn't start the newest build.
+hints() {
+    local lines=() back="Return to"
+    if [[ -z ${1-} ]] && ((${#READY[@]} > 0)); then
+        lines+=("Switch to one with: ${ACCENT}monolith pr ${NUMBERS[${READY[0]}]}$RESET")
+    fi
+    if [[ ${NEXT_TAG:-$IMAGE_TAG} != latest ]]; then
+        # On the newest build, with a switch away from it waiting.
+        [[ $IMAGE_TAG != latest ]] || back="Stay on"
+        lines+=("$back the newest build with: ${ACCENT}monolith pr latest$RESET")
+    fi
+    if ((${#lines[@]} > 0)); then
+        printf '\n'
+        printf '%s\n' "${lines[@]}"
+    fi
+}
+
+# choose: ask which pull request to switch to. Enter changes nothing.
+choose() {
+    local answer i
+    hints asked
+    ((${#READY[@]} > 0)) || return 0
+    printf '\n'
+    read -r -p "Type a number to switch, or press Enter to change nothing: " answer || { answer=""; printf '\n'; }
+    answer="${answer//[[:space:]]/}"
+    answer="${answer#\#}"
+    case "$answer" in
+        "") echo "Nothing changed."; return 0 ;;
+        latest) return_to_latest "$EDITION"; return 0 ;;
+    esac
+    for i in "${!NUMBERS[@]}"; do
+        [[ ${NUMBERS[i]} == "$answer" ]] || continue
+        printf '\n'
+        switch_to "$answer" "${TITLES[i]}" "${BUILDS[i]}" "${BUILD_TAGS[i]}" "${BUILT_AT[i]}" "${REASONS[i]}"
+        return 0
+    done
+    stop "$answer isn't the number of an open pull request."
+}
+
+# Switching --------------------------------------------------------------------
+
+# switch_to NUMBER TITLE BUILD TAG BUILT WHY: switch to that pull request's
+# test build, after saying what that means and asking.
+switch_to() {
+    local number="$1" title="$2" build="$3" tag="$4" built="$5" why="$6" name waiting
+    name="the test build of pull request #$number"
+    [[ $build == ready ]] || stop "Can't switch to pull request #$number: $why."
+    switch_plan "$EDITION" "$tag"
+    case "$SWITCH_PLAN" in
+        same)
+            echo "You're already on $name."
+            echo "Its new builds come with your updates."
+            return 0
+            ;;
+        waiting)
+            echo "${name^} already waits for your next restart."
+            echo "Restart to start it."
+            return 0
+            ;;
+        cancel)
+            # On that test build already, with a switch away from it waiting.
+            waiting="$(next_build)"
+            printf 'Cancelling the switch to %s.\n' "$waiting"
+            cancel_pending || die "That didn't work: your next restart still starts $waiting."
+            printf '\nDone. You stay on %s.\n' "$name"
+            return 0
+            ;;
+    esac
+    printf '%sPull request #%s:%s %s\n' "$BOLD" "$number" "$RESET" "$title"
+    printf 'Its test build was made %s, %s.\n\n' "$(ago "$built")" "$(against_latest "$built")"
+    cat <<'EOF'
+Test builds can be broken. On one, this computer follows that pull request's
+builds instead of the daily ones, until you run monolith pr latest. Your apps,
+files and settings stay. Nothing changes until you restart.
+
+EOF
+    ask "Switch to the test build of #$number?" || { echo "Nothing changed."; return 0; }
+    rebase_to "$EDITION" "$tag"
+    printf '\nDone. Restart to start %s.\nTo return to the newest build afterwards: %smonolith pr latest%s\n' \
+        "$name" "$ACCENT" "$RESET"
+}
+
+# switch_to_number NUMBER: the same for a number from the command line, which
+# takes one question to GitHub about the pull request and one about its build.
+switch_to_number() {
+    local number="$1" pull state title commit author
+    busy "Looking up pull request #$number..."
+    if ! github "pulls/$number"; then
+        [[ $ANSWER_STATUS == 404 ]] || github_failed
+        stop "Monolith has no pull request #$number."
+    fi
+    pull="$(github_read '[(if .merged == true then "merged" else .state end), .head.sha, (.user.login // ""), ('"$TITLE"')]
+        | '"$FIELDS")" || unexpected
+    IFS=$'\x1f' read -r state commit author title <<<"$pull"
+    case "$state" in
+        open) ;;
+        merged) stop "Pull request #$number was merged, so you get its changes with the regular builds." ;;
+        *) stop "Pull request #$number was closed, so its test build gets no more updates." ;;
+    esac
+    look_at "$number" "$commit" "$author"
+    rested
+    switch_to "$number" "$title" "$BUILD" "$TAG" "$BUILT" "$WHY"
+}
+
+case "${1-}" in
+    -h | --help | help) usage; exit 0 ;;
+esac
+load_image_info || die "Couldn't read your builds from rpm-ostree."
+[[ $IMAGE_EDITION ]] ||
+    die "You're not on one of Monolith's images (${IMAGE_NAME:-unknown}), so there are no test builds to switch to."
+# The edition this computer runs after its next restart: a switch to the other
+# edition may be waiting.
+EDITION="${NEXT_EDITION:-$IMAGE_EDITION}"
+NOW="$(date +%s)"
+trap rested EXIT
+
+case "${1-}" in
+    "")
+        show
+        if [[ -t 0 && -t 1 ]]; then choose; else hints; fi
+        ;;
+    list)
+        show
+        hints
+        ;;
+    latest) return_to_latest "$EDITION" ;;
+    *)
+        number="${1#\#}"
+        [[ $number =~ ^[0-9]{1,9}$ ]] ||
+            die "monolith pr takes the number of a pull request, list or latest."$'\n'"See the ones you can try with: monolith pr list"
+        switch_to_number "$((10#$number))"
+        ;;
+esac

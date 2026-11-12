@@ -88,6 +88,9 @@ if load_image_info; then
         level="wait"
         [[ $IMAGE_TAG == latest || $NEXT_TAG == latest ]] || level="warn"
     fi
+    # Test builds come and go with monolith pr.
+    back="monolith rollback latest"
+    [[ $NEXT_TAG != pr-* ]] || back="monolith pr latest"
     if [[ $switching && $NEXT_TAG == latest && $IMAGE_TAG == latest ]]; then
         row wait Updates "switching to $switching" "It starts at your next restart." ""
     elif [[ $switching && $NEXT_TAG == latest ]]; then
@@ -104,17 +107,18 @@ if load_image_info; then
     elif [[ $switching && $IMAGE_TAG == latest ]]; then
         row "$level" Updates "switching to $switching" \
             "It starts at your next restart." "" \
-            "To stay on the regular builds instead:" "monolith rollback latest"
+            "To stay on the regular builds instead:" "$back"
     elif [[ $switching ]]; then
         row "$level" Updates "switching to $switching" \
             "It starts at your next restart." "" \
-            "For the newest regular build instead:" "monolith rollback latest"
+            "For the newest regular build instead:" "$back"
     elif [[ $IMAGE_EDITION && $IMAGE_TAG =~ ^[0-9]{8}$ ]]; then
         row warn Updates "paused on the build from $(nice_date "$IMAGE_TAG")" \
             "When you're ready for the newest build:" "monolith rollback latest"
     elif [[ $IMAGE_EDITION && $IMAGE_TAG == pr-* ]]; then
-        row warn Updates "test build from pull request ${IMAGE_TAG#pr-}" \
-            "To return to the newest regular build:" "monolith rollback latest"
+        row warn Updates "on $(describe_build "$IMAGE_TAG")" \
+            "It gets that pull request's builds, not the daily ones." "" \
+            "To return to the newest regular build:" "monolith pr latest"
     elif [[ $NEXT_VERSION && $STAGED == yes ]]; then
         row wait Updates "build $NEXT_VERSION is downloaded; restart to use it"
     elif [[ $NEXT_VERSION ]]; then

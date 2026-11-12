@@ -50,6 +50,7 @@ jobs:
           cd "$GITHUB_WORKSPACE"
           PATH="$RUNNER_TEMP/bin:$PATH" tests/monolith-command.sh
           tests/monolith-system-commands.sh
+          tests/monolith-pr.sh
           PATH="$RUNNER_TEMP/bin:$PATH" tests/monolith-greeting.sh
           tests/monolith-catalog-look.sh
       - name: Test monolith update
