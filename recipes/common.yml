@@ -281,11 +281,19 @@ modules:
     scripts:
       - sign-kernel.sh
 
+  # The boot menu's text for screens with twice the pixels, made from the
+  # font GRUB ships. See the script.
+  - type: script
+    scripts:
+      - make-boot-menu-font.py
+
   - type: systemd
     system:
       enabled:
         - tailscaled.service
         - monolith-firstboot-label.service
+        # Copies the boot menu's look to /boot, which isn't part of the image.
+        - monolith-boot-menu.service
         # scx_loader picks the default sched-ext scheduler at boot.
         - scx_loader.service
         # Socket-activated modular libvirt daemons.

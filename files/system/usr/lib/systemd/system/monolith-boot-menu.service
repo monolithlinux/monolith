@@ -1,0 +1,17 @@
+[Unit]
+Description=Put Monolith's boot menu look on /boot
+Documentation=https://github.com/monolithlinux/monolith/blob/main/docs/desktop.md#boot-menu
+# GRUB reads its theme from /boot, which isn't part of the image. This copies
+# the one this build has there when it is missing or older. It changes nothing
+# on most starts; "monolith boot-menu off" keeps it away for good.
+ConditionPathExists=/run/ostree-booted
+ConditionPathIsDirectory=/boot/grub2
+RequiresMountsFor=/boot /var/lib
+After=local-fs.target bootloader-update.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/monolith/boot-menu sync
+
+[Install]
+WantedBy=multi-user.target

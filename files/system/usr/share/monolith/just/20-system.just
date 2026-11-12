@@ -18,6 +18,12 @@ edition NAME="":
 scheduler MODE="" SCHEDULER="":
     "$MONOLITH_LIBEXEC/scheduler" "$@"
 
+# Turn Monolith's look for the boot menu on or off
+[group('System')]
+[positional-arguments]
+boot-menu MODE="":
+    "$MONOLITH_LIBEXEC/boot-menu" "$@"
+
 # Remove unused containers, Flatpaks and old builds
 [group('System')]
 clean-system:

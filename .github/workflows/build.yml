@@ -50,6 +50,7 @@ jobs:
           cd "$GITHUB_WORKSPACE"
           PATH="$RUNNER_TEMP/bin:$PATH" tests/monolith-command.sh
           tests/monolith-system-commands.sh
+          tests/monolith-boot-menu.sh
           tests/monolith-pr.sh
           PATH="$RUNNER_TEMP/bin:$PATH" tests/monolith-greeting.sh
           tests/monolith-catalog-look.sh
@@ -61,6 +62,8 @@ jobs:
         run: bash tests/pick-editions.sh
       - name: Test the Plasma version check
         run: python3 tests/plasma-versions.py
+      - name: Test the boot menu's large font
+        run: python3 tests/boot-menu-font.py
       - name: Test Monolith News
         run: python3 tests/monolith-news.py
       - name: Test the release notes

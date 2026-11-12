@@ -14,6 +14,7 @@ and `ujust` still work.
 - [Trying a test build](#trying-a-test-build)
 - [Checking this computer](#checking-this-computer)
 - [The CPU scheduler](#the-cpu-scheduler)
+- [The boot menu](#the-boot-menu)
 - [Switching editions](#switching-editions)
 - [Setup](#setup)
 - [When something goes wrong](#when-something-goes-wrong)
@@ -164,6 +165,22 @@ now.
 To use another scheduler that scx_loader supports, name it after the mode, such
 as `monolith scheduler gaming bpfland`. Your choice goes into
 `/etc/scx_loader/config.toml`, and anything else you've set there stays.
+
+## The boot menu
+
+The boot menu is the list of builds you see for a few seconds when the computer
+starts. Monolith gives it a look of its own: the logo, the entries in the middle
+of the screen, and five seconds to pick one.
+
+```bash
+monolith boot-menu       # is Monolith's look on?
+monolith boot-menu off   # GRUB's plain list, shown for one second
+monolith boot-menu on    # Monolith's look again
+```
+
+A change shows the next time the computer starts. On a 4K screen the first
+command also says how the menu is drawn larger there.
+[What's built in](desktop.md#boot-menu) says how it works.
 
 ## Switching editions
 

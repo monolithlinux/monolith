@@ -145,6 +145,6 @@ cosign verify --key cosign.pub ghcr.io/monolithlinux/<edition>
 ## More
 
 - [Monolith Software guide](docs/software.md): every app in `monolith`, in detail
-- [What's built in](docs/desktop.md): the terminal, OpenDeck, Node.js, Waywallen,
-  the update reminder and Monolith News
+- [What's built in](docs/desktop.md): the boot menu, the terminal, OpenDeck,
+  Node.js, Waywallen, the update reminder and Monolith News
 - [Report a problem](https://github.com/monolithlinux/monolith/issues)

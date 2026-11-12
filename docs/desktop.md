@@ -3,12 +3,47 @@
 These are part of the Monolith image itself, so there's nothing to install and
 they update along with Monolith.
 
+- [Boot menu](#boot-menu)
 - [The terminal](#the-terminal)
 - [OpenDeck](#opendeck)
 - [Node.js](#nodejs)
 - [Waywallen wallpapers](#waywallen-wallpapers)
 - [Update reminder](#update-reminder)
 - [Monolith News](#monolith-news)
+
+## Boot menu
+
+When the computer starts, GRUB lists the builds you can start: the newest one,
+the one before it, and your firmware's setup. Monolith styles that menu with its
+logo, puts the entries in the middle of the screen and waits five seconds before
+it starts the first one. Any key stops the countdown.
+
+The look is kept on `/boot`, which isn't part of the image. Monolith copies it
+there when the computer starts, so after the update that brings it, or changes
+it, you see it from the second start on. Going back to an earlier build leaves
+the menu as it is.
+
+`monolith boot-menu off` brings back GRUB's plain list, shown for one second,
+and `monolith boot-menu on` returns to Monolith's look. A GRUB password set with
+`grub2-setpassword` stays either way. Settings of your own, such as a longer
+wait (`set timeout=10`), go in `/boot/grub2/custom.cfg`, which GRUB reads last.
+
+On a screen that is 1800 pixels tall or more, such as a 4K monitor, the menu
+would come out small, so Monolith draws it larger. How depends on Secure Boot:
+
+- With Secure Boot off, everything is drawn at twice the size and stays sharp.
+- With Secure Boot on, GRUB may only use its one built-in size of text. So it
+  shows the menu at half the screen's resolution and the screen scales it up.
+  That is a little softer, and the screen changes mode once more on the way to
+  the desktop.
+- If the firmware doesn't offer that resolution, only the logo is drawn larger
+  and the entries stay small.
+
+`monolith boot-menu` says which of these your computer uses. Monolith reads the
+screen's size each time the computer starts, so after you change the screen the
+menu follows one start later. With Secure Boot on, a change to a smaller screen
+can go unnoticed. If the menu looks soft after one, run
+`monolith boot-menu off`, restart, and run `monolith boot-menu on`.
 
 ## The terminal
 

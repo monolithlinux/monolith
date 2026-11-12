@@ -1,0 +1,61 @@
+# Monolith's boot menu for a screen that is 1800 pixels tall or more, when
+# GRUB can't have a larger font: Secure Boot is on, and the firmware has no
+# mode of half the screen's size to show the whole menu larger in. GRUB also
+# falls back to it when the large font is missing or damaged. Only the logo
+# is doubled. The list is theme.txt's, in GRUB's own 16 pixel text, since a
+# highlight twice the size around text that small looks wrong.
+
+title-text: ""
+desktop-color: "#000000"
+terminal-left: "0"
+terminal-top: "0"
+terminal-width: "100%"
+terminal-height: "100%"
+terminal-border: "0"
+
+# The logo at twice the size, with its lower edge at 40% of the screen's height.
++ image {
+  left = 50%-378
+  top = 40%-512
+  file = "logo-2x.png"
+}
+
+# The entries, exactly as in theme.txt.
++ boot_menu {
+  left = 50%-280
+  top = 46%
+  width = 560
+  height = 36%
+  item_color = "#b0b4ba"
+  selected_item_color = "#ffffff"
+  icon_width = 0
+  icon_height = 0
+  item_icon_space = 116
+  item_height = 44
+  item_padding = 0
+  item_spacing = 6
+  selected_item_pixmap_style = "select_*.png"
+  # GRUB keeps two pixels free for a scrollbar even when it draws none,
+  # which would leave the highlight a pixel off centre.
+  scrollbar_left_pad = 0
+}
+
+# The countdown. GRUB hides it once a key is pressed.
++ label {
+  id = "__timeout__"
+  top = 84%
+  left = 0
+  width = 100%
+  align = "center"
+  text = "Starting in %ds"
+  color = "#969ca4"
+}
+
++ label {
+  top = 89%
+  left = 0
+  width = 100%
+  align = "center"
+  text = "Up/Down select | Enter start | e edit | c command line"
+  color = "#60646c"
+}
