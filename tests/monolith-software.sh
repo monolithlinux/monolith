@@ -752,6 +752,47 @@ test_empty_update_all() {
     [ ! -s "$case_root/curl.log" ] || fail 'empty update performed downloads'
 }
 
+# A marker can outlive its catalog entry: Monolith stopped offering nak, and
+# stopped offering the Epic Games Launcher while Epic publishes no AppImage. An
+# account that installed one before still has its marker. The catalog leaves an
+# app it no longer offers alone: the marker stays, update and list carry on
+# with the rest, and its ID is refused before anything is downloaded.
+test_apps_no_longer_offered_are_left_alone() {
+    local gone action
+    mkdir -p "$state_root"
+    for gone in nak epic-games; do
+        printf 'written by an older Monolith\n' >"$state_root/$gone.managed"
+    done
+
+    run_monolith update >"$case_root/update.log"
+    grep -Fxq 'No Monolith-managed software is installed.' "$case_root/update.log" ||
+        fail 'update did not ignore the apps the catalog no longer offers'
+    for gone in nak epic-games; do
+        for action in install remove update; do
+            expect_failure "$action" "$gone"
+            grep -Fxq "Error: unknown tool: $gone" "$case_root/expected-failure.log" ||
+                fail "$action $gone was not refused as an unknown tool"
+        done
+    done
+    [ ! -s "$case_root/curl.log" ] || fail 'an app the catalog no longer offers caused downloads'
+
+    run_monolith install tea
+    release_version=v2.0.0
+    run_monolith update >"$case_root/update.log"
+    grep -Eq '^  Tea +Updated$' "$case_root/update.log" || fail 'update skipped Tea beside the leftover markers'
+    [ "$(grep -Ec '^  [^ ].* +(Updated|Up to date|Failed \(exit [0-9]+\))$' "$case_root/update.log")" -eq 1 ] ||
+        fail 'update reported on more than Tea'
+    run_monolith list >"$case_root/list.log"
+    grep -Eq '^Developer CLIs +Tea +installed ' "$case_root/list.log" ||
+        fail 'list did not show Tea beside the leftover markers'
+    [ "$(tail -n +3 "$case_root/list.log" | wc -l)" -eq "$(run_monolith __ids | wc -l)" ] ||
+        fail 'list showed something other than the catalog entries'
+    for gone in nak epic-games; do
+        [ "$(cat -- "$state_root/$gone.managed")" = 'written by an older Monolith' ] ||
+            fail "the marker of $gone was changed or removed"
+    done
+}
+
 # An update leaves healthy items that already have the newest release alone:
 # it reads only release metadata and republishes nothing. Install still
 # reinstalls on request, and a failed version lookup never counts as current.
@@ -1903,7 +1944,8 @@ passed=0
 failed=0
 all_tests=(omp_lifecycle omp_unmanaged_launcher omp_replaced_launcher omp_checksum_failure failed_publication
     failed_launcher_publication failed_marker_publication download_failure_cleanup batch_preflight
-    empty_update_all update_skips_current_items batch_continues_after_failure tea_lifecycle superfile_lifecycle
+    empty_update_all apps_no_longer_offered_are_left_alone update_skips_current_items
+    batch_continues_after_failure tea_lifecycle superfile_lifecycle
     herdr_lifecycle checksum_list_failures bad_archive_and_broken_program
     regular_file_adoption failed_adoption_restores_originals
     claude_broken_launcher_needs_repair native_installers codex_lifecycle_and_inherited_environment

@@ -73,10 +73,10 @@ readonly SELF BIN_DIR DATA_HOME STATE_HOME MANAGED_ROOT STATE_ROOT GHOSTTY_THEME
 readonly GEAR_LEVER_ID GEAR_LEVER_REF GEAR_LEVER_MIN_VERSION FLATHUB_REPO QUIT_TOKEN HELPER_UP_TO_DATE
 readonly SUNSHINE_ID SUNSHINE_UNIT USER_UNIT_DIR SUNSHINE_MODULES_CONF SUNSHINE_MODULES_TEXT
 
-ALL_TOOLS=(tea superfile claude codex opencode omp herdr wowup-cf r2modman prismlauncher epic-games sunshine moonfin plezy sidra photocraft vectorcraft filmcraft lightcraft pdfcraft effectcraft designcraft figcraft wordcraft soundcraft deckcraft cadcraft gridcraft fluxer fluxer-canary ghostty-themes)
+ALL_TOOLS=(tea superfile claude codex opencode omp herdr wowup-cf r2modman prismlauncher sunshine moonfin plezy sidra photocraft vectorcraft filmcraft lightcraft pdfcraft effectcraft designcraft figcraft wordcraft soundcraft deckcraft cadcraft gridcraft fluxer fluxer-canary ghostty-themes)
 CLI_TOOLS=(tea superfile)
 AI_TOOLS=(claude codex opencode omp herdr)
-GAMING_TOOLS=(wowup-cf r2modman prismlauncher epic-games sunshine)
+GAMING_TOOLS=(wowup-cf r2modman prismlauncher sunshine)
 MEDIA_TOOLS=(moonfin plezy sidra)
 CRAFTING_TOOLS=(photocraft vectorcraft filmcraft lightcraft pdfcraft effectcraft designcraft figcraft wordcraft soundcraft deckcraft cadcraft gridcraft)
 COMMUNICATION_TOOLS=(fluxer fluxer-canary)
@@ -149,7 +149,6 @@ tool_name() {
         wowup-cf)  echo "WowUp-CF" ;;
         r2modman)  echo "r2modman" ;;
         prismlauncher) echo "Prism Launcher" ;;
-        epic-games) echo "Epic Games Launcher" ;;
         sunshine)  echo "Sunshine" ;;
         moonfin)   echo "Moonfin" ;;
         plezy)     echo "Plezy" ;;
@@ -187,7 +186,6 @@ tool_description() {
         r2modman)  echo "Thunderstore mod manager for Lethal Company, Risk of Rain 2, Valheim, and more" ;;
         prismlauncher) echo "Minecraft launcher for multiple instances, mods, and modpacks" ;;
         sunshine)  echo "Game streaming host for playing on other devices with Moonlight" ;;
-        epic-games) echo "Epic's own launcher for your Epic Games library (Preview)" ;;
         moonfin)   echo "media client for Jellyfin and Emby servers" ;;
         plezy)     echo "media client for Plex, Jellyfin, and Emby servers" ;;
         sidra)     echo "Apple Music client with media keys, themes, and Last.fm scrobbling" ;;
@@ -215,7 +213,7 @@ tool_category() {
     case "$1" in
         tea|superfile) echo "Developer CLIs" ;;
         claude|codex|opencode|omp|herdr) echo "AI coding" ;;
-        wowup-cf|r2modman|prismlauncher|epic-games|sunshine) echo "Gaming" ;;
+        wowup-cf|r2modman|prismlauncher|sunshine) echo "Gaming" ;;
         moonfin|plezy|sidra) echo "Media" ;;
         fluxer|fluxer-canary) echo "Communication" ;;
         ghostty-themes) echo "Appearance" ;;
@@ -235,7 +233,7 @@ tool_commands() {
         opencode)  echo "opencode" ;;
         omp)       echo "omp" ;;
         herdr)     echo "herdr" ;;
-        wowup-cf|r2modman|prismlauncher|epic-games|sunshine|moonfin|plezy|sidra|fluxer|fluxer-canary|ghostty-themes) return 0 ;;
+        wowup-cf|r2modman|prismlauncher|sunshine|moonfin|plezy|sidra|fluxer|fluxer-canary|ghostty-themes) return 0 ;;
         *)         is_crafting_app "$1" ;;
     esac
 }
@@ -313,7 +311,7 @@ launcher_is_managed() {
 # AppImages that Monolith integrates with Gear Lever.
 is_gear_lever_app() {
     case "$1" in
-        wowup-cf|r2modman|sidra|epic-games) return 0 ;;
+        wowup-cf|r2modman|sidra) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -1235,18 +1233,6 @@ Sidra release policy:
     Sidra may also update itself to newer stable releases.
 EOF
             ;;
-        epic-games)
-            cat <<'EOF'
-Epic Games Launcher policy:
-  - A Preview from Epic; expect rough edges.
-  - Added to Gear Lever; an existing integration is reused, with a fresh
-    download from Epic replacing its AppImage.
-  - Downloaded from Epic's own link over HTTPS. Epic publishes no checksum,
-    so Monolith cannot verify the download the way it does for GitHub apps.
-  - The launcher updates itself; monolith update only repairs a missing or
-    broken copy. monolith install downloads Epic's current build again.
-EOF
-            ;;
     esac
 }
 
@@ -1259,7 +1245,6 @@ kept_data() {
         sunshine) echo "sign-in, paired devices, app list, and settings" ;;
         moonfin|plezy) echo "servers, sign-ins, settings, and downloads" ;;
         sidra) echo "Apple Music sign-in and settings" ;;
-        epic-games) echo "sign-in, settings, and installed games" ;;
         photocraft) echo "settings, recent files, brush presets, and recovery files" ;;
         vectorcraft) echo "settings, swatches, libraries, added fonts, and recovery files" ;;
         filmcraft) echo "settings, presets, auto-saves, and media cache" ;;
@@ -2883,7 +2868,7 @@ Commands:
 Tool IDs:
   Developer CLIs   tea superfile
   AI coding        claude codex opencode omp herdr
-  Gaming           wowup-cf r2modman prismlauncher epic-games sunshine
+  Gaming           wowup-cf r2modman prismlauncher sunshine
   Media            moonfin plezy sidra
   Crafting Apps    photocraft vectorcraft filmcraft lightcraft pdfcraft
                    effectcraft designcraft figcraft wordcraft soundcraft

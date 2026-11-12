@@ -42,9 +42,14 @@ SCRIPT = Path(__file__).resolve().relative_to(ROOT)
 # Problems we already know about, so the daily check stays quiet until they
 # change: APP: (words its error contains, what is known). The check fails again
 # when the app passes or fails another way, so an entry can't outlive its problem.
+#
+# Monolith Software doesn't offer the Epic Games Launcher while its entry is here.
+# When the check says it passes again, put epic-games back into the catalog
+# (files/system/usr/libexec/monolith/software) and take the entry out.
 KNOWN = {
     "epic-games": ("HTTP Error 404", "Epic's AppImage link has answered 404 since at least November 11, 2026. "
-                                     "New installs fail; installed copies are left alone."),
+                                     "Monolith Software doesn't offer the launcher until it's back; "
+                                     "installed copies are left alone."),
 }
 
 # A failure has to happen three times in a row to count, with these pauses in
