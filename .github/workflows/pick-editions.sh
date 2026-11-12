@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Map changed files to image editions for build.yml and pr-rebase-hint.yml.
-# Add new editions to ALL, the case map, and build.yml's matrix entries.
+# Add new editions to ALL, the case map, and build.yml's matrix entries and
+# build outputs.
 # Modes:
 #   pick-editions.sh all            every edition
 #   pick-editions.sh <diff-range>   editions affected by `git diff <diff-range>`

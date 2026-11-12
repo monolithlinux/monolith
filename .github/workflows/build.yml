@@ -64,6 +64,8 @@ jobs:
         run: python3 tests/monolith-news.py
       - name: Test the release notes
         run: python3 tests/release-notes.py
+      - name: Test the image tags
+        run: python3 tests/image-tags.py
       - name: Test the app download check
         run: python3 tests/check-app-downloads.py
       - name: Test Protontricks desktop icon
@@ -110,8 +112,8 @@ jobs:
           has() { case " ${built[*]:-} " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 
           entries=()
-          if has kde; then entries+=('{"label":"KDE","recipe":"recipe-kde.yml"}'); fi
-          if has kde-nvidia; then entries+=('{"label":"KDE NVIDIA","recipe":"recipe-kde-nvidia.yml"}'); fi
+          if has kde; then entries+=('{"label":"KDE","edition":"kde","recipe":"recipe-kde.yml"}'); fi
+          if has kde-nvidia; then entries+=('{"label":"KDE NVIDIA","edition":"kde-nvidia","recipe":"recipe-kde-nvidia.yml"}'); fi
 
           if [ "${#entries[@]}" -gt 0 ]; then
             ( IFS=,; echo "editions=[${entries[*]}]" >> "${GITHUB_OUTPUT}" )
@@ -183,6 +185,11 @@ jobs:
     permissions:
       contents: read
       packages: write
+    # The digest each edition's build pushed, for its Publish job. Every
+    # edition's build sets its own; add a line for a new edition.
+    outputs:
+      kde: ${{ steps.pushed.outputs.kde }}
+      kde-nvidia: ${{ steps.pushed.outputs.kde-nvidia }}
     strategy:
       fail-fast: false
       matrix:
@@ -217,7 +224,13 @@ jobs:
             sudo apt-get install -y "${missing[@]}"
           fi
 
-      - name: Build and publish image
+      # A build of main is pushed as `candidate`. The Publish job gives it
+      # `latest` and the other public tags once it has been checked.
+      - name: Hold the public tags back
+        if: github.event_name != 'pull_request'
+        run: python3 .github/workflows/image-tags.py hold "recipes/${{ matrix.recipe }}"
+
+      - name: Build and push image
         uses: blue-build/github-action@v1.13.0
         with:
           recipe: ${{ matrix.recipe }}
@@ -232,13 +245,53 @@ jobs:
           skip_checkout: true
           maximize_build_space: true
           retry_push_count: 3
+          build_opts: --digestfile ${{ runner.temp }}/pushed.json
+
+      - name: Note which image was pushed
+        id: pushed
+        run: python3 .github/workflows/image-tags.py pushed "${RUNNER_TEMP}/pushed.json" "${{ matrix.edition }}"
+
+  # Give a build of main its public tags, `latest` last. The script tests have
+  # to pass first. Each edition is published on its own, so this also runs
+  # when the other edition's build failed.
+  publish:
+    name: Publish ${{ matrix.label }}
+    needs: [test, check, bluebuild]
+    if: >-
+      ${{ !cancelled() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+      && needs.test.result == 'success' && needs.check.result == 'success'
+      && (needs.bluebuild.result == 'success' || needs.bluebuild.result == 'failure') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.check.outputs.editions) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Check the build and move the public tags to it
+        env:
+          TOKEN: ${{ github.token }}
+          DIGEST: ${{ needs.bluebuild.outputs[matrix.edition] }}
+          REGISTRY_AUTH_FILE: ${{ runner.temp }}/registry-auth.json
+        run: |
+          command -v skopeo >/dev/null 2>&1 || { sudo apt-get update && sudo apt-get install -y skopeo; }
+          skopeo login ghcr.io --username "${{ github.actor }}" --password-stdin <<< "${TOKEN}"
+          unset TOKEN
+          python3 .github/workflows/image-tags.py publish "${{ matrix.edition }}" "${DIGEST}"
 
   # The one build check branch protection requires. Build jobs exist only for
   # the editions a pull request affects, so requiring them by name would leave
   # other pull requests waiting forever; this job always reports instead.
   build-result:
     name: Build result
-    needs: [test, check, bluebuild]
+    needs: [test, check, bluebuild, publish]
     if: always()
     runs-on: ubuntu-latest
     permissions: {}
@@ -248,15 +301,19 @@ jobs:
           TEST: ${{ needs.test.result }}
           CHECK: ${{ needs.check.result }}
           BUILD: ${{ needs.bluebuild.result }}
+          PUBLISH: ${{ needs.publish.result }}
+          ON_MAIN: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
         run: |
-          echo "Test scripts: ${TEST}; rebuild check: ${CHECK}; builds: ${BUILD}"
+          echo "Test scripts: ${TEST}; rebuild check: ${CHECK}; builds: ${BUILD}; publishing: ${PUBLISH}"
           [ "${TEST}" = success ] && [ "${CHECK}" = success ] || exit 1
           # Skipped means no edition needed a build.
           case "${BUILD}" in success | skipped) ;; *) exit 1 ;; esac
+          # A build of main that passed has to be published too.
+          if [ "${ON_MAIN}" = true ] && [ "${BUILD}" = success ] && [ "${PUBLISH}" != success ]; then exit 1; fi
 
   generate-release:
     name: Release
-    needs: bluebuild
+    needs: publish
     if: github.event_name != 'pull_request'
     permissions:
       contents: write
