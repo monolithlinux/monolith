@@ -1,20 +1,25 @@
 name: App downloads
 
 # Monolith's tests run the catalog against stand-ins, so they can't see a
-# publisher change what it releases. Once a day this makes the catalog's own
-# checks against the real downloads of the apps it installs through Gear Lever.
-# It's separate from the build, so a publisher's change never holds back an image.
+# publisher change what it releases. Once a day this runs the catalog's own
+# code against the real publishers of every app in it, up to the step that
+# would install something. It's separate from the build, so a publisher's
+# change never holds back an image.
 on:
   schedule:
     # Daily at 12:37 am Central, off the hour like the nightly build.
     - cron: "37 0 * * *"
       timezone: "America/Chicago"
-  # A change to the check, or to the helper whose rules it applies, runs it too.
+  # A change to the check, or to the catalog code it runs, runs it too.
   pull_request:
     paths:
       - .github/workflows/check-app-downloads.yml
       - .github/workflows/check-app-downloads.py
+      - .github/workflows/check-app-downloads.sh
+      - files/system/usr/libexec/monolith/software
+      - files/system/usr/libexec/monolith/common.sh
       - files/system/usr/libexec/monolith/gear-lever-app
+      - files/system/usr/libexec/monolith/ghostty-themes
   workflow_dispatch:
 
 permissions: {}
@@ -27,7 +32,9 @@ jobs:
   check:
     name: Check app downloads
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # A run takes a few minutes. When many apps fail at once, the pauses between
+    # each one's three tries add up to more than half an hour.
+    timeout-minutes: 60
     permissions:
       contents: read
     steps:
