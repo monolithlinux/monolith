@@ -160,6 +160,12 @@ jobs:
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release edit "$TAG" \
               --target "$SHA" --title "$TITLE" --notes-file ./changelog.md
+            # A second build on the same day. GitHub leaves an existing tag
+            # where it is, whatever --target says, and tomorrow's commit list
+            # starts at this tag. Move it, or that list repeats the commits
+            # these notes already have.
+            gh api --silent -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG" \
+              -f sha="$SHA" -F force=true
           else
             gh release create "$TAG" \
               --target "$SHA" --title "$TITLE" --notes-file ./changelog.md

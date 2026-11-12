@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""changelog.py, with made-up package lists for two editions.
+"""changelog.py, with made-up package lists for two editions, and the step
+of generate_release.yml that publishes the notes, with a stand-in for gh.
 
 GitHub turns away release notes longer than 125,000 characters, and a move
 to a new Fedora release changes nearly every package.
@@ -7,7 +8,9 @@ to a new Fedora release changes nearly every package.
     python3 tests/release-notes.py
 """
 
+import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -15,6 +18,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 CHANGELOG = ROOT / ".github/workflows/changelog.py"
+WORKFLOW = ROOT / ".github/workflows/generate_release.yml"
 EDITIONS = ["kde", "kde-nvidia"]
 GITHUB_LIMIT = 125_000
 
@@ -79,6 +83,86 @@ class ReleaseNotes(unittest.TestCase):
         self.assertNotIn("| ✨ |", notes)
         self.assertIn("_0 packages changed, 3,000 were added and 3,000 removed. "
                       "That's too many to list here._", notes)
+
+
+def step_script(name):
+    """The shell script of one step in generate_release.yml. The file is read
+    by its indentation, because the runner's Python has no YAML reader."""
+    lines = WORKFLOW.read_text().splitlines()
+    step = lines.index(f"      - name: {name}")
+    run = lines.index("        run: |", step)
+    if any(line.startswith("      - ") for line in lines[step + 1:run]):
+        raise ValueError(f"the step {name!r} has no script of its own")
+    script = []
+    for line in lines[run + 1:]:
+        if line.strip() and not line.startswith(" " * 10):
+            break
+        script.append(line[10:])
+    return "\n".join(script) + "\n"
+
+
+# gh, as the step uses it: every call is written down, `release view` says
+# whether the day's release exists, and `api` can be made to fail.
+GH = """#!/bin/bash
+printf '%s\\0' "$@" >> "$GH_CALLS"
+printf '\\n' >> "$GH_CALLS"
+case "$1" in
+    release) [ "$2" != view ] || [ "$RELEASE_EXISTS" = yes ] ;;
+    api) [ "$API_WORKS" = yes ] ;;
+    *) exit 64 ;;
+esac
+"""
+TAG = "2026-11-11"
+SHA = "4754a30000000000000000000000000000000000"
+TITLE = "2026-11-11 (Fedora 45)"
+NOTES = ["--target", SHA, "--title", TITLE, "--notes-file", "./changelog.md"]
+
+
+class PublishTheRelease(unittest.TestCase):
+    def publish(self, release_exists, api_works=True):
+        """Run the step. Returns its exit code and the gh calls it made."""
+        with tempfile.TemporaryDirectory() as tmp:
+            # Only the stand-in is on PATH: the runner has a real gh.
+            programs = Path(tmp, "bin")
+            programs.mkdir()
+            Path(programs, "gh").write_text(GH)
+            Path(programs, "gh").chmod(0o755)
+            Path(tmp, "step.sh").write_text(step_script("Create release"))
+            calls = Path(tmp, "calls")
+            calls.touch()
+            env = {"PATH": str(programs), "HOME": tmp, "GH_CALLS": str(calls), "GH_TOKEN": "made-up",
+                   "GITHUB_REPOSITORY": "monolithlinux/monolith", "TAG": TAG, "SHA": SHA, "TITLE": TITLE,
+                   "RELEASE_EXISTS": "yes" if release_exists else "no", "API_WORKS": "yes" if api_works else "no"}
+            # The shell GitHub runs a step's script with.
+            done = subprocess.run([shutil.which("bash"), "--noprofile", "--norc", "-e", "-o", "pipefail", "step.sh"],
+                                  cwd=tmp, env=env, capture_output=True, text=True)
+            made = [call.split("\0")[:-1] for call in calls.read_text().splitlines()]
+            return done.returncode, made, done.stderr
+
+    def test_the_first_build_of_a_day_creates_the_release(self):
+        code, calls, errors = self.publish(release_exists=False)
+        self.assertEqual(code, 0, errors)
+        self.assertEqual(calls, [["release", "view", TAG], ["release", "create", TAG, *NOTES]])
+
+    def test_a_second_build_on_the_same_day_moves_the_tag(self):
+        """GitHub keeps an existing tag where it is. The next day's commit
+        list starts at the tag, so it would repeat this build's commits."""
+        code, calls, errors = self.publish(release_exists=True)
+        self.assertEqual(code, 0, errors)
+        self.assertEqual(calls[:2], [["release", "view", TAG], ["release", "edit", TAG, *NOTES]])
+        self.assertEqual(len(calls), 3, calls)
+        move = calls[2]
+        self.assertEqual(move[0], "api")
+        self.assertEqual(move[move.index("-X") + 1], "PATCH")
+        self.assertIn(f"repos/monolithlinux/monolith/git/refs/tags/{TAG}", move)
+        self.assertEqual(move[move.index(f"sha={SHA}") - 1], "-f")
+        # -F sends true as a boolean; -f would send the word, which GitHub turns away.
+        self.assertEqual(move[move.index("force=true") - 1], "-F")
+
+    def test_a_tag_that_cannot_be_moved_fails_the_job(self):
+        code, calls, _ = self.publish(release_exists=True, api_works=False)
+        self.assertNotEqual(code, 0)
+        self.assertEqual([call[:2] for call in calls], [["release", "view"], ["release", "edit"], ["api", "--silent"]])
 
 
 if __name__ == "__main__":
