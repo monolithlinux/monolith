@@ -84,12 +84,15 @@ the problem is fixed, return to the newest build:
 monolith rollback latest
 ```
 
+If you change your mind before you've restarted, the same command cancels the
+rollback, and you stay on the build you're running.
+
 ## Checking this computer
 
-`monolith status` shows your build, whether an update is waiting for a restart,
-Secure Boot, your graphics driver, when you last updated everything, and the CPU
-scheduler. If anything needs your attention, it says so and tells you how to fix
-it.
+`monolith status` shows your build, whether an update or a switch to another
+build is waiting for a restart, Secure Boot, your graphics driver, when you last
+updated everything, and the CPU scheduler. If anything needs your attention, it
+says so and tells you how to fix it.
 
 `monolith clean-system` frees up space by removing unused container images,
 unused Flatpak runtimes and old builds. It asks before removing anything.
@@ -130,7 +133,8 @@ the GTX 16 or RTX 20 series onward.
 
 `monolith edition` shows which one you're on, and `monolith edition kde-nvidia` or
 `monolith edition kde` switches. Your apps, files and settings stay, and the
-switch takes effect when you restart.
+switch takes effect when you restart. To call it off before then, run
+`monolith edition` with the edition you're still on.
 
 ## Setup
 

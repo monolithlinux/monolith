@@ -21,7 +21,8 @@ Usage: monolith rollback [date|list|latest]
 
 Going back pauses system updates, so the build you left doesn't come back with
 the next automatic update. Flatpaks still update. Your apps, files and settings
-stay. Nothing changes until you restart.
+stay. Nothing changes until you restart, and until then monolith rollback
+latest cancels it.
 EOF
 }
 
@@ -30,14 +31,16 @@ offline() {
 }
 
 list_builds() {
-    local dates current date mark
-    dates="$(registry_dates "$IMAGE_EDITION")" || offline
-    [[ $dates ]] || die "There are no dated $IMAGE_EDITION builds to go back to yet."
-    current="$(build_date "$IMAGE_VERSION" || true)"
-    printf 'Builds of %s you can go back to, newest first:\n\n' "$IMAGE_EDITION"
+    local dates current="" date mark
+    dates="$(registry_dates "$EDITION")" || offline
+    [[ $dates ]] || die "There are no dated $EDITION builds to go back to yet."
+    [[ $IMAGE_EDITION != "$EDITION" ]] || current="$(build_date "$IMAGE_VERSION" || true)"
+    printf 'Builds of %s you can go back to, newest first:\n\n' "$EDITION"
     while read -r date; do
         mark=""
         [[ $date == "$current" ]] && mark="  (running now)"
+        [[ $PENDING == yes && $NEXT_EDITION == "$EDITION" && $date == "$NEXT_TAG" ]] &&
+            mark="  (starts at your next restart)"
         printf '  %s  %s%s\n' "$date" "$(nice_date "$date")" "$mark"
     done < <(head -n 30 <<<"$dates")
     example="$(sed -n 2p <<<"$dates")"
@@ -45,20 +48,37 @@ list_builds() {
 }
 
 to_date() {
-    local date="${1//-/}" dates
+    local date="${1//-/}" dates day waiting
     [[ $date =~ ^[0-9]{8}$ ]] || die "Dates look like 20261027 or 2026-10-27. See the builds you can pick with: monolith rollback list"
-    if [[ $IMAGE_TAG == "$date" ]]; then
-        echo "You're already on the build from $(nice_date "$date")."
-        return 0
-    fi
-    dates="$(registry_dates "$IMAGE_EDITION")" || offline
+    day="$(nice_date "$date")"
+    switch_plan "$EDITION" "$date"
+    case "$SWITCH_PLAN" in
+        same)
+            echo "You're already on the build from $day."
+            return 0
+            ;;
+        waiting)
+            echo "The build from $day already waits for your next restart."
+            echo "Restart to start it."
+            return 0
+            ;;
+        cancel)
+            # On that build already, with a switch away from it waiting.
+            waiting="$(next_build)"
+            printf 'Cancelling the switch to %s.\n' "$waiting"
+            cancel_pending || die "That didn't work: your next restart still starts $waiting."
+            printf '\nDone. You stay on the build from %s. System updates stay\npaused until you run monolith rollback latest.\n' "$day"
+            return 0
+            ;;
+    esac
+    dates="$(registry_dates "$EDITION")" || offline
     grep -qxF -- "$date" <<<"$dates" ||
-        die "There's no $IMAGE_EDITION build from $(nice_date "$date"). See the builds you can pick with: monolith rollback list"
+        die "There's no $EDITION build from $day. See the builds you can pick with: monolith rollback list"
     printf 'This switches you to the %s build from %s and pauses system updates\nuntil you run monolith rollback latest. Your apps, files and settings stay.\n\n' \
-        "$IMAGE_EDITION" "$(nice_date "$date")"
-    ask "Go back to the build from $(nice_date "$date")?" || { echo "Nothing changed."; return 0; }
-    rebase_to "$IMAGE_EDITION" "$date"
-    printf '\nDone. Restart to start the build from %s.\n' "$(nice_date "$date")"
+        "$EDITION" "$day"
+    ask "Go back to the build from $day?" || { echo "Nothing changed."; return 0; }
+    rebase_to "$EDITION" "$date"
+    printf '\nDone. Restart to start the build from %s.\n' "$day"
 }
 
 to_previous() {
@@ -74,26 +94,19 @@ to_previous() {
     to_date "$previous"
 }
 
-to_latest() {
-    if [[ $IMAGE_TAG == latest ]]; then
-        echo "You're already on the newest build, and updates are on."
-        return 0
-    fi
-    ask "Return to the newest $IMAGE_EDITION build and daily updates?" || { echo "Nothing changed."; return 0; }
-    rebase_to "$IMAGE_EDITION" latest
-    printf '\nDone. Restart to start the newest build.\n'
-}
-
 case "${1-}" in
     -h|--help|help) usage; exit 0 ;;
 esac
 load_image_info || die "Couldn't read your builds from rpm-ostree."
 [[ $IMAGE_EDITION ]] ||
     die "You're not on one of Monolith's images (${IMAGE_NAME:-unknown}), so there are no Monolith builds to go back to."
+# The edition this computer runs after its next restart: a switch to the other
+# edition may be waiting.
+EDITION="${NEXT_EDITION:-$IMAGE_EDITION}"
 
 case "${1-}" in
     "") to_previous ;;
     list) list_builds ;;
-    latest) to_latest ;;
+    latest) return_to_latest "$EDITION" ;;
     *) to_date "$1" ;;
 esac

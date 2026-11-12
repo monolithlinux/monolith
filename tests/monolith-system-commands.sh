@@ -39,14 +39,50 @@ cat >"$shipped_config" <<'EOF'
 #server_mode = []
 EOF
 
+# rpm-ostree keeps its deployments in status.json. rebase and cleanup -p change
+# them the way rpm-ostree 2026.3 does (rpmostreed-transaction-types.cxx,
+# rpmostree-sysroot-core.cxx): a rebase builds on the deployment listed first,
+# which is the one waiting for a restart when there is one, refuses the image
+# that deployment already follows, and stages a new deployment in place of the
+# one that waited. cleanup -p drops what waits unless it's pinned.
 cat >"$bin/rpm-ostree" <<EOF
 #!/usr/bin/env bash
+status="$test_root/status.json"
+change() { jq "\$@" "\$status" >"\$status.new" && mv "\$status.new" "\$status"; }
 if [ "\$1" = status ]; then
-    [ -e "$test_root/status.json" ] || exit 1
-    cat "$test_root/status.json"
-else
-    printf '%s\n' "\$*" >>"$log/rpm-ostree"
+    [ -e "\$status" ] || exit 1
+    cat "\$status"
+    exit 0
 fi
+printf '%s\n' "\$*" >>"$log/rpm-ostree"
+case "\$1" in
+    rebase)
+        if [ "\$(jq -r '.deployments[0]["container-image-reference"]' "\$status")" = "\$2" ]; then
+            echo "error: Old and new refs are equal: \$2" >&2
+            exit 1
+        fi
+        change --arg ref "\$2" '(.deployments | map(.booted) | index(true)) as \$at
+            | .deployments |= [{booted: false, staged: true, version: "44.20261031.0",
+                "container-image-reference": \$ref}] + .[\$at:]'
+        ;;
+    cleanup)
+        # CLEANUP_FAILS: 1 before anything changed, late after the deployment
+        # was dropped, gone when rpm-ostree stops answering as well.
+        case "\${CLEANUP_FAILS-}" in
+            1) echo "error: Authorization failed" >&2; exit 1 ;;
+            gone) rm "\$status"; echo "error: Bus owner changed, aborting." >&2; exit 1 ;;
+        esac
+        [ "\$2" = -p ] || exit 0
+        before="\$(jq '.deployments | length' "\$status")"
+        change '(.deployments | map(.booted) | index(true)) as \$at
+            | .deployments |= (to_entries | map(select(.key >= \$at or .value.pinned == true) | .value))'
+        [ "\$(jq '.deployments | length' "\$status")" != "\$before" ] || echo "Deployments unchanged."
+        if [ "\${CLEANUP_FAILS-}" = late ]; then
+            echo "error: pruning: No space left on device" >&2
+            exit 1
+        fi
+        ;;
+esac
 EOF
 cat >"$bin/mokutil" <<'EOF'
 #!/usr/bin/env bash
@@ -150,11 +186,33 @@ deployments() {
             + (if $previous != "" then [{booted: false, staged: false, version: $previous, "container-image-reference": $ref}] else [] end)),
          transaction: null, "cached-update": null, "update-driver": null}' >"$test_root/status.json"
 }
+# pending EDITION TAG VERSION [pinned|unstaged]: a switch to that build waits
+# for the next restart, in place of anything that waited before. EDITION
+# "other" is an image that isn't Monolith's.
+pending() {
+    local ref="ostree-image-signed:docker://ghcr.io/monolithlinux/$1:$2"
+    [ "$1" != other ] || ref="ostree-image-signed:docker://ghcr.io/someone/os:$2"
+    jq --arg ref "$ref" --arg version "$3" --arg how "${4-}" '
+        (.deployments | map(.booted) | index(true)) as $at
+        | .deployments |= [{booted: false, staged: ($how == ""), pinned: ($how == "pinned"), version: $version,
+            "container-image-reference": $ref}] + .[$at:]' "$test_root/status.json" >"$test_root/status.json.new"
+    mv "$test_root/status.json.new" "$test_root/status.json"
+}
+# waits: the image the next restart starts, or "nothing" when that's the
+# running one.
+waits() {
+    jq -r '.deployments[0] | if .booted then "nothing" else .["container-image-reference"] | sub(".*/"; "") end' \
+        "$test_root/status.json"
+}
 run() { "$libexec/$1" "${@:2}" </dev/null 2>&1; }
 yes_run() { MONOLITH_YES=1 "$libexec/$1" "${@:2}" </dev/null 2>&1; }
+# rebased, cancelled and not_rebased: the one change rpm-ostree was asked for
+# was that switch, was dropping the build that waited, or there was none.
 rebased() { [ "$(cat "$log/rpm-ostree" 2>/dev/null)" = "rebase ostree-image-signed:docker://ghcr.io/monolithlinux/$1" ] ||
     fail "expected a rebase to $1, got: $(cat "$log/rpm-ostree" 2>/dev/null)"; }
-not_rebased() { [ ! -e "$log/rpm-ostree" ] || fail "rebased: $(cat "$log/rpm-ostree")"; }
+cancelled() { [ "$(cat "$log/rpm-ostree" 2>/dev/null)" = "cleanup -p" ] ||
+    fail "expected cleanup -p, got: $(cat "$log/rpm-ostree" 2>/dev/null)"; }
+not_rebased() { [ ! -e "$log/rpm-ostree" ] || fail "rpm-ostree changed something: $(cat "$log/rpm-ostree")"; }
 
 for script in status scheduler rollback edition report-bug; do
     run "$script" --help | grep -q "^Usage: monolith $script" || fail "$script --help"
@@ -215,6 +273,45 @@ deployments signed kde-nvidia latest 44.20261029.0 44.20261030.0 44.20261028.0 '
 out="$(run status)" || fail "a downloaded update needs attention: $out"
 has "$out" '  ^ Updates       build 44.20261030.0 is downloaded; restart to use it'
 has "$out" '  - Layered       htop, nvtop'
+
+# A switch to another build that waits for a restart is no plain update: the
+# Updates line says where the restart goes and how to call it off.
+reset
+deployments signed kde latest 44.20261029.0
+pending kde 20261027 44.20261027.0
+out="$(run status)" || fail "a rollback that waits needs attention: $out"
+has "$out" '  ^ Updates       going back to the build from Tue, Oct 27, 2026'
+has "$out" 'It starts at your next restart and pauses system updates.'
+has "$out" 'To stay on the newest build instead:'
+has "$out" '-> monolith rollback latest'
+lacks "$out" 'is downloaded'
+pending kde pr-50-44 44.20261028.0
+out="$(run status)" || fail "a test build that waits needs attention: $out"
+has "$out" '  ^ Updates       switching to the test build of pull request #50'
+has "$out" 'To stay on the regular builds instead:'
+has "$out" '-> monolith rollback latest'
+pending kde-nvidia latest 44.20261029.0
+out="$(run status)" || fail "an edition switch that waits needs attention: $out"
+has "$out" '  ^ Updates       switching to the newest build of the kde-nvidia edition'
+has "$out" 'It starts at your next restart.'
+lacks "$out" 'monolith rollback latest'
+
+# On an older build with the return to the newest one waiting, updates are no
+# longer something to fix.
+reset
+deployments signed kde 20261027 44.20261027.0
+pending kde latest 44.20261029.0
+out="$(run status)" || fail "a return to the newest build that waits needs attention: $out"
+has "$out" '  ^ Updates       returning to the newest build'
+has "$out" 'It starts at your next restart, and daily updates resume.'
+lacks "$out" 'paused on the build'
+lacks "$out" 'monolith rollback latest'
+# From one older build to another they stay paused.
+pending kde 20261025 44.20261025.0
+out="$(run status)" && fail 'a switch between two older builds passed'
+has "$out" '  ! Updates       switching to the build from Sun, Oct 25, 2026'
+has "$out" 'It starts at your next restart. System updates stay paused.'
+has "$out" '-> monolith rollback latest'
 
 reset
 rm -rf "$sys/module/nvidia"
@@ -433,6 +530,155 @@ deployments other kde latest 44.20261029.0
 out="$(yes_run rollback)" && fail 'rolled back an image that is not Monolith'
 has "$out" "You're not on one of Monolith's images (ghcr.io/someone/kde)"
 
+# A switch that waits for a restart decides what rollback does. On the newest
+# build with a rollback waiting, latest cancels it without a question, and the
+# build before this one stays.
+reset
+deployments signed kde latest 44.20261029.0 '' 44.20261028.0
+pending kde 20261027 44.20261027.0
+[ "$(waits)" = kde:20261027 ] || fail "the stand-in has $(waits) waiting"
+out="$(run rollback latest)" || fail "$out"
+has "$out" 'Cancelling the switch to the build from Tue, Oct 27, 2026.'
+has "$out" 'Done. You stay on the newest build, and daily updates continue.'
+lacks "$out" "You're already on the newest build"
+cancelled
+[ "$(waits)" = nothing ] || fail "$(waits) still waits"
+[ "$(jq -r '[.deployments[].version] | join(" ")' "$test_root/status.json")" = '44.20261029.0 44.20261028.0' ] ||
+    fail 'cancelling touched the other builds'
+rm "$log/rpm-ostree"
+has "$(run rollback latest)" "You're already on the newest build, and updates are on."
+not_rebased
+# The same for a test build that waits.
+reset
+deployments signed kde latest 44.20261029.0
+pending kde pr-50-44 44.20261028.0
+out="$(run rollback latest)" || fail "$out"
+has "$out" 'Cancelling the switch to the test build of pull request #50.'
+cancelled
+# And for another system: the newest Monolith build is what runs.
+reset
+deployments signed kde latest 44.20261029.0
+pending other 44 44.20261029.0
+out="$(run rollback latest)" || fail "$out"
+has "$out" 'Cancelling the switch to ghcr.io/someone/os:44.'
+cancelled
+
+# A downloaded update of the newest build is no switch, so it stays.
+reset
+deployments signed kde latest 44.20261029.0 44.20261030.0
+has "$(yes_run rollback latest)" "You're already on the newest build, and updates are on."
+not_rebased
+[ "$(waits)" = kde:latest ] || fail 'a downloaded update was dropped'
+
+# On an older build or a test build with the return already waiting, there's
+# nothing left to do. rpm-ostree would refuse the same switch twice.
+for tag in 20261027 pr-50-44; do
+    reset
+    deployments signed kde "$tag" 44.20261027.0
+    pending kde latest 44.20261029.0
+    out="$(yes_run rollback latest)" || fail "$out"
+    has "$out" 'The newest build already waits for your next restart, and daily updates'
+    has "$out" 'Restart to start it.'
+    not_rebased
+    [ "$(waits)" = kde:latest ] || fail "$(waits) waits after rollback latest on $tag"
+done
+
+# On an older build with another one waiting, or on a test build: ask, then
+# switch.
+reset
+deployments signed kde 20261027 44.20261027.0
+pending kde 20261025 44.20261025.0
+has "$(run rollback latest)" 'Nothing changed.'
+not_rebased
+out="$(yes_run rollback latest)" || fail "$out"
+has "$out" 'Done. Restart to start the newest build.'
+rebased kde:latest
+[ "$(waits)" = kde:latest ] || fail "$(waits) waits after returning to the newest build"
+reset
+deployments signed kde pr-50-44 44.20261028.0
+yes_run rollback latest >/dev/null || fail 'rollback latest on a test build'
+rebased kde:latest
+
+# Going back to a day whose build already waits changes nothing, also when it
+# is the build before this one.
+reset
+deployments signed kde latest 44.20261029.0 '' 44.20261027.0
+pending kde 20261027 44.20261027.0
+out="$(yes_run rollback 2026-10-27)" || fail "$out"
+has "$out" 'The build from Tue, Oct 27, 2026 already waits for your next restart.'
+has "$out" 'Restart to start it.'
+has "$(yes_run rollback)" 'The build from Tue, Oct 27, 2026 already waits for your next restart.'
+not_rebased
+out="$(run rollback list)"
+has "$out" '  20261029  Thu, Oct 29, 2026  (running now)'
+has "$out" '  20261027  Tue, Oct 27, 2026  (starts at your next restart)'
+# Another day takes its place.
+yes_run rollback 20261026 >/dev/null || fail 'rollback to another day while one waits'
+rebased kde:20261026
+[ "$(waits)" = kde:20261026 ] || fail "$(waits) waits after picking another day"
+
+# On an older build with the return to the newest one waiting, asking for that
+# older build again cancels the return.
+reset
+deployments signed kde 20261027 44.20261027.0
+pending kde latest 44.20261029.0
+out="$(run rollback 20261027)" || fail "$out"
+has "$out" 'Cancelling the switch to the newest build.'
+has "$out" 'Done. You stay on the build from Tue, Oct 27, 2026. System updates stay'
+has "$out" 'paused until you run monolith rollback latest.'
+cancelled
+[ "$(waits)" = nothing ] || fail "$(waits) still waits"
+
+# When cancelling doesn't work, it says what the next restart still starts.
+reset
+deployments signed kde latest 44.20261029.0
+pending kde 20261027 44.20261027.0
+out="$(CLEANUP_FAILS=1 run rollback latest)" && fail 'a cancel without authorization passed'
+has "$out" 'error: Authorization failed'
+has "$out" "That didn't work: your next restart still starts the build from Tue, Oct 27, 2026."
+lacks "$out" 'Done.'
+# What waits afterwards decides. rpm-ostree leaves a pinned build in place and
+# calls that a success...
+pending kde 20261027 44.20261027.0 pinned
+out="$(run rollback latest)" && fail 'a cancel that left the build in place passed'
+has "$out" 'Deployments unchanged.'
+has "$out" "That didn't work: your next restart still starts the build from Tue, Oct 27, 2026."
+lacks "$out" 'Done.'
+# ...and can fail after it dropped the build.
+pending kde 20261027 44.20261027.0
+out="$(CLEANUP_FAILS=late run rollback latest)" || fail "a cancel that worked before rpm-ostree failed: $out"
+has "$out" 'error: pruning: No space left on device'
+has "$out" 'Done. You stay on the newest build, and daily updates continue.'
+[ "$(waits)" = nothing ] || fail "$(waits) still waits"
+# When rpm-ostree fails and then doesn't answer, its failure is all there is.
+pending kde 20261027 44.20261027.0
+out="$(CLEANUP_FAILS=gone run rollback latest)" && fail 'a cancel that failed out of sight passed'
+has "$out" "That didn't work: your next restart still starts the build from Tue, Oct 27, 2026."
+
+# With a switch to the other edition waiting, rollback works on that edition.
+reset
+deployments signed kde latest 44.20261029.0
+pending kde-nvidia latest 44.20261029.0
+has "$(yes_run rollback latest)" 'The newest build already waits for your next restart'
+not_rebased
+has "$(run rollback list)" 'Builds of kde-nvidia you can go back to'
+yes_run rollback 20261027 >/dev/null || fail 'rollback to a day of the edition that waits'
+rebased kde-nvidia:20261027
+
+# The stand-in refuses what rpm-ostree refuses: a switch to the image that the
+# first deployment, waiting or running, already follows.
+reset
+deployments signed kde latest 44.20261029.0
+out="$(rpm-ostree rebase ostree-image-signed:docker://ghcr.io/monolithlinux/kde:latest 2>&1)" &&
+    fail 'the stand-in took a rebase to the running image'
+has "$out" 'error: Old and new refs are equal'
+pending kde 20261027 44.20261027.0
+rpm-ostree rebase ostree-image-signed:docker://ghcr.io/monolithlinux/kde:latest ||
+    fail 'the stand-in refused a rebase away from the waiting image'
+out="$(rpm-ostree rebase ostree-image-signed:docker://ghcr.io/monolithlinux/kde:latest 2>&1)" &&
+    fail 'the stand-in took a rebase to the waiting image'
+has "$out" 'error: Old and new refs are equal'
+
 # edition --------------------------------------------------------------------
 reset
 deployments signed kde latest 44.20261029.0
@@ -459,6 +705,31 @@ reset
 has "$(yes_run edition kde-nvidia)" "You're already on the kde-nvidia edition."
 not_rebased
 deployments signed kde-nvidia 20261027 44.20261027.0
+has "$(yes_run edition kde-nvidia)" 'System updates come back on'
+rebased kde-nvidia:latest
+
+# A switch that waits for a restart counts here too. The edition that waits
+# needs no second switch, and asking for the running one cancels the switch.
+reset
+deployments signed kde latest 44.20261029.0
+pending kde-nvidia latest 44.20261029.0
+has "$(yes_run edition kde-nvidia)" 'The kde-nvidia edition already waits for your next restart.'
+not_rebased
+out="$(run edition kde)" || fail "$out"
+has "$out" 'Cancelling the switch to the newest build of the kde-nvidia edition.'
+has "$out" 'Done. You stay on the kde edition.'
+cancelled
+[ "$(waits)" = nothing ] || fail "$(waits) still waits"
+# A rollback that waits is cancelled the same way, and leaving it for the
+# other edition brings updates back.
+reset
+deployments signed kde latest 44.20261029.0
+pending kde 20261027 44.20261027.0
+has "$(run edition kde)" 'Cancelling the switch to the build from Tue, Oct 27, 2026.'
+cancelled
+reset
+deployments signed kde latest 44.20261029.0
+pending kde 20261027 44.20261027.0
 has "$(yes_run edition kde-nvidia)" 'System updates come back on'
 rebased kde-nvidia:latest
 

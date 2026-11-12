@@ -79,7 +79,37 @@ if load_image_info; then
         no) source_text+=", not signed" ;;
     esac
     build="${IMAGE_VERSION:-unknown} from $source_text"
-    if [[ $IMAGE_EDITION && $IMAGE_TAG =~ ^[0-9]{8}$ ]]; then
+    # A switch to another build that waits for a restart says more about
+    # updates than the build that's running: it decides where they go next.
+    switching=""
+    if [[ $PENDING == yes && $NEXT_EDITION && ($NEXT_EDITION != "$IMAGE_EDITION" || $NEXT_TAG != "$IMAGE_TAG") ]]; then
+        switching="$(next_build)"
+        # Already off the regular builds, and still off them after the restart.
+        level="wait"
+        [[ $IMAGE_TAG == latest || $NEXT_TAG == latest ]] || level="warn"
+    fi
+    if [[ $switching && $NEXT_TAG == latest && $IMAGE_TAG == latest ]]; then
+        row wait Updates "switching to $switching" "It starts at your next restart." ""
+    elif [[ $switching && $NEXT_TAG == latest ]]; then
+        row wait Updates "returning to $switching" \
+            "It starts at your next restart, and daily updates resume." ""
+    elif [[ $switching && $NEXT_TAG =~ ^[0-9]{8}$ && $IMAGE_TAG == latest ]]; then
+        row "$level" Updates "going back to $switching" \
+            "It starts at your next restart and pauses system updates." "" \
+            "To stay on the newest build instead:" "monolith rollback latest"
+    elif [[ $switching && $NEXT_TAG =~ ^[0-9]{8}$ ]]; then
+        row "$level" Updates "switching to $switching" \
+            "It starts at your next restart. System updates stay paused." "" \
+            "For the newest build instead:" "monolith rollback latest"
+    elif [[ $switching && $IMAGE_TAG == latest ]]; then
+        row "$level" Updates "switching to $switching" \
+            "It starts at your next restart." "" \
+            "To stay on the regular builds instead:" "monolith rollback latest"
+    elif [[ $switching ]]; then
+        row "$level" Updates "switching to $switching" \
+            "It starts at your next restart." "" \
+            "For the newest regular build instead:" "monolith rollback latest"
+    elif [[ $IMAGE_EDITION && $IMAGE_TAG =~ ^[0-9]{8}$ ]]; then
         row warn Updates "paused on the build from $(nice_date "$IMAGE_TAG")" \
             "When you're ready for the newest build:" "monolith rollback latest"
     elif [[ $IMAGE_EDITION && $IMAGE_TAG == pr-* ]]; then

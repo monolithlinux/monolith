@@ -177,10 +177,16 @@ days_ago() {
 #   IMAGE_NAME      ghcr.io/monolithlinux/kde
 #   IMAGE_EDITION   kde (empty when the image isn't Monolith's)
 #   IMAGE_TAG       latest, a date such as 20261029, or pr-52-44
-#   NEXT_VERSION    the build the next restart starts, when that isn't this one
+#   PENDING         yes when another build waits for the next restart: a
+#                   downloaded update, or a switch that monolith rollback,
+#                   monolith edition or rpm-ostree rebase set up
+#   NEXT_REF, NEXT_VERSION, NEXT_SIGNED, NEXT_NAME, NEXT_EDITION, NEXT_TAG
+#                   the same about that waiting build; empty when PENDING is no
 #   STAGED          yes when an update is downloaded and waits for a restart
 #   PREVIOUS_VERSION  the build that ran before this one, if still installed
 #   LAYERED         packages added with rpm-ostree install, space-separated
+# rpm-ostree lists the deployment the next restart starts first, so anything
+# listed before the running one is waiting.
 load_image_info() {
     local json fields sep=$'\x1f'
     json="$(timeout 30 rpm-ostree status --json 2>/dev/null)" || return 1
@@ -189,35 +195,93 @@ load_image_info() {
         def ref: .["container-image-reference"] // "";
         ([.deployments[] | select(.booted)][0] // {}) as $booted
         | (.deployments | map(.booted) | index(true)) as $at
-        | .deployments[0] as $next
+        | (.deployments[0] // {booted: true}) as $first
+        | (if $first.booted then null else $first end) as $next
         | [ ($booted | ref),
             ($booted.version // ""),
-            (if $next.booted then "" else ($next.version // "") end),
+            ($next.version // ""),
             (if any(.deployments[]; .staged) then "yes" else "no" end),
             (if $at == null then "" else (.deployments[$at + 1].version // "") end),
-            (($booted["requested-packages"] // []) + ($booted["requested-local-packages"] // []) | join(" "))
+            (($booted["requested-packages"] // []) + ($booted["requested-local-packages"] // []) | join(" ")),
+            (if $next == null then "no" else "yes" end),
+            (if $next == null then "" else ($next | ref) end)
           ] | join("\u001f")' <<<"$json")" || return 1
-    IFS="$sep" read -r IMAGE_REF IMAGE_VERSION NEXT_VERSION STAGED PREVIOUS_VERSION LAYERED <<<"$fields"
-    parse_image_ref "$IMAGE_REF"
+    IFS="$sep" read -r IMAGE_REF IMAGE_VERSION NEXT_VERSION STAGED PREVIOUS_VERSION LAYERED PENDING NEXT_REF <<<"$fields"
+    parse_image_ref "$IMAGE_REF" IMAGE
+    parse_image_ref "$NEXT_REF" NEXT
 }
 
+# parse_image_ref REF PREFIX: split a container reference into PREFIX_SIGNED,
+# PREFIX_NAME, PREFIX_EDITION and PREFIX_TAG.
 parse_image_ref() {
-    local ref="$1" image
-    IMAGE_SIGNED=unknown
+    local ref="$1" prefix="$2" image signed=unknown name tag="" edition=""
     case "$ref" in
-        ostree-image-signed:*) IMAGE_SIGNED=yes ;;
-        ostree-unverified-*) IMAGE_SIGNED=no ;;
+        ostree-image-signed:*) signed=yes ;;
+        ostree-unverified-*) signed=no ;;
     esac
     image="${ref##*docker://}"
     image="${image#ostree-unverified-registry:}"
     image="${image%%@*}"
-    IMAGE_NAME="${image%:*}"
-    IMAGE_TAG=""
-    [[ $image == *:* && ${image##*:} != */* ]] && IMAGE_TAG="${image##*:}"
-    [[ $IMAGE_TAG ]] || IMAGE_NAME="$image"
-    IMAGE_EDITION=""
-    if [[ $IMAGE_NAME == "$MONOLITH_IMAGE_PREFIX"/* ]]; then
-        IMAGE_EDITION="${IMAGE_NAME##*/}"
+    name="${image%:*}"
+    if [[ $image == *:* && ${image##*:} != */* ]]; then
+        tag="${image##*:}"
+    else
+        name="$image"
+    fi
+    if [[ $name == "$MONOLITH_IMAGE_PREFIX"/* ]]; then
+        edition="${name##*/}"
+    fi
+    printf -v "${prefix}_SIGNED" '%s' "$signed"
+    printf -v "${prefix}_NAME" '%s' "$name"
+    printf -v "${prefix}_EDITION" '%s' "$edition"
+    printf -v "${prefix}_TAG" '%s' "$tag"
+}
+
+# describe_build TAG: a build of an edition in plain words.
+describe_build() {
+    if [[ $1 == latest ]]; then
+        printf 'the newest build\n'
+    elif [[ $1 =~ ^[0-9]{8}$ ]]; then
+        printf 'the build from %s\n' "$(nice_date "$1")"
+    elif [[ $1 =~ ^pr-([0-9]+)(-[0-9]+)?$ ]]; then
+        printf 'the test build of pull request #%s\n' "${BASH_REMATCH[1]}"
+    else
+        printf 'the build tagged %s\n' "${1:-?}"
+    fi
+}
+
+# next_build: the build that waits for the next restart, in plain words.
+next_build() {
+    if [[ -z $NEXT_EDITION ]]; then
+        printf '%s\n' "${NEXT_NAME:-another system}${NEXT_TAG:+:$NEXT_TAG}"
+    elif [[ $NEXT_EDITION != "$IMAGE_EDITION" ]]; then
+        printf '%s of the %s edition\n' "$(describe_build "$NEXT_TAG")" "$NEXT_EDITION"
+    else
+        describe_build "$NEXT_TAG"
+    fi
+}
+
+# switch_plan EDITION TAG: set SWITCH_PLAN to what it takes for this computer
+# to run EDITION:TAG after its next restart.
+#   same     it runs that build, and nothing else waits for a restart
+#   waiting  that build already waits for the next restart
+#   cancel   it runs that build, but another one waits: cancel that one
+#   switch   switch to it
+# A build that waits decides where the next restart lands, so it comes first.
+switch_plan() {
+    local running=no
+    if [[ $IMAGE_EDITION == "$1" && $IMAGE_TAG == "$2" ]]; then
+        running=yes
+    fi
+    if [[ $PENDING == yes && $NEXT_EDITION == "$1" && $NEXT_TAG == "$2" ]]; then
+        SWITCH_PLAN=waiting
+        [[ $running == no ]] || SWITCH_PLAN=same
+    elif [[ $running == no ]]; then
+        SWITCH_PLAN=switch
+    elif [[ $PENDING == yes ]]; then
+        SWITCH_PLAN=cancel
+    else
+        SWITCH_PLAN=same
     fi
 }
 
@@ -234,9 +298,52 @@ nice_date() {
 }
 
 # rebase_to EDITION TAG: switch to a signed Monolith image. Nothing changes
-# until the next restart.
+# until the next restart. rpm-ostree builds on the build that waits for a
+# restart when there is one, and refuses a switch to the image that build
+# already follows ("Old and new refs are equal"), so check switch_plan first.
 rebase_to() {
     rpm-ostree rebase "ostree-image-signed:docker://$MONOLITH_IMAGE_PREFIX/$1:$2"
+}
+
+# cancel_pending: drop the build that waits for the next restart, so this
+# computer keeps the one it runs. rpm-ostree cleanup -p is rpm-ostree's own
+# undo for that: it removes only the build that waits and downloads nothing.
+cancel_pending() {
+    local failed=0
+    rpm-ostree cleanup -p || failed=1
+    # What waits afterwards decides: rpm-ostree leaves a pinned build in place
+    # without failing, and can fail while tidying up after it dropped one.
+    load_image_info || return "$failed"
+    [[ $PENDING == no ]]
+}
+
+# return_to_latest EDITION: back to the newest build of EDITION and its daily
+# updates, from an older build, a test build, or a switch to one of those that
+# still waits for a restart. monolith rollback latest and monolith pr latest
+# both end up here.
+return_to_latest() {
+    local edition="$1" waiting
+    switch_plan "$edition" latest
+    case "$SWITCH_PLAN" in
+        same)
+            echo "You're already on the newest build, and updates are on."
+            ;;
+        waiting)
+            echo "The newest build already waits for your next restart, and daily updates"
+            echo "come back with it. Restart to start it."
+            ;;
+        cancel)
+            waiting="$(next_build)"
+            printf 'Cancelling the switch to %s.\n' "$waiting"
+            cancel_pending || die "That didn't work: your next restart still starts $waiting."
+            printf '\nDone. You stay on the newest build, and daily updates continue.\n'
+            ;;
+        switch)
+            ask "Return to the newest $edition build and daily updates?" || { echo "Nothing changed."; return 0; }
+            rebase_to "$edition" latest
+            printf '\nDone. Restart to start the newest build.\n'
+            ;;
+    esac
 }
 
 # The registry API needs a token even for public images.

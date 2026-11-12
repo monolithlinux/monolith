@@ -43,10 +43,28 @@ if [[ -z $name ]]; then
 fi
 [[ " ${MONOLITH_EDITIONS[*]} " == *" $name "* ]] ||
     die "Monolith's editions are ${MONOLITH_EDITIONS[*]}."
-if [[ $name == "$IMAGE_EDITION" && $IMAGE_TAG == latest ]]; then
-    echo "You're already on the $name edition."
-    exit 0
-fi
+# A switch that waits for a restart counts: it decides which edition this
+# computer runs next.
+switch_plan "$name" latest
+case "$SWITCH_PLAN" in
+    same)
+        echo "You're already on the $name edition."
+        exit 0
+        ;;
+    waiting)
+        echo "The $name edition already waits for your next restart."
+        echo "Restart to start it."
+        exit 0
+        ;;
+    cancel)
+        # On this edition's newest build, with a switch away from it waiting.
+        waiting="$(next_build)"
+        printf 'Cancelling the switch to %s.\n' "$waiting"
+        cancel_pending || die "That didn't work: your next restart still starts $waiting."
+        printf '\nDone. You stay on the %s edition.\n' "$name"
+        exit 0
+        ;;
+esac
 
 if [[ $name == kde-nvidia ]] && ! has_nvidia_gpu; then
     printf "This computer doesn't seem to have an NVIDIA card, and the KDE NVIDIA\nedition is only for those.\n\n"
@@ -54,7 +72,7 @@ elif [[ $name == kde ]] && has_nvidia_gpu; then
     printf "Your NVIDIA card will run on Nouveau/NVK instead of NVIDIA's driver.\n\n"
 fi
 printf 'This switches you to the newest build of %s.\n' "$(describe "$name")"
-if [[ $IMAGE_TAG != latest ]]; then
+if [[ ${NEXT_TAG:-$IMAGE_TAG} != latest ]]; then
     printf 'System updates come back on, since you leave the older build you went back to.\n'
 fi
 printf 'Your apps, files and settings stay.\n\n'
