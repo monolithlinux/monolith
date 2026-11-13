@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=Monolith
+Description=Monolith's logo where the boot menu left it, with three dots under it that pulse.
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/monolith
+ScriptFile=/usr/share/plymouth/themes/monolith/monolith.script
