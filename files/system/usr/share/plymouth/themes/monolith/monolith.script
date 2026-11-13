@@ -1,0 +1,303 @@
+# Monolith's startup screen.
+#
+# The boot menu leaves Monolith's logo on a black screen. This shows the same picture in the same
+# place, with three dots under it that pulse while the computer starts, shuts down or restarts.
+# A disk password is asked for under the logo.
+#
+# Plymouth runs this file once and then calls refresh() fifty times a second. Its language has no
+# clock, so time is counted in those calls. Names are looked up in the function first and then
+# among the globals, so every local below is declared with "local." where it is first set.
+#
+# Each screen gets its own copy of everything, at its own size: Plymouth draws all screens from
+# one large canvas, and build() gives every screen its own stretch of it.
+#
+# There is no "Caps Lock is on" note, and this file must not call Plymouth.GetCapslockState().
+# The call reads the keyboard Plymouth had when this file was started. When the screen's driver
+# changes during the start, Plymouth frees that keyboard and makes a new one without telling the
+# script plugin. In a VM plymouthd then crashed at the next password question in about one start
+# out of five, and the start hung on a black screen (Plymouth 26.134.222).
+# tests/boot-splash.py fails when the call comes back.
+
+Window.SetBackgroundTopColor(0, 0, 0);
+Window.SetBackgroundBottomColor(0, 0, 0);
+
+# The logo is the boot menu's own picture, 378 x 256 pixels, and twice that on a large screen.
+# tests/boot-splash.py checks that the two files are the same.
+logo_w = 378;
+logo_h = 256;
+
+# The boot menu draws everything twice the size on a screen this tall or taller.
+large_from = 1800;
+
+gap = 24;            # from the logo's lower edge to what is written under it
+dots_down = 30;      # from the logo's lower edge to the middle of the dots
+dots_room = 38;      # the dots' row, when something is written under them
+dots_in = 20;        # calls of refresh() the dots take to come in
+dot_gap = 22;
+field_w = 360;
+field_h = 44;
+bullet_gap = 16;
+bullets_shown = 20;
+far = 16384;         # between two screens on the canvas
+
+global.mode = Plymouth.GetMode();
+global.beat = 0;     # calls of refresh() since the dots were last allowed
+global.count = 0;    # screens
+global.ask = NULL;   # the question on screen: kind, prompt, bullets, entry
+global.note = NULL;  # a message from the system
+global.done = NULL;  # percent of an update
+
+fun ease(p)
+{
+    if (p < 0) return 0;
+    if (p > 1) return 1;
+    return p * p * (3 - 2 * p);
+}
+
+fun pictures(s)
+{
+    local.tag = "";
+    if (s == 2) tag = "-2x";
+    if (!global.pics[s])
+    {
+        global.pics[s].logo = Image("logo" + tag + ".png");
+        global.pics[s].dot = Image("dot" + tag + ".png");
+        global.pics[s].field = Image("entry" + tag + ".png");
+    }
+    return global.pics[s];
+}
+
+# Text that fits the screen: smaller when a long disk name would run off it.
+fun words(sc, text, tone)
+{
+    local.size = 15;
+    local.im = Image.Text(text, tone, tone, tone, 1, "Sans " + size * sc.s + "px", "center");
+    while (size > 11 && im.GetWidth() > sc.w - 40 * sc.s)
+    {
+        size = size - 2;
+        im = Image.Text(text, tone, tone, tone, 1, "Sans " + size * sc.s + "px", "center");
+    }
+    return im;
+}
+
+fun title()
+{
+    if (global.mode == "updates") return "Installing updates";
+    if (global.mode == "system-upgrade") return "Upgrading the system";
+    if (global.mode == "firmware-upgrade") return "Updating firmware";
+    if (global.mode == "system-reset") return "Resetting the system";
+    return NULL;
+}
+
+# One line of text, centred, its top at y. Returns the sprite.
+fun line(sc, text, tone, y)
+{
+    local.im = words(sc, text, tone);
+    local.sp = Sprite(im);
+    sp.SetPosition(sc.mid - Math.Int(im.GetWidth() / 2), y, 30);
+    return sp;
+}
+
+# Everything written under the logo: the question, a message, the progress of an update.
+# A question takes the dots' place. Anything else goes under the dots.
+fun below(sc)
+{
+    local.s = sc.s;
+    local.y = sc.ly + (logo_h + gap) * s;
+    local.heading = title();
+    sc.prompt = NULL;
+    sc.field = NULL;
+    sc.typed = NULL;
+    sc.bullets = NULL;
+    sc.note = NULL;
+    sc.heading = NULL;
+    sc.warning = NULL;
+    if (global.ask)
+    {
+        sc.prompt = line(sc, global.ask.prompt, 0.82, y);
+        sc.field_x = sc.mid - field_w * s / 2;
+        sc.field_y = y + 34 * s;
+        sc.field = Sprite(sc.p.field);
+        sc.field.SetPosition(sc.field_x, sc.field_y, 30);
+        if (global.ask.kind == "password")
+        {
+            local.n = global.ask.bullets;
+            if (n > bullets_shown) n = bullets_shown;
+            for (local.i = 0; i < n; i++)
+            {
+                sc.bullets[i] = Sprite(sc.p.dot);
+                sc.bullets[i].SetPosition(sc.field_x + (18 + i * bullet_gap) * s,
+                                          sc.field_y + (field_h * s - sc.p.dot.GetHeight()) / 2, 31);
+            }
+        }
+        else if (global.ask.entry)
+        {
+            local.im = words(sc, global.ask.entry, 1);
+            sc.typed = Sprite(im);
+            sc.typed.SetPosition(sc.mid - Math.Int(im.GetWidth() / 2),
+                                 sc.field_y + Math.Int((field_h * s - im.GetHeight()) / 2), 31);
+        }
+        y = sc.field_y + (field_h + 40) * s;
+    }
+    else
+    {
+        y = y + dots_room * s;
+        if (heading)
+        {
+            if (global.done != NULL) heading = heading + ", " + global.done + "%";
+            sc.heading = line(sc, heading, 0.82, y);
+            sc.warning = line(sc, "Don't turn off your computer.", 0.6, y + 28 * s);
+            y = y + 68 * s;
+        }
+    }
+    if (global.note)
+        sc.note = line(sc, global.note, 0.7, y);
+}
+
+fun screen(i)
+{
+    local.sc = [];
+    sc.w = Window.GetWidth(i);
+    sc.h = Window.GetHeight(i);
+    sc.s = 1;
+    if (sc.h >= large_from) sc.s = 2;
+    sc.ox = i * far;
+    sc.p = pictures(sc.s);
+    sc.mid = sc.ox + Math.Int(sc.w / 2);
+    sc.lx = sc.mid - logo_w * sc.s / 2;
+    # Where the boot menu has it: GRUB counts "40%" as 26214 / 65536.
+    sc.ly = Math.Int(sc.h * 26214 / 65536) - logo_h * sc.s;
+    if (sc.ly < 0) sc.ly = 0;
+    sc.logo = Sprite(sc.p.logo);
+    sc.logo.SetPosition(sc.lx, sc.ly, 10);
+    for (local.k = 0; k < 3; k++)
+    {
+        sc.dots[k] = Sprite(sc.p.dot);
+        sc.dots[k].SetPosition(sc.mid + (k - 1) * dot_gap * sc.s - sc.p.dot.GetWidth() / 2,
+                               sc.ly + (logo_h + dots_down) * sc.s - sc.p.dot.GetHeight() / 2, 10);
+    }
+    below(sc);
+    draw(sc);
+    return sc;
+}
+
+# Count the screens and lay every one of them out again.
+fun build()
+{
+    local.n = 0;
+    while (Window.GetWidth(n)) n++;
+    for (local.i = 0; i < n; i++)
+        global.screens[i] = screen(i);
+    for (local.j = n; j < global.count; j++)
+        global.screens[j] = NULL;
+    global.count = n;
+}
+
+# A screen came, went or changed its size? (The firmware's screen gives way to the graphics
+# driver's a moment after the start, often at another size.)
+fun changed()
+{
+    local.n = 0;
+    while (Window.GetWidth(n)) n++;
+    if (n != global.count) return 1;
+    for (local.i = 0; i < n; i++)
+    {
+        if (Window.GetWidth(i) != global.screens[i].w) return 1;
+        if (Window.GetHeight(i) != global.screens[i].h) return 1;
+    }
+    return 0;
+}
+
+# The dots of one screen. They come in softly, then the bright one goes round. After a question
+# they start over, so they always come in the same way.
+fun draw(sc)
+{
+    local.fade = ease(global.beat / dots_in);
+    for (local.k = 0; k < 3; k++)
+    {
+        local.wave = Math.Sin(2 * Math.Pi * (global.beat / 50 * 1.1 - k * 0.16));
+        if (wave < 0) wave = 0;
+        sc.dots[k].SetOpacity((0.35 + 0.65 * wave) * fade);
+    }
+}
+
+# What is written under the logo changed: lay it out again on every screen.
+fun below_all()
+{
+    for (local.i = 0; i < global.count; i++)
+    {
+        below(global.screens[i]);
+        draw(global.screens[i]);
+    }
+}
+
+fun refresh()
+{
+    # The dots are out while a question is up (asked_password and asked_question set the count
+    # back to 0) and start over when it is answered.
+    if (!global.ask) global.beat++;
+    if (changed()) build();
+    for (local.i = 0; i < global.count; i++)
+    {
+        # Plymouth puts every screen back on the same spot of the canvas whenever it shows a
+        # question or a message. Nothing is drawn before this runs, so move them apart again.
+        if (Window.GetX(i) != global.screens[i].ox) Window.SetX(i, global.screens[i].ox);
+        if (Window.GetY(i) != 0) Window.SetY(i, 0);
+        draw(global.screens[i]);
+    }
+}
+
+fun asked_password(prompt, bullets)
+{
+    global.ask = [];
+    global.ask.kind = "password";
+    global.ask.prompt = prompt;
+    global.ask.bullets = bullets;
+    global.beat = 0;
+    below_all();
+}
+
+fun asked_question(prompt, entry)
+{
+    global.ask = [];
+    global.ask.kind = "question";
+    global.ask.prompt = prompt;
+    global.ask.entry = entry;
+    global.beat = 0;
+    below_all();
+}
+
+fun answered()
+{
+    global.ask = NULL;
+    below_all();
+}
+
+fun told(text)
+{
+    global.note = text;
+    below_all();
+}
+
+fun untold(text)
+{
+    if (global.note == text) global.note = NULL;
+    below_all();
+}
+
+fun updating(percent)
+{
+    global.done = Math.Int(percent);
+    below_all();
+}
+
+Plymouth.SetRefreshFunction(refresh);
+Plymouth.SetDisplayHotplugFunction(build);
+Plymouth.SetDisplayPasswordFunction(asked_password);
+Plymouth.SetDisplayQuestionFunction(asked_question);
+Plymouth.SetDisplayNormalFunction(answered);
+Plymouth.SetDisplayMessageFunction(told);
+Plymouth.SetHideMessageFunction(untold);
+Plymouth.SetSystemUpdateFunction(updating);
+
+build();

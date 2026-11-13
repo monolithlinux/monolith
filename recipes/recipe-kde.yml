@@ -45,6 +45,12 @@ modules:
 
   - type: initramfs
 
+  # Plymouth shows the startup screen from the initramfs: check that the
+  # theme, its plugin and a font got in. See the script.
+  - type: script
+    scripts:
+      - check-boot-splash.py
+
   - type: signing
 
   # Last, after everything that writes files; see the script.

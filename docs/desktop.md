@@ -4,6 +4,7 @@ These are part of the Monolith image itself, so there's nothing to install and
 they update along with Monolith.
 
 - [Boot menu](#boot-menu)
+- [Startup screen](#startup-screen)
 - [The terminal](#the-terminal)
 - [OpenDeck](#opendeck)
 - [Node.js](#nodejs)
@@ -44,6 +45,26 @@ screen's size each time the computer starts, so after you change the screen the
 menu follows one start later. With Secure Boot on, a change to a smaller screen
 can go unnoticed. If the menu looks soft after one, run
 `monolith boot-menu off`, restart, and run `monolith boot-menu on`.
+
+## Startup screen
+
+While the computer starts, the screen shows Monolith's logo in the place the
+boot menu had it. Three dots pulse under it until the login screen is ready.
+Shutting down and restarting show the same screen.
+
+Between the boot menu and the logo the screen is dark for a moment while Linux
+loads.
+
+If your disk is encrypted, the question for its passphrase takes the place of
+the three dots, with a dot for every letter you type. The three dots come back
+when you press Enter. If the passphrase was wrong, the question comes back.
+The screen doesn't show whether Caps Lock is on.
+
+Esc switches to the messages of the start, and Esc again brings the logo back.
+
+On a screen that is 1800 pixels tall or more, everything is drawn at twice the
+size, by the same rule as the boot menu. With more than one screen, each one
+gets its own logo at its own size.
 
 ## The terminal
 
