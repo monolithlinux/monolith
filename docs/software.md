@@ -284,7 +284,7 @@ sign-ins, settings and downloads in `~/.var/app/com.edde746.plezy`.
 
 ## Crafting Apps
 
-The **Crafting Apps** category has all thirteen
+The **Crafting Apps** category has all seventeen
 [Crafting Apps](https://getartcraft.com/apps), the ArtCraft team's open-source
 desktop apps. Each one is a separate item, so install only the ones you want, for
 example `monolith install photocraft pdfcraft`.
@@ -297,26 +297,36 @@ example `monolith install photocraft pdfcraft`.
 | LightCraft | a photo library and non-destructive raw development |
 | PdfCraft | reading, organizing, combining, splitting and securing PDFs |
 | EffectCraft | motion graphics and visual effects |
+| AniCraft | 2D vector animation |
 | DesignCraft | page layout for magazines, books and print documents |
 | FigCraft | interface design and prototyping |
+| TextureCraft | painting textures onto 3D models |
+| MaterialCraft | procedural materials built from a node graph |
 | WordCraft | word processing, including Word documents |
 | SoundCraft | recording, editing and mixing audio and MIDI |
 | DeckCraft | creating and presenting slide decks |
 | CADCraft | 2D drafting, including DXF and DWG drawings |
 | GridCraft | spreadsheets: calculating, analyzing and charting data |
+| Craft Anything | studying how an app or game works and having AI build your own version |
 
 The apps are young. Their developers call them pre-alpha, alpha or in development,
 and new releases come out often, so expect missing features and rough edges, and
 keep copies of important files.
 
-Two things to know:
+Save SoundCraft sessions in `~/Music`. SoundCraft suggests a folder directly in
+your home folder, which its Flatpak can't write to, so a session saved there is
+lost when SoundCraft closes.
 
-- Save SoundCraft sessions in `~/Music`. SoundCraft suggests a folder directly in
-  your home folder, which its Flatpak can't write to, so a session saved there is
-  lost when SoundCraft closes.
-- FigCraft's Flatpak has no network access, so sharing a file or joining a live
-  session fails until you allow it with
-  `flatpak override --user --share=network ai.storyteller.figcraft`.
+Craft Anything (`monolith install craft-anything`) is a different kind of app. It
+studies how a website, app or game works and has a coding agent build your own
+version. As a Flatpak it has limits:
+
+- It can't start a web browser, so it can't study websites.
+- Building needs a coding agent on your computer. Claude Code is the one it
+  supports first (`monolith install claude`). The Flatpak keeps its own Claude
+  Code sign-in, so Craft Anything asks you to sign in again and shows the
+  command to run.
+- It can write only to `~/Documents/Craft Anything`, where new projects go.
 
 Each app comes from the Flatpak bundle in its own GitHub project, such as
 [PhotoCraft's releases](https://github.com/storytold/photocraft/releases), and uses
@@ -324,12 +334,14 @@ the freedesktop runtime. A system-wide copy is left alone; to have Monolith mana
 the app, uninstall it first, for example with
 `flatpak uninstall --system ai.storyteller.photocraft`.
 
-Every update downloads the app's whole bundle again, up to about 100 MB. When the
+Every update downloads the app's whole bundle again, up to about 110 MB. When the
 newest release is already installed, nothing is downloaded. The apps can stay open
 while they update. Removing an app keeps its settings and other data in
 `~/.var/app/ai.storyteller.<app>`, for example
 `~/.var/app/ai.storyteller.photocraft`. Your own files stay where you saved them,
-including LightCraft's photo library in `~/Pictures/LightCraft Library`.
+including LightCraft's photo library in `~/Pictures/LightCraft Library`,
+TextureCraft's autosaves, smart materials and presets in `~/Documents/TextureCraft`
+and MaterialCraft's autosaves in `~/Documents/MaterialCraft`.
 
 You don't need the ArtCraft Launcher that the Crafting Apps site recommends. If
 you use it anyway, set **Install new apps as** to Flatpak in its settings. Monolith
