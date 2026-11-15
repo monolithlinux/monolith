@@ -108,7 +108,7 @@ settings and data when you remove one.
 | --- | --- |
 | Gaming | WowUp-CF, r2modman, Prism Launcher, Sunshine |
 | Media | Sidra, Moonfin, Plezy |
-| Crafting Apps | PhotoCraft, VectorCraft, FilmCraft, LightCraft, PdfCraft, EffectCraft, DesignCraft, FigCraft, WordCraft, SoundCraft, DeckCraft, CADCraft, GridCraft |
+| Crafting Apps | PhotoCraft, VectorCraft, FilmCraft, LightCraft, PdfCraft, EffectCraft, AniCraft, DesignCraft, FigCraft, TextureCraft, MaterialCraft, WordCraft, SoundCraft, DeckCraft, CADCraft, GridCraft, Craft Anything |
 | Communication | Fluxer, Fluxer Canary |
 | AI coding | Claude Code, Codex CLI, OpenCode, Oh My Pi, Herdr |
 | Developer CLIs | Tea, Superfile |

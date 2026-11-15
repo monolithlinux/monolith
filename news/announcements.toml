@@ -28,6 +28,34 @@
 #   files/kde/usr/bin/monolith-news --preview news/announcements.toml
 
 [[announcements]]
+id = "2026-11-15-four-new-crafting-apps"
+date = 2026-11-15
+title = "Four new Crafting Apps are in Monolith Software"
+category = "Crafting Apps"
+install_path = ["monolith", "Crafting Apps"]
+body = """
+Monolith Software has four new Crafting Apps: AniCraft for 2D animation,
+TextureCraft for painting textures onto 3D models, MaterialCraft for building
+materials from a node graph, and Craft Anything. To install one, run `monolith`
+and open **Crafting Apps**.
+
+Craft Anything is a different kind of app. It studies how an app or game works
+and has a coding agent build your own version. It needs a coding agent on your
+computer for that, and Claude Code, under **AI coding** in `monolith`, is the
+one it supports first. Installed this way it can't open a web browser, so it
+can't study websites.
+
+All four are early versions, so expect missing features and keep copies of
+important files. They install and update like the other Crafting Apps, and
+removing one keeps its settings.
+"""
+note = "Not there yet? Update Monolith and reboot first."
+links = [
+  { label = "Crafting Apps", url = "https://getartcraft.com/apps" },
+  { label = "Monolith software guide", url = "https://github.com/monolithlinux/monolith/blob/main/docs/software.md#crafting-apps" },
+]
+
+[[announcements]]
 id = "2026-11-11-epic-games-launcher-paused"
 date = 2026-11-11
 title = "The Epic Games Launcher is out of Monolith Software for now"

@@ -73,12 +73,12 @@ readonly SELF BIN_DIR DATA_HOME STATE_HOME MANAGED_ROOT STATE_ROOT GHOSTTY_THEME
 readonly GEAR_LEVER_ID GEAR_LEVER_REF GEAR_LEVER_MIN_VERSION FLATHUB_REPO QUIT_TOKEN HELPER_UP_TO_DATE
 readonly SUNSHINE_ID SUNSHINE_UNIT USER_UNIT_DIR SUNSHINE_MODULES_CONF SUNSHINE_MODULES_TEXT
 
-ALL_TOOLS=(tea superfile claude codex opencode omp herdr wowup-cf r2modman prismlauncher sunshine moonfin plezy sidra photocraft vectorcraft filmcraft lightcraft pdfcraft effectcraft designcraft figcraft wordcraft soundcraft deckcraft cadcraft gridcraft fluxer fluxer-canary ghostty-themes)
+ALL_TOOLS=(tea superfile claude codex opencode omp herdr wowup-cf r2modman prismlauncher sunshine moonfin plezy sidra photocraft vectorcraft filmcraft lightcraft pdfcraft effectcraft anicraft designcraft figcraft texturecraft materialcraft wordcraft soundcraft deckcraft cadcraft gridcraft craft-anything fluxer fluxer-canary ghostty-themes)
 CLI_TOOLS=(tea superfile)
 AI_TOOLS=(claude codex opencode omp herdr)
 GAMING_TOOLS=(wowup-cf r2modman prismlauncher sunshine)
 MEDIA_TOOLS=(moonfin plezy sidra)
-CRAFTING_TOOLS=(photocraft vectorcraft filmcraft lightcraft pdfcraft effectcraft designcraft figcraft wordcraft soundcraft deckcraft cadcraft gridcraft)
+CRAFTING_TOOLS=(photocraft vectorcraft filmcraft lightcraft pdfcraft effectcraft anicraft designcraft figcraft texturecraft materialcraft wordcraft soundcraft deckcraft cadcraft gridcraft craft-anything)
 COMMUNICATION_TOOLS=(fluxer fluxer-canary)
 APPEARANCE_TOOLS=(ghostty-themes)
 
@@ -159,13 +159,17 @@ tool_name() {
         lightcraft) echo "LightCraft" ;;
         pdfcraft)  echo "PdfCraft" ;;
         effectcraft) echo "EffectCraft" ;;
+        anicraft)  echo "AniCraft" ;;
         designcraft) echo "DesignCraft" ;;
         figcraft)  echo "FigCraft" ;;
+        texturecraft) echo "TextureCraft" ;;
+        materialcraft) echo "MaterialCraft" ;;
         wordcraft) echo "WordCraft" ;;
         soundcraft) echo "SoundCraft" ;;
         deckcraft) echo "DeckCraft" ;;
         cadcraft)  echo "CADCraft" ;;
         gridcraft) echo "GridCraft" ;;
+        craft-anything) echo "Craft Anything" ;;
         fluxer)    echo "Fluxer" ;;
         fluxer-canary) echo "Fluxer Canary" ;;
         ghostty-themes) echo "Ghostty Themes" ;;
@@ -195,13 +199,17 @@ tool_description() {
         lightcraft) echo "photo library and non-destructive raw developer" ;;
         pdfcraft)  echo "PDF workbench to read, organize, combine, split, and secure PDFs" ;;
         effectcraft) echo "motion graphics and visual effects compositor" ;;
+        anicraft)  echo "2D vector animation with a timeline, tweens, and onion skinning" ;;
         designcraft) echo "page layout for magazines, books, and print documents" ;;
         figcraft)  echo "interface design and prototyping" ;;
+        texturecraft) echo "3D texture painting on your models, with layers, masks, and baked maps" ;;
+        materialcraft) echo "node-based designer for procedural materials" ;;
         wordcraft) echo "word processor that opens and saves Word documents" ;;
         soundcraft) echo "audio workstation to record, edit, and mix audio and MIDI" ;;
         deckcraft) echo "presentation app to create and present slide decks" ;;
         cadcraft)  echo "2D drafting, dimensioning, and plotting; opens DXF and DWG files" ;;
         gridcraft) echo "spreadsheet to calculate, analyze, and chart data in workbooks" ;;
+        craft-anything) echo "workbench to study how apps and games work and build your own with AI" ;;
         fluxer)    echo "open-source chat with voice calls for friends and communities" ;;
         fluxer-canary) echo "Fluxer's early-access channel with the newest features" ;;
         ghostty-themes) echo "official Ghostty theme collection" ;;
@@ -1252,11 +1260,14 @@ kept_data() {
         pdfcraft) echo "settings, recent files, signatures, stamps, and trusted certificates" ;;
         effectcraft) echo "settings, templates, scripts, plug-ins, and models" ;;
         designcraft) echo "settings, workspaces, shortcuts, and recovery files" ;;
-        figcraft) echo "settings, recent files, plugins, and recovery files" ;;
+        anicraft|figcraft) echo "settings, recent files, plugins, and recovery files" ;;
+        texturecraft) echo "settings, autosaves, smart materials, and presets" ;;
+        materialcraft) echo "settings, recent files, and autosaves" ;;
         wordcraft|gridcraft) echo "settings and recent files" ;;
         soundcraft) echo "settings, session auto-saves, and plug-in presets" ;;
         deckcraft) echo "settings, recent files, and recovery files" ;;
         cadcraft) echo "settings" ;;
+        craft-anything) echo "settings, AI keys and sign-ins, and downloaded engines" ;;
         fluxer|fluxer-canary) echo "sign-ins and settings" ;;
         ghostty-themes) echo "Ghostty settings and any themes you edited" ;;
         *) echo "settings, authentication, sessions, and project files" ;;
@@ -2871,8 +2882,9 @@ Tool IDs:
   Gaming           wowup-cf r2modman prismlauncher sunshine
   Media            moonfin plezy sidra
   Crafting Apps    photocraft vectorcraft filmcraft lightcraft pdfcraft
-                   effectcraft designcraft figcraft wordcraft soundcraft
-                   deckcraft cadcraft gridcraft
+                   effectcraft anicraft designcraft figcraft texturecraft
+                   materialcraft wordcraft soundcraft deckcraft cadcraft
+                   gridcraft craft-anything
   Communication    fluxer fluxer-canary
   Appearance       ghostty-themes
 EOF
