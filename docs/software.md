@@ -313,14 +313,9 @@ The apps are young. Their developers call them pre-alpha, alpha or in developmen
 and new releases come out often, so expect missing features and rough edges, and
 keep copies of important files.
 
-Two things to know:
-
-- Save SoundCraft sessions in `~/Music`. SoundCraft suggests a folder directly in
-  your home folder, which its Flatpak can't write to, so a session saved there is
-  lost when SoundCraft closes.
-- FigCraft's Flatpak has no network access, so sharing a file or joining a live
-  session fails until you allow it with
-  `flatpak override --user --share=network ai.storyteller.figcraft`.
+Save SoundCraft sessions in `~/Music`. SoundCraft suggests a folder directly in
+your home folder, which its Flatpak can't write to, so a session saved there is
+lost when SoundCraft closes.
 
 Craft Anything (`monolith install craft-anything`) is a different kind of app. It
 studies how a website, app or game works and has a coding agent build your own
@@ -339,7 +334,7 @@ the freedesktop runtime. A system-wide copy is left alone; to have Monolith mana
 the app, uninstall it first, for example with
 `flatpak uninstall --system ai.storyteller.photocraft`.
 
-Every update downloads the app's whole bundle again, up to about 100 MB. When the
+Every update downloads the app's whole bundle again, up to about 110 MB. When the
 newest release is already installed, nothing is downloaded. The apps can stay open
 while they update. Removing an app keeps its settings and other data in
 `~/.var/app/ai.storyteller.<app>`, for example

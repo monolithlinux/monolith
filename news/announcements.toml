@@ -305,9 +305,6 @@ interfaces. To install it, run `monolith`, open **Crafting Apps**, and select
 
 - **Early version:** Its developers call it early alpha. Expect rough edges and
   keep copies of important files.
-- **Sharing needs network access:** FigCraft's Flatpak cannot reach the
-  internet, so sharing a file or joining a live session fails until you run
-  `flatpak override --user --share=network ai.storyteller.figcraft`.
 - **Same as the others:** Monolith checks the download against the SHA256
   digest GitHub publishes, installs it for your account, and updates it through
   `monolith update`.
