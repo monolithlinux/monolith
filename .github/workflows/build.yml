@@ -237,7 +237,7 @@ jobs:
         run: python3 .github/workflows/image-tags.py hold "recipes/${{ matrix.recipe }}"
 
       - name: Build and push image
-        uses: blue-build/github-action@v1.13.0
+        uses: blue-build/github-action@v1.14.0
         with:
           recipe: ${{ matrix.recipe }}
           cosign_private_key: ${{ secrets.SIGNING_SECRET }}
