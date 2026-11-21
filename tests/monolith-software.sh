@@ -752,22 +752,23 @@ test_empty_update_all() {
     [ ! -s "$case_root/curl.log" ] || fail 'empty update performed downloads'
 }
 
-# A marker can outlive its catalog entry: Monolith stopped offering nak, and
-# stopped offering the Epic Games Launcher while Epic publishes no AppImage. An
-# account that installed one before still has its marker. The catalog leaves an
+# A marker can outlive its catalog entry: Monolith stopped offering nak, and an
+# account that installed it before still has its marker. The catalog leaves an
 # app it no longer offers alone: the marker stays, update and list carry on
-# with the rest, and its ID is refused before anything is downloaded.
+# with the rest, and its ID is refused before anything is downloaded. An app
+# that is out for a while, as the Epic Games Launcher was while Epic published
+# no AppImage, joins no_longer_offered until it is back.
 test_apps_no_longer_offered_are_left_alone() {
-    local gone action
+    local gone action no_longer_offered=(nak)
     mkdir -p "$state_root"
-    for gone in nak epic-games; do
+    for gone in "${no_longer_offered[@]}"; do
         printf 'written by an older Monolith\n' >"$state_root/$gone.managed"
     done
 
     run_monolith update >"$case_root/update.log"
     grep -Fxq 'No Monolith-managed software is installed.' "$case_root/update.log" ||
         fail 'update did not ignore the apps the catalog no longer offers'
-    for gone in nak epic-games; do
+    for gone in "${no_longer_offered[@]}"; do
         for action in install remove update; do
             expect_failure "$action" "$gone"
             grep -Fxq "Error: unknown tool: $gone" "$case_root/expected-failure.log" ||
@@ -787,7 +788,7 @@ test_apps_no_longer_offered_are_left_alone() {
         fail 'list did not show Tea beside the leftover markers'
     [ "$(tail -n +3 "$case_root/list.log" | wc -l)" -eq "$(run_monolith __ids | wc -l)" ] ||
         fail 'list showed something other than the catalog entries'
-    for gone in nak epic-games; do
+    for gone in "${no_longer_offered[@]}"; do
         [ "$(cat -- "$state_root/$gone.managed")" = 'written by an older Monolith' ] ||
             fail "the marker of $gone was changed or removed"
     done

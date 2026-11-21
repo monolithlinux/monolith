@@ -28,6 +28,34 @@
 #   files/kde/usr/bin/monolith-news --preview news/announcements.toml
 
 [[announcements]]
+id = "2026-11-22-epic-games-launcher-back"
+date = 2026-11-22
+title = "The Epic Games Launcher is back in Monolith Software"
+category = "Gaming"
+install_path = ["monolith", "Gaming", "Epic Games Launcher"]
+body = """
+Epic publishes its Linux launcher as an AppImage again, so you can install it
+from `monolith` under **Gaming** once more. It's still a preview from Epic, so
+expect some rough edges.
+
+Your library, cloud saves and progress come from your Epic account. Windows-only
+games run through Proton, which the launcher downloads the first time a game
+needs it. Fortnite isn't on Linux yet, and Epic hasn't given a date.
+
+If you kept the launcher while it was away, there's nothing to do. It shows up
+as installed in `monolith` again.
+
+If you removed it in Gear Lever, Monolith still has it on record, and
+`monolith update` will install it again. To prevent that, update Monolith,
+restart, and run `monolith remove epic-games` once.
+"""
+note = "Not under Gaming yet? Update Monolith and reboot first."
+links = [
+  { label = "Epic Games Launcher", url = "https://launcher.epicgames.com/" },
+  { label = "Monolith software guide", url = "https://github.com/monolithlinux/monolith/blob/main/docs/software.md#epic-games-launcher" },
+]
+
+[[announcements]]
 id = "2026-11-15-four-new-crafting-apps"
 date = 2026-11-15
 title = "Four new Crafting Apps are in Monolith Software"
@@ -53,27 +81,6 @@ note = "Not there yet? Update Monolith and reboot first."
 links = [
   { label = "Crafting Apps", url = "https://getartcraft.com/apps" },
   { label = "Monolith software guide", url = "https://github.com/monolithlinux/monolith/blob/main/docs/software.md#crafting-apps" },
-]
-
-[[announcements]]
-id = "2026-11-11-epic-games-launcher-paused"
-date = 2026-11-11
-title = "The Epic Games Launcher is out of Monolith Software for now"
-category = "Gaming"
-body = """
-Epic stopped publishing its Linux launcher as an AppImage, the file Monolith
-installed, so installing it from `monolith` stopped working. The launcher is
-off the list until Epic brings the AppImage back, which Epic has said will be
-this month.
-
-If you already installed it, nothing is removed. It stays in your application
-menu, but Monolith no longer repairs or removes it. To remove it yourself, open
-Gear Lever, select the launcher and choose **Remove**.
-
-It disappears from `monolith` after you update Monolith and restart.
-"""
-links = [
-  { label = "What Epic said (GamingOnLinux)", url = "https://www.gamingonlinux.com/2026/11/epic-games-comments-on-planned-linux-distribution-support/" },
 ]
 
 [[announcements]]
