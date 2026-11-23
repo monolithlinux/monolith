@@ -48,6 +48,13 @@ You don't need a password to update. If there's a new build of Monolith, it asks
 whether to restart now. The answer is no unless you type `y`, and the new build
 waits for your next restart either way.
 
+A build that the daily update had already downloaded shows how long ago that
+was. Two builds made on the same day share a version number, so when the build
+that's waiting has the same number as the one you're running, the summary says
+whether it's a newer build. If you leave the system step out, as in
+`update --skip system`, a line under the summary still says that an update is
+waiting for a restart.
+
 `update --list` shows the steps it would run on your computer. `--only` and
 `--skip` take step names, such as `update --skip distrobox`. To skip a step
 every time, or to add your own commands, put them in

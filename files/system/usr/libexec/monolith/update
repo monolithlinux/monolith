@@ -14,8 +14,8 @@ still. A run that gets through every step is recorded for the login reminder,
 `monolith status` and the greeting.
 
 Tests point these at stand-ins: MONOLITH_OS_RELEASE, MONOLITH_LOGOS,
-MONOLITH_OSTREE_BOOTED, FLATPAK_USER_DIR, FLATPAK_SYSTEM_DIR, and
-MONOLITH_UPDATE_POLL, the seconds between checks while waiting.
+MONOLITH_OSTREE_BOOTED, MONOLITH_STAGED, FLATPAK_USER_DIR, FLATPAK_SYSTEM_DIR,
+and MONOLITH_UPDATE_POLL, the seconds between checks while waiting.
 """
 import ast
 import codecs
@@ -45,6 +45,9 @@ SOFTWARE = LIBEXEC / "software"
 LOGOS = Path(os.environ.get("MONOLITH_LOGOS") or LIBEXEC.parent.parent / "share/fastfetch/logos")
 OS_RELEASE = Path(os.environ.get("MONOLITH_OS_RELEASE") or "/usr/lib/os-release")
 OSTREE_BOOTED = Path(os.environ.get("MONOLITH_OSTREE_BOOTED") or "/run/ostree-booted")
+# ostree writes this file when it sets a downloaded build up for the next
+# restart, and keeps it until then.
+STAGED = Path(os.environ.get("MONOLITH_STAGED") or "/run/ostree/staged-deployment")
 POLL = float(os.environ.get("MONOLITH_UPDATE_POLL") or 3)
 HOME = Path.home()
 STATE_HOME = Path(os.environ.get("XDG_STATE_HOME") or HOME / ".local/state")
@@ -256,6 +259,24 @@ def nice_date(yyyymmdd):
     except ValueError:
         return yyyymmdd
     return f"{day:%a}, {day:%b} {day.day}, {day.year}"
+
+
+def how_long(seconds):
+    """A stretch of time in words, in its largest whole unit."""
+    seconds = int(max(0, seconds))
+    for unit, size in (("day", 86400), ("hour", 3600), ("minute", 60)):
+        if seconds >= size:
+            return plural(seconds // size, unit)
+    return "less than a minute"
+
+
+def staged_for():
+    """How long an update has waited for a restart, in words, or nothing when
+    none waits."""
+    try:
+        return how_long(time.time() - STAGED.stat().st_mtime)
+    except OSError:
+        return ""
 
 
 def terminal_size():
@@ -575,6 +596,7 @@ class Session:
         self.abort = False     # twice: stop now
         self.signal = None     # a TERM or HUP that ended the run
         self.restart_to = None  # a build waiting for the next restart
+        self.waiting = ""      # how long an update has waited for one, for when no step says so
         self.started = time.monotonic()
         self.ended = None
         info = os_release()
@@ -861,6 +883,55 @@ def image_parts(ref):
     return name, tag
 
 
+def waiting_build(status):
+    """The build the next restart starts, when that isn't the one running.
+    rpm-ostree lists it first."""
+    found = deployments(status)
+    return found[0] if found and not found[0].get("booted") else None
+
+
+def image_of(deployment):
+    """What tells one build of the image from another: the image's digest, or
+    the commit it became here."""
+    return (deployment.get("container-image-reference-digest") or deployment.get("base-checksum")
+            or deployment.get("checksum") or "")
+
+
+def next_build(here, there):
+    """The build a switch goes to, in the words monolith status uses. HERE and
+    THERE are the image and tag of the running build and of the waiting one."""
+    name, tag = there
+    if not tag or not name.startswith("ghcr.io/monolithlinux/"):
+        return f"{name}:{tag}" if tag else name
+    if tag == "latest":
+        build = "The newest build"
+    elif re.fullmatch(r"\d{8}", tag):
+        build = f"The build from {nice_date(tag)}"
+    elif pull := re.fullmatch(r"pr-(\d+)(-\d+)?", tag):
+        build = f"The test build of pull request #{pull.group(1)}"
+    else:
+        build = f"The build tagged {tag}"
+    return build if name == here[0] else f"{build} of the {name.rsplit('/', 1)[-1]} edition"
+
+
+def same_version(booted, pending):
+    """What tells the waiting build from the running one when both carry the
+    same version. A version names a day, so two builds made on one day share
+    it, and "45.20261122.0 is ready" on 45.20261122.0 reads as nothing new."""
+    if not pending.get("version") or pending.get("version") != booted.get("version"):
+        return ""
+    here = image_parts(booted.get("container-image-reference") or "")
+    there = image_parts(pending.get("container-image-reference") or "")
+    if there != here:
+        return next_build(here, there)
+    if image_of(pending) and image_of(pending) == image_of(booted):
+        return "The build you're on, with a local change"
+    # With packages layered on top, the image is the base.
+    made = [d.get("base-timestamp") or d.get("timestamp") or 0 for d in (booted, pending)]
+    which = "A newer" if made[1] > made[0] > 0 else "An older" if made[0] > made[1] > 0 else "Another"
+    return f"{which} build with the same version number"
+
+
 DIFF_HEADER = re.compile(r"^(Upgraded|Downgraded|Removed|Added):?\s*(.*)$")
 DIFF_CHANGE = re.compile(r"^(\S+)\s+(\S+)\s+->\s+(\S+)$")
 # The packages the release notes call major, as in .github/workflows/changelog.py.
@@ -948,6 +1019,10 @@ class System(Step):
             name, tag = image_parts(booted.get("container-image-reference") or "")
             ours = name.startswith("ghcr.io/monolithlinux/")
             if ours and re.fullmatch(r"\d{8}", tag):
+                pending = waiting_build(status)
+                if pending and image_parts(pending.get("container-image-reference") or "") != (name, tag):
+                    # A switch away from the pinned build already waits for a restart.
+                    return self.waits(session, booted, pending)
                 return Result(WARN, f"Paused on the build from {nice_date(tag)}",
                               ["For the newest build, run: monolith rollback latest"])
             self.detail, self.fraction = "Checking for a new build", 0.02
@@ -960,22 +1035,27 @@ class System(Step):
             if re.search(r"authoriz|not allowed|polkit", error, re.I):
                 return Result(FAIL, "Needs an administrator: run rpm-ostree upgrade")
             return Result(FAIL, error or f"rpm-ostree stopped with exit {code}")
-        after = ostree_status(session) or {}
-        found = deployments(after)
-        pending = found[0] if found and not found[0].get("booted") else None
         notes = []
         if ours and tag.startswith("pr-"):
             notes.append(f"A test build from pull request {tag[3:].split('-')[0]}")
-        if pending:
-            version = pending.get("version") or str(pending.get("checksum", ""))[:10]
-            session.restart_to = version
-            if code == 77:
-                # The daily update downloaded it before we got here.
-                diff_code, out = session.capture(["rpm-ostree", "db", "diff"], timeout=120)
-                lines = [plain(l) for l in out.splitlines()] if diff_code == 0 else []
-            notes.insert(0, major_changes(*parse_diff(lines)))
-            return Result(OK, f"{version} is ready", notes)
+        if pending := waiting_build(ostree_status(session)):
+            return self.waits(session, booted, pending, notes, lines if code == 0 else None)
         return Result(OK, "Up to date", notes)
+
+    def waits(self, session, booted, pending, notes=(), upgrade=None):
+        """A build waits for the next restart. UPGRADE is what rpm-ostree printed
+        when this run downloaded it. Without it the build was there before, from
+        the daily update or an earlier run, so say how long ago that was."""
+        version = pending.get("version") or str(pending.get("checksum", ""))[:10]
+        session.restart_to = version
+        about = [same_version(booted, pending)]
+        if upgrade is None:
+            if image_of(pending) != image_of(booted) and (since := staged_for()):
+                about.append(f"Downloaded {since} ago")
+            code, out = session.capture(["rpm-ostree", "db", "diff"], timeout=120)
+            upgrade = [plain(l) for l in out.splitlines()] if code == 0 else []
+        about.append(major_changes(*parse_diff(upgrade)))
+        return Result(OK, f"{version} is ready", about + list(notes))
 
     def wait_until_idle(self, session):
         """The status once rpm-ostree is free, waiting for an update already running."""
@@ -1784,6 +1864,13 @@ def headline(session, paint):
     return f"{paint.good}{SYM['ok']}{paint.reset} {paint.bold}Everything is updated{paint.reset}"
 
 
+def waiting_lines(waited):
+    """What to say under the summary when an update waits for a restart and no
+    step said so, longest first, for the widest that fits. WAITED is how long."""
+    return (f"An update has been ready for {waited}. Restart to use it.",
+            "An update is ready. Restart to use it.", "Restart to use the update.")
+
+
 class Panel:
     """The steps beside the art: what's done, what's running and what's next."""
 
@@ -1981,10 +2068,13 @@ class Screen:
             lines = []
             if s.restart_to:
                 # A cut-off link is no use, so it only shows when it fits.
-                lines.append(first_fitting(f"Release notes: {RELEASE_NOTES}", RELEASE_NOTES))
+                lines.append((p.dim, first_fitting(f"Release notes: {RELEASE_NOTES}", RELEASE_NOTES)))
+            elif s.waiting:
+                # No question follows this one, so it isn't dimmed.
+                lines.append(("", first_fitting(*waiting_lines(s.waiting))))
             if any(step.result and step.result.kind == FAIL for step in s.found):
-                lines.append(first_fitting(f"What went wrong is in {tilde(s.log.path)}", tilde(s.log.path)))
-            return [f"{p.dim}{line}{p.reset}" for line in lines if line]
+                lines.append((p.dim, first_fitting(f"What went wrong is in {tilde(s.log.path)}", tilde(s.log.path))))
+            return [f"{style}{line}{p.reset}" for style, line in lines if line]
         if s.stop or s.abort:
             text = first_fitting(f"Stopping after this step {SYM['dot']} Ctrl+C again stops now",
                                  "Stopping after this step")
@@ -2196,6 +2286,8 @@ class Lines:
         if s.restart_to:
             self.say(f"{s.restart_to} is ready. Restart to use it.")
             self.say(f"{p.dim}Release notes: {RELEASE_NOTES}{p.reset}")
+        elif s.waiting:
+            self.say(waiting_lines(s.waiting)[0])
         if any(step.result and step.result.kind == FAIL for step in s.found):
             self.say(f"{p.dim}What went wrong is in {s.log.path}{p.reset}")
 
@@ -2370,6 +2462,9 @@ def main(argv):
             log.flush()
             ui.end(step)
         session.step, session.phase, session.ended = None, "done", time.monotonic()
+        # The system step doesn't always get to say that an update waits for a
+        # restart: it can be left out, stopped or paused, or fail.
+        session.waiting = staged_for()
         ui.finish()
     finally:
         ui.close()

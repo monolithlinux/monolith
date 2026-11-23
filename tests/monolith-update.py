@@ -276,6 +276,12 @@ class World:
     def status(self, *deployments_):
         self.write(self.scenario / "status.json", json.dumps({"deployments": list(deployments_), "transaction": None}))
 
+    def staged(self, ago=0.0):
+        """The file ostree keeps while an update waits for a restart, as if
+        written AGO seconds back."""
+        then = time.time() - ago
+        os.utime(self.write(self.root / "staged-deployment", ""), (then, then))
+
     def flag(self, name, text=""):
         self.write(self.scenario / name, text)
 
@@ -299,6 +305,7 @@ class World:
             "PATH": f"{self.bin}:{self.utils}", "HOME": str(self.home), "CALLS": str(self.calls_file),
             "SCENARIO": str(self.scenario), "MONOLITH_OS_RELEASE": str(self.root / "os-release"),
             "MONOLITH_LOGOS": str(LOGOS), "MONOLITH_OSTREE_BOOTED": str(self.root / "ostree-booted"),
+            "MONOLITH_STAGED": str(self.root / "staged-deployment"),
             "FLATPAK_SYSTEM_DIR": str(self.root / "var/lib/flatpak"), "MONOLITH_UPDATE_POLL": "0.05",
             # GitHub's runners have Homebrew in its usual place.
             "HOMEBREW_PREFIX": str(self.root / "linuxbrew"),
@@ -610,6 +617,190 @@ def system_update_cases(w):
     code, out, _ = w.run("--only", "system")
     expect(code == 1, f"exit {code}", out)
     expect(re.search(r"^✗ Monolith\s+Failed to fetch manifest: connection refused", out, re.M), "failure", out)
+    # A test build from monolith pr says so, with or without something new.
+    tested = dict(BOOTED, **{"container-image-reference": "ostree-image-signed:docker://ghcr.io/monolithlinux/kde:pr-76-45"})
+    w.status(tested)
+    w.flag("upgrade-exit", "77")
+    code, out, _ = w.run("--only", "system")
+    has(out, "Up to date", "A test build from pull request 76")
+    w.flag("upgrade-exit", "0")
+    code, out, _ = w.run("--only", "system")
+    has(out, "44.20261101.0 is ready", "New: Kernel 6.17.2", "A test build from pull request 76")
+    expect(out.index("New: Kernel") < out.index("A test build"), "the build's own line isn't last", out)
+
+
+@test
+def a_build_downloaded_earlier_says_when(w):
+    # The daily update downloaded it three hours ago.
+    w.status(STAGED, BOOTED)
+    w.flag("upgrade-exit", "77")
+    w.staged(3 * 3600 + 5)
+    code, out, _ = w.run("--only", "system")
+    expect(code == 0, f"exit {code}", out)
+    has(out, "44.20261101.0 is ready", "Downloaded 3 hours ago", "New: Kernel 6.17.3 · systemd 258.2",
+        "44.20261101.0 is ready. Restart to use it.")
+    expect("same version" not in out and "An update" not in out, "said more than it knows", out)
+    # Without ostree's file there's no telling when.
+    (w.root / "staged-deployment").unlink()
+    code, out, _ = w.run("--only", "system")
+    has(out, "44.20261101.0 is ready")
+    expect("Downloaded" not in out, "made up a time", out)
+    # This run downloads it: when is now.
+    w.status(BOOTED)
+    w.flag("upgrade-exit", "0")
+    w.staged()
+    w.calls_file.unlink()
+    code, out, _ = w.run("--only", "system")
+    has(out, "44.20261101.0 is ready", "New: Kernel 6.17.2")
+    expect("Downloaded" not in out and "An update" not in out, "dated a build this run downloaded", out)
+    expect("rpm-ostree db diff" not in w.calls(), "asked for a diff the upgrade already printed")
+    m = load_module(w.env())
+    for seconds, words in ((-7200, "less than a minute"), (0, "less than a minute"), (59.9, "less than a minute"),
+                           (60, "1 minute"), (3599, "59 minutes"), (3600, "1 hour"), (86399, "23 hours"),
+                           (86400, "1 day"), (9 * 86400 + 7200, "9 days")):
+        expect(m.how_long(seconds) == words, f"{seconds} seconds is {m.how_long(seconds)!r}, not {words!r}")
+
+
+@test
+def builds_with_the_same_version_are_told_apart(w):
+    m = load_module(w.env())
+    ours = "ostree-image-signed:docker://ghcr.io/monolithlinux/"
+
+    def build(image="kde:latest", digest="sha256:aaa", made=100, **more):
+        return {"version": "45.20261122.0", "container-image-reference": ours + image,
+                "container-image-reference-digest": digest, "timestamp": made, **more}
+
+    on_latest, on_a_test_build = build(), build("kde:pr-76-45", "sha256:ppp")
+
+    def moved_to(reference):
+        return dict(on_latest, **{"container-image-reference": reference})
+
+    cases = (
+        # The tag moved to another build made the same day.
+        (on_latest, build(digest="sha256:bbb", made=200), "A newer build with the same version number"),
+        (on_latest, build(digest="sha256:bbb", made=50), "An older build with the same version number"),
+        (on_latest, build(digest="sha256:bbb", made=0), "Another build with the same version number"),
+        (build(made=0), build(digest="sha256:bbb", made=200), "Another build with the same version number"),
+        # With packages layered on top, a deployment's own time is when that was done.
+        (dict(build(made=500), **{"base-timestamp": 100}),
+         dict(build(digest="sha256:bbb", made=600), **{"base-timestamp": 50}),
+         "An older build with the same version number"),
+        # The same image again: a package added, a boot option changed.
+        (on_latest, build(made=300), "The build you're on, with a local change"),
+        ({"version": "45.20261122.0", "checksum": "aaaa"},
+         {"version": "45.20261122.0", "checksum": "cccc", "base-checksum": "aaaa"},
+         "The build you're on, with a local change"),
+        ({"version": "45.20261122.0", "checksum": "aaaa"}, {"version": "45.20261122.0", "checksum": "bbbb"},
+         "Another build with the same version number"),
+        ({"version": "45.20261122.0"}, {"version": "45.20261122.0"}, "Another build with the same version number"),
+        # A switch, in the words monolith status uses.
+        (on_latest, build("kde:20261122"), "The build from Sun, Nov 22, 2026"),
+        (on_latest, build("kde:pr-76-45", "sha256:ppp"), "The test build of pull request #76"),
+        (on_latest, build("kde:pr-76", "sha256:ppp"), "The test build of pull request #76"),
+        (on_latest, build("kde:candidate", "sha256:ccc"), "The build tagged candidate"),
+        (on_latest, build("kde-nvidia:latest", "sha256:nnn"), "The newest build of the kde-nvidia edition"),
+        (on_latest, build("kde-nvidia:20261122", "sha256:nnn"),
+         "The build from Sun, Nov 22, 2026 of the kde-nvidia edition"),
+        (on_a_test_build, on_latest, "The newest build"),
+        (on_latest, moved_to("ostree-unverified-registry:quay.io/fedora/kinoite:45"), "quay.io/fedora/kinoite:45"),
+        (on_latest, moved_to("ostree-unverified-registry:quay.io/fedora/kinoite"), "quay.io/fedora/kinoite"),
+        (on_latest, moved_to(ours + "kde@sha256:bbb"), "ghcr.io/monolithlinux/kde"),
+        # Another version says enough by itself.
+        (on_latest, build(digest="sha256:bbb", made=200, version="45.20261123.0"), ""),
+        (on_latest, build("kde-nvidia:latest", "sha256:nnn", version="45.20261123.0"), ""),
+        (dict(on_latest, version=""), dict(build(digest="sha256:bbb"), version=""), ""),
+    )
+    for here, there, line in cases:
+        said = m.same_version(here, there)
+        expect(said == line, f"said {said!r}, not {line!r}", json.dumps([here, there], indent=1))
+    # In a run it comes first, before when and what.
+    w.status(dict(build(digest="sha256:bbb", made=200), booted=False, staged=True), dict(on_latest, booted=True))
+    w.flag("upgrade-exit", "77")
+    w.staged(2 * 3600 + 5)
+    code, out, _ = w.run("--only", "system")
+    expect(code == 0, f"exit {code}", out)
+    notes = [line.strip() for line in out.split("45.20261122.0 is ready", 1)[1].splitlines()[1:4]]
+    expect(notes == ["A newer build with the same version number", "Downloaded 2 hours ago",
+                     "New: Kernel 6.17.3 · systemd 258.2"], f"the notes are {notes}", out)
+    # A change to the build you're on wasn't downloaded.
+    w.status(dict(build(made=300), booted=False, staged=True), dict(on_latest, booted=True))
+    code, out, _ = w.run("--only", "system")
+    has(out, "45.20261122.0 is ready", "The build you're on, with a local change")
+    expect("Downloaded" not in out, "called a local change a download", out)
+
+
+@test
+def a_paused_system_shows_what_waits(w):
+    pinned = "ostree-image-signed:docker://ghcr.io/monolithlinux/kde:20261030"
+    paused = dict(BOOTED, **{"container-image-reference": pinned})
+    # monolith rollback latest was run two days ago and still waits for a restart.
+    w.status(STAGED, paused)
+    w.staged(2 * 86400 + 5)
+    code, out, _ = w.run("--only", "system")
+    expect(code == 0, f"exit {code}", out)
+    has(out, "44.20261101.0 is ready", "Downloaded 2 days ago", "44.20261101.0 is ready. Restart to use it.")
+    expect("Paused" not in out, "called it paused with the newest build waiting", out)
+    expect("rpm-ostree db diff" in w.calls(), "no diff for the waiting build")
+    # A change to the pinned build waits: the restart doesn't end the pause.
+    w.status(dict(paused, booted=False, staged=True, checksum="cccc"), paused)
+    code, out, _ = w.run("--only", "system")
+    expect(re.search(r"^! Monolith\s+Paused on the build from Fri, Oct 30, 2026", out, re.M), "paused", out)
+    has(out, "monolith rollback latest", "An update has been ready for 2 days. Restart to use it.")
+    expect("is ready." not in out, "offered the pinned build as a new one", out)
+    expect(not any(c.startswith("rpm-ostree upgrade") for c in w.calls()), "updated a paused system")
+
+
+@test
+def an_update_no_step_reported_is_mentioned(w):
+    line = "An update has been ready for 2 hours. Restart to use it."
+    w.staged(2 * 3600 + 5)
+    # The system step was left out...
+    for args in (("--only", "flatpak"), ("--skip", "system")):
+        code, out, _ = w.run(*args)
+        expect(code == 0 and "Monolith" not in ran(out), f"{args}: exit {code}, ran {ran(out)}", out)
+        expect(out.rstrip().splitlines()[-1] == line, f"{args}: the last line isn't about the update", out)
+    # ...or it failed.
+    w.flag("upgrade-exit", "1")
+    code, out, _ = w.run("--only", "system")
+    expect(code == 1, f"exit {code}", out)
+    expect(out.rstrip().splitlines()[-2] == line, "a failed system step hid the update that waits", out)
+    has(out, "What went wrong is in")
+    # The step that reports it is enough.
+    w.status(STAGED, BOOTED)
+    w.flag("upgrade-exit", "77")
+    code, out, _ = w.run("--only", "system")
+    expect("An update" not in out and out.count("Restart to use it.") == 1, "said it twice", out)
+    code, text_out = w.run_tty("--only", "system", answer="")
+    has(text_out, "\x1b[?1049h", "Downloaded 2 hours ago", "Restart now to use 44.20261101.0?")
+    expect("An update" not in text_out, "said it twice on a terminal", text_out)
+    # On a terminal it's under the summary, in the longest form that fits whole, and nothing asks.
+    for cols, text in ((100, line), (50, "An update is ready. Restart to use it."), (30, "Restart to use the update.")):
+        code, text_out = w.run_tty("--only", "flatpak", cols=cols, rows=20)
+        expect(code == 0 and "\x1b[?1049h" in text_out, f"{cols} columns: exit {code}", text_out)
+        summary = plain(text_out.split("\x1b[?1049l")[-1].split("EXIT=")[0]).replace("\r", "")
+        expect(f"\n {text}\n" in summary, f"{cols} columns: no {text!r}", summary)
+        expect("[y/N]" not in text_out, f"{cols} columns: asked about a restart", text_out)
+    m = load_module(w.env())
+    m.SYM.update(m.UNICODE_SYMBOLS)
+    session = m.Session(m.Log(None))
+    session.waiting = "less than a minute"
+    look = m.Look(sys.stdout)
+    look.motion, look.color, look.unicode = False, True, True
+    paint = m.Paint(True)
+    screen = m.Screen(look, paint, session)
+    for cols in range(20, 90):
+        fits = next((t for t in m.waiting_lines(session.waiting) if len(t) <= cols - 2), None)
+        about = [row for row in screen.compose(cols, 24, time.monotonic(), final=True) if "Restart" in row]
+        expect([plain(row) for row in about] == ([f" {fits}"] if fits else []),
+               f"{cols} columns: drew {about}, not {fits!r}")
+        # No question follows it, so it's as bright as the question would be.
+        expect(not any(paint.dim in row for row in about), f"{cols} columns: dimmed", about)
+    # Nothing waits: nothing is said.
+    (w.root / "staged-deployment").unlink()
+    w.status(BOOTED)
+    for args in (("--only", "flatpak"), ("--only", "system")):
+        code, out, _ = w.run(*args)
+        expect("Restart" not in out and "An update" not in out, f"{args}: offered a restart without an update", out)
 
 
 @test
