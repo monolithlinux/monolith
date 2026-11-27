@@ -25,7 +25,7 @@
 # essential in body.
 #
 # Preview before opening a pull request (does not touch your read state):
-#   files/kde/usr/bin/monolith-news --preview news/announcements.toml
+#   files/system/usr/bin/monolith-news --preview news/announcements.toml
 
 [[announcements]]
 id = "2026-11-22-epic-games-launcher-back"

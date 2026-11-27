@@ -37,11 +37,13 @@ modules:
         test ! -e /usr/bin/lchsh
 
   # After the last package change: Plasma's core has to come from a single
-  # Plasma release, and OpenCL has to run. See the scripts.
+  # Plasma release, OpenCL has to run and Monolith News has to open its
+  # window. See the scripts.
   - type: script
     scripts:
       - check-plasma-versions.py
       - check-opencl.py
+      - check-monolith-news.py
 
   - type: initramfs
 

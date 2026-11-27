@@ -19,6 +19,7 @@ import tempfile
 import threading
 import time
 import tomllib
+import traceback
 import types
 import urllib.error
 import urllib.request
@@ -52,13 +53,14 @@ STATUS_CHECKING = "Checking for announcements…"
 STATUS_CACHED = "Couldn't reach GitHub — showing saved announcements."
 STATUS_UNAVAILABLE = "Couldn't reach GitHub. Check your connection and try again."
 STATUS_EMPTY = "No announcements yet"
-# The system autostart entry plus Hidden=true. Plasma's Autostart page lists this
-# user copy as a disabled entry, and the systemd generator skips it at login.
+# The system autostart entry plus Hidden=true. The systemd generator, which starts
+# login entries on every desktop Monolith has, skips this user copy, and Plasma's
+# Autostart page lists it as a disabled entry.
 LOGIN_OVERRIDE = (
     "[Desktop Entry]\nType=Application\nName=Monolith News\n"
     "Comment=Show new Monolith announcements at login\n"
     "Exec=/usr/bin/monolith-news --autostart\nIcon=monolith-logo\n"
-    "Terminal=false\nOnlyShowIn=KDE;\nHidden=true\n"
+    "Terminal=false\nHidden=true\n"
 )
 
 
@@ -419,9 +421,38 @@ def set_login_check(enabled: bool) -> None:
         atomic_write(path, LOGIN_OVERRIDE.encode())
 
 
+def load_qt():
+    """Load Qt for Python under either of its two names.
+
+    The KDE editions come with PySide6. Fedora's PySide6 package requires most of Qt,
+    a browser engine included, which a desktop that isn't built on Qt would have to
+    add. PyQt6's base package needs only Qt's base and QML libraries. Both wrap the
+    same Qt and draw the same window. They differ in the name of the signal class and
+    in what happens to an error raised in a handler.
+    """
+    try:
+        from PySide6 import QtCore, QtGui, QtNetwork, QtWidgets
+        return types.SimpleNamespace(name="PySide6", QtCore=QtCore, QtGui=QtGui, QtNetwork=QtNetwork,
+                                     QtWidgets=QtWidgets, Signal=QtCore.Signal)
+    except ImportError as error:
+        first = error
+    try:
+        from PyQt6 import QtCore, QtGui, QtNetwork, QtWidgets
+    except ImportError as second:
+        raise ImportError("Monolith News needs PySide6 or PyQt6. "
+                          f"PySide6: {first}. PyQt6: {second}.") from second
+    # PySide6 prints an error raised while handling a click or a repaint and carries
+    # on. PyQt6 ends the program there unless the program reports errors itself.
+    if sys.excepthook is sys.__excepthook__:
+        sys.excepthook = traceback.print_exception
+    return types.SimpleNamespace(name="PyQt6", QtCore=QtCore, QtGui=QtGui, QtNetwork=QtNetwork,
+                                 QtWidgets=QtWidgets, Signal=QtCore.pyqtSignal)
+
+
 def widget_classes():
     """Define the window's painted widgets; Qt loads only when a window opens."""
-    from PySide6 import QtCore, QtGui, QtWidgets
+    qt = load_qt()
+    QtCore, QtGui, QtWidgets = qt.QtCore, qt.QtGui, qt.QtWidgets
     Qt = QtCore.Qt
     policy = QtWidgets.QSizePolicy.Policy
     left = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
@@ -842,7 +873,7 @@ def widget_classes():
             painter.restore()
 
     class Bridge(QtCore.QObject):
-        finished = QtCore.Signal(object)
+        finished = qt.Signal(object)
 
     return types.SimpleNamespace(TextButton=TextButton, LoginSwitch=LoginSwitch, Pill=Pill,
                                  InfoIcon=InfoIcon, Heading=Heading, Body=Body,
@@ -853,7 +884,8 @@ def widget_classes():
 def run_gui(result: FeedResult, state: NewsState, *, refresh: bool, record: bool) -> int:
     """Show announcements; closing the window dismisses every announcement it lists."""
     # Qt loads only when there is something to show, keeping quiet logins cheap.
-    from PySide6 import QtCore, QtGui, QtNetwork, QtWidgets
+    qt = load_qt()
+    QtCore, QtGui, QtNetwork, QtWidgets = qt.QtCore, qt.QtGui, qt.QtNetwork, qt.QtWidgets
     Qt = QtCore.Qt
 
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv[:1])

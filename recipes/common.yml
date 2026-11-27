@@ -122,6 +122,9 @@ modules:
         - distrobox
         # Fonts
         - google-noto-fonts-all
+        # Monolith News typefaces.
+        - ibm-plex-sans-fonts
+        - ibm-plex-mono-fonts
         # Tailscale's official stable RPM
         - tailscale
         # Steam/controller support
@@ -491,6 +494,23 @@ modules:
         install -Dm0644 /usr/share/pixmaps/monolith/greeter-logo-dark.png \
           /usr/share/pixmaps/fedora_logo_med.png
         install -Dm0644 "$src" /usr/share/pixmaps/fedora_whitelogo_med.png
+      - |
+        # Fail the build if Monolith News cannot start from its launchers.
+        # Every edition has it. Each one installs the Qt for Python it runs
+        # on, and check-monolith-news.py opens the window once that is there.
+        set -euxo pipefail
+        test -x /usr/bin/monolith-news
+        python3 -B /usr/bin/monolith-news --help >/dev/null
+        desktop-file-validate /usr/share/applications/monolith-news.desktop \
+          /etc/xdg/autostart/monolith-news.desktop
+        # A login entry that names desktops starts on those only.
+        if grep -E '^(OnlyShowIn|NotShowIn)=' /etc/xdg/autostart/monolith-news.desktop; then exit 1; fi
+        fc-match --format '%{family}\n' 'IBM Plex Sans' | grep -F 'IBM Plex Sans'
+        fc-match --format '%{family}\n' 'IBM Plex Mono' | grep -F 'IBM Plex Mono'
+        # Its icon, Monolith's mark, in the sizes menus and docks ask for.
+        for size in 16 22 24 32 36 48 96; do
+          test -s "/usr/share/icons/hicolor/${size}x${size}/apps/monolith-logo.png"
+        done
       - |
         # Compile shared GTK/Ptyxis defaults.
         dconf update

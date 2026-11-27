@@ -1,17 +1,28 @@
 #!/usr/bin/env python3
-"""Offline checks for Monolith News feeds, read state, the login check, and the window's colors."""
+"""Offline checks for Monolith News feeds, read state, the login check, and the window's colors.
+
+The window is drawn with Qt through PySide6 or PyQt6, whichever a computer has. CI's
+runner has neither, so the tests that open a window only run where one is installed.
+Where both are, NEWS_TEST_QT=PySide6 or NEWS_TEST_QT=PyQt6 picks one: the other is
+hidden from the tests and from the app. Run them once with each.
+"""
 
 import ast
 import configparser
 import datetime
+import importlib
 import importlib.machinery
 import importlib.util
 import io
 import json
 import os
 from pathlib import Path
+import re
+import subprocess
 import sys
 import tempfile
+import traceback
+import types
 import unittest
 from unittest import mock
 import urllib.error
@@ -20,7 +31,12 @@ sys.dont_write_bytecode = True
 
 
 ROOT = Path(__file__).resolve().parents[1]
-APP = ROOT / "files/kde/usr/bin/monolith-news"
+# Monolith News is in the layer every edition gets.
+SHARED = ROOT / "files/system"
+APP = SHARED / "usr/bin/monolith-news"
+LOGIN_ENTRY = SHARED / "etc/xdg/autostart/monolith-news.desktop"
+CHECK = ROOT / "files/scripts/check-monolith-news.py"
+BINDINGS = ("PySide6", "PyQt6")
 # QPalette::ColorRole in Qt 6.6 and later, without NoRole.
 QT_PALETTE_ROLES = {
     "WindowText", "Button", "Light", "Midlight", "Dark", "Mid", "Text", "BrightText", "ButtonText",
@@ -30,15 +46,30 @@ QT_PALETTE_ROLES = {
 # What the window builds from QtWidgets and from its own classes that isn't a widget.
 NOT_WIDGETS = {"QApplication", "QVBoxLayout", "QHBoxLayout", "FlowLayout", "QListWidgetItem",
                "QSizePolicy", "NewsDelegate", "Bridge"}
-# CI's runner has no PySide6; a machine that has it also builds the real window.
-try:
-    from PySide6 import QtCore, QtGui, QtWidgets
-except ImportError:
-    QtWidgets = None
+WANTED_QT = os.environ.get("NEWS_TEST_QT")
+if WANTED_QT in BINDINGS:
+    for other in BINDINGS:
+        if other != WANTED_QT:
+            sys.modules[other] = None
 
 
-def load_app(name):
-    loader = importlib.machinery.SourceFileLoader(name, str(APP))
+def find_qt():
+    """The binding the window tests run on, in the order the app looks for one."""
+    for name in BINDINGS:
+        try:
+            return name, *(importlib.import_module(f"{name}.{part}")
+                           for part in ("QtCore", "QtGui", "QtWidgets"))
+        except ImportError:
+            continue
+    return None, None, None, None
+
+
+QT, QtCore, QtGui, QtWidgets = find_qt()
+NO_QT = "neither PySide6 nor PyQt6 is installed"
+
+
+def load_app(name, path=APP):
+    loader = importlib.machinery.SourceFileLoader(name, str(path))
     spec = importlib.util.spec_from_loader(loader.name, loader)
     module = importlib.util.module_from_spec(spec)
     loader.exec_module(module)
@@ -258,7 +289,7 @@ class NewsTests(unittest.TestCase):
         self.assertEqual(parser.read(self.override, encoding="utf-8"), [str(self.override)])
         self.assertEqual(parser["Desktop Entry"]["Hidden"], "true")
         # Plasma's Autostart page runs this copy once re-enabled, so it must match the system entry.
-        system = (ROOT / "files/kde/etc/xdg/autostart/monolith-news.desktop").read_text()
+        system = LOGIN_ENTRY.read_text()
         self.assertEqual(self.override.read_text(), system + "Hidden=true\n")
         self.assertFalse(self.app.login_check_enabled())
         self.assertIsNone(self.login())
@@ -269,6 +300,98 @@ class NewsTests(unittest.TestCase):
         self.app.set_login_check(False)
         self.app.set_login_check(True)
         self.assertFalse(self.override.exists())
+
+    def test_login_entry_is_the_same_on_every_desktop(self):
+        # What starts login entries starts one that names desktops on those only.
+        for where, entry_text in (("the system entry", LOGIN_ENTRY.read_text()),
+                                  ("the user's copy", self.app.LOGIN_OVERRIDE)):
+            self.assertNotRegex(entry_text, r"(?m)^(OnlyShowIn|NotShowIn)\s*=", where)
+        # One copy of the program and its launchers, where every edition gets them.
+        copies = sorted(str(path.relative_to(ROOT)) for path in (ROOT / "files").rglob("monolith-news*")
+                        if "__pycache__" not in path.parts)
+        self.assertEqual(copies, ["files/system/etc/xdg/autostart/monolith-news.desktop",
+                                  "files/system/usr/bin/monolith-news",
+                                  "files/system/usr/share/applications/monolith-news.desktop"])
+        # The launchers' icon comes with them, in the sizes the build checks.
+        icons = sorted(int(path.parts[-3].split("x")[0])
+                       for path in (SHARED / "usr/share/icons/hicolor").glob("*/apps/monolith-logo.png"))
+        self.assertEqual(icons, [16, 22, 24, 32, 36, 48, 96])
+        for launcher in (LOGIN_ENTRY, SHARED / "usr/share/applications/monolith-news.desktop"):
+            self.assertIn("\nIcon=monolith-logo\n", launcher.read_text(), launcher.name)
+
+    def test_every_edition_opens_the_window_in_its_build(self):
+        recipes = sorted((ROOT / "recipes").glob("recipe-*.yml"))
+        self.assertGreaterEqual(len(recipes), 2)
+        for recipe in recipes:
+            with self.subTest(recipe.name):
+                text = recipe.read_text(encoding="utf-8")
+                # The check comes after the last package change, so before the initramfs.
+                self.assertRegex(text, r"(?ms)^  - type: script\n    scripts:\n(?:      - \S+\n)*"
+                                       r"      - check-monolith-news\.py\n.*^  - type: initramfs$")
+                # A Qt for Python is among the packages the edition installs.
+                parts = re.findall(r"(?m)^  - from-file: (\S+)$", text)
+                installed = "".join((ROOT / "recipes" / part).read_text(encoding="utf-8") for part in parts)
+                self.assertRegex(installed, r"(?m)^        - python3-(pyside6|pyqt6-base)$")
+
+    def fake_qt(self, name, signal):
+        """Stand-ins for a binding's modules, as sys.modules entries."""
+        package = types.ModuleType(name)
+        modules = {name: package}
+        for part in ("QtCore", "QtGui", "QtNetwork", "QtWidgets"):
+            modules[f"{name}.{part}"] = module = types.ModuleType(f"{name}.{part}")
+            setattr(package, part, module)
+        setattr(package.QtCore, signal, f"{name}'s signal class")
+        return modules
+
+    def test_qt_comes_from_pyside6_or_else_from_pyqt6(self):
+        pyside, pyqt = self.fake_qt("PySide6", "Signal"), self.fake_qt("PyQt6", "pyqtSignal")
+        neither = dict.fromkeys(BINDINGS)
+        default = sys.__excepthook__
+        with mock.patch.object(sys, "excepthook", default):
+            with mock.patch.dict(sys.modules, pyside | pyqt):
+                qt = self.app.load_qt()
+                self.assertEqual((qt.name, qt.Signal), ("PySide6", "PySide6's signal class"))
+                for part in ("QtCore", "QtGui", "QtNetwork", "QtWidgets"):
+                    self.assertIs(getattr(qt, part), pyside[f"PySide6.{part}"])
+                # PySide6 prints an error raised in a handler and carries on by itself.
+                self.assertIs(sys.excepthook, default)
+            with mock.patch.dict(sys.modules, neither | pyqt):
+                qt = self.app.load_qt()
+                self.assertEqual((qt.name, qt.Signal), ("PyQt6", "PyQt6's signal class"))
+                for part in ("QtCore", "QtGui", "QtNetwork", "QtWidgets"):
+                    self.assertIs(getattr(qt, part), pyqt[f"PyQt6.{part}"])
+                # PyQt6 ends the program on such an error unless the program reports it.
+                self.assertIs(sys.excepthook, traceback.print_exception)
+            with mock.patch.dict(sys.modules, neither):
+                with self.assertRaisesRegex(ImportError, r"\AMonolith News needs PySide6 or PyQt6\. "
+                                                         r"PySide6: .+\. PyQt6: .+\.\Z"):
+                    self.app.load_qt()
+
+        # Whoever reports errors already keeps doing it.
+        def other_hook(*error):
+            del error
+
+        with mock.patch.object(sys, "excepthook", other_hook), mock.patch.dict(sys.modules, neither | pyqt):
+            self.app.load_qt()
+            self.assertIs(sys.excepthook, other_hook)
+
+    def test_only_the_loader_names_a_qt_binding(self):
+        # Anything else that did would work with one binding and not the other.
+        source = APP.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        loader = next(node for node in ast.walk(tree)
+                      if isinstance(node, ast.FunctionDef) and node.name == "load_qt")
+        lines = source.splitlines()
+        outside = "\n".join(lines[:loader.lineno - 1] + lines[loader.end_lineno:])
+        for name in (*BINDINGS, "pyqtSignal", "QtCore.Signal", "shiboken", "sip"):
+            self.assertNotRegex(outside, rf"\b{name}\b")
+        imported = sorted(node.module for node in ast.walk(loader) if isinstance(node, ast.ImportFrom))
+        self.assertEqual(imported, ["PyQt6", "PySide6"])
+        # Both window builders ask the loader.
+        callers = sorted(node.name for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
+                         and any(isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+                                 and call.func.id == "load_qt" for call in ast.walk(node)))
+        self.assertEqual(callers, ["run_gui", "widget_classes"])
 
     def test_preview_leaves_user_state_untouched(self):
         path = self.root / "preview feed.toml"
@@ -329,7 +452,7 @@ class NewsTests(unittest.TestCase):
                       self.app.STYLESHEET)
 
 
-@unittest.skipIf(QtWidgets is None, "PySide6 is not installed")
+@unittest.skipIf(QT is None, NO_QT)
 class WindowTests(unittest.TestCase):
     """Build the real window off screen and read back every widget's palette."""
 
@@ -351,6 +474,20 @@ class WindowTests(unittest.TestCase):
                       if role.name not in ("NoRole", "NColorRoles")]
         self.groups = [QtGui.QPalette.ColorGroup.Active, QtGui.QPalette.ColorGroup.Inactive,
                        QtGui.QPalette.ColorGroup.Disabled]
+        self.addCleanup(self.close_windows)
+
+    def close_windows(self):
+        """No test's window is left for the next test to find."""
+        for widget in self.qt.topLevelWidgets():
+            widget.close()
+            widget.deleteLater()
+        QtCore.QCoreApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete.value)
+        self.qt.processEvents()
+
+    def window(self):
+        found = [widget for widget in self.qt.topLevelWidgets() if widget.objectName() == "newsWindow"]
+        self.assertEqual(len(found), 1)
+        return found[0]
 
     def system_palette(self, color):
         palette = QtGui.QPalette()
@@ -364,8 +501,7 @@ class WindowTests(unittest.TestCase):
 
     def check_window(self):
         """Stands in for QApplication.exec: the window is built and shown, look at it."""
-        window = next(widget for widget in self.qt.topLevelWidgets()
-                      if widget.objectName() == "newsWindow")
+        window = self.window()
         news_list = window.findChild(QtWidgets.QListWidget)
 
         def widgets():
@@ -410,7 +546,7 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(self.colors(before), colors)
         # Opening another announcement replaces the article's widgets with new ones.
         news_list.setCurrentRow(1)
-        QtCore.QCoreApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+        QtCore.QCoreApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete.value)
         self.qt.processEvents()
         self.assertEqual([view.toPlainText() for view in window.findChildren(QtWidgets.QTextBrowser)],
                          ["Second body."])
@@ -435,6 +571,165 @@ class WindowTests(unittest.TestCase):
         self.assertTrue(self.checked)
         # This Qt has the roles that the test without Qt expects the table to have.
         self.assertEqual({role.name for role in self.roles}, QT_PALETTE_ROLES)
+        # The window was drawn with the binding these tests looked at.
+        self.assertEqual(self.app.load_qt().name, QT)
+
+    def test_an_error_in_a_handler_leaves_the_window_open(self):
+        # PySide6 prints the error and carries on. PyQt6 ends the program unless the
+        # program reports errors itself, which would take the window away mid-read.
+        announcements, _ = self.app.parse_feed(feed(entry("a")))
+        seen = {}
+
+        def raise_in_a_handler():
+            window = self.window()
+
+            def broken():
+                raise RuntimeError("raised on purpose")
+
+            QtCore.QTimer.singleShot(0, broken)
+            loop = QtCore.QEventLoop()
+            QtCore.QTimer.singleShot(100, loop.quit)
+            loop.exec()
+            seen["open"] = window.isVisible()
+            return 0
+
+        printed = io.StringIO()
+        with mock.patch.object(QtWidgets.QApplication, "exec", lambda *args: raise_in_a_handler()), \
+                mock.patch("sys.stderr", printed):
+            code = self.app.run_gui(self.app.FeedResult(tuple(announcements), "network"),
+                                    self.app.NewsState(frozenset(), frozenset()),
+                                    refresh=False, record=False)
+        self.assertEqual((code, seen), (0, {"open": True}))
+        self.assertIn("RuntimeError: raised on purpose", printed.getvalue())
+
+
+class BuildCheckTests(unittest.TestCase):
+    """check-monolith-news.py, which opens the window while an image is built."""
+
+    def run_check(self, *arguments, hide=(), env=None):
+        # Started as the build starts it, but with the named bindings hidden.
+        hidden = sorted(set(hide) | ({name for name in BINDINGS if name != QT} if QT else set()))
+        code = ("import runpy, sys\n"
+                "sys.dont_write_bytecode = True\n"
+                f"for name in {hidden!r}:\n"
+                "    sys.modules[name] = None\n"
+                f"sys.argv = {[str(CHECK), *map(str, arguments)]!r}\n"
+                "runpy.run_path(sys.argv[0], run_name='__main__')\n")
+        return subprocess.run([sys.executable, "-B", "-c", code], capture_output=True, text=True,
+                              timeout=300, check=False, stdin=subprocess.DEVNULL,
+                              env={**os.environ, **(env or {})})
+
+    def test_without_qt_the_check_says_what_is_missing(self):
+        result = self.run_check(SHARED, hide=BINDINGS)
+        self.assertEqual((result.returncode, result.stdout), (1, ""), result.stderr)
+        self.assertRegex(result.stderr, r"\Acheck-monolith-news: Monolith News needs PySide6 or PyQt6\. "
+                                        r"PySide6: .+\. PyQt6: .+\.\n\Z")
+
+    def test_a_missing_program_is_named(self):
+        with tempfile.TemporaryDirectory(prefix="monolith news check ") as empty:
+            result = self.run_check(empty, hide=BINDINGS)
+        self.assertEqual((result.returncode, result.stdout), (1, ""), result.stderr)
+        self.assertRegex(result.stderr, r"\Acheck-monolith-news: .*usr/bin/monolith-news can't be read: ")
+
+    def test_a_window_that_never_opens_ends_the_check(self):
+        # The check with its five minutes cut to two seconds, on a program that hangs.
+        code = ("import importlib.machinery, importlib.util, sys\n"
+                "sys.dont_write_bytecode = True\n"
+                f"loader = importlib.machinery.SourceFileLoader('check', {str(CHECK)!r})\n"
+                "check = importlib.util.module_from_spec(importlib.util.spec_from_loader('check', loader))\n"
+                "loader.exec_module(check)\n"
+                "check.TIME_LIMIT = 2\n"
+                "sys.exit(check.main(sys.argv[1:]))\n")
+        with tempfile.TemporaryDirectory(prefix="monolith news check ") as root:
+            stuck = Path(root) / "usr/bin/monolith-news"
+            stuck.parent.mkdir(parents=True)
+            stuck.write_text("import time\n\n\ndef load_qt():\n    time.sleep(600)\n", encoding="utf-8")
+            # Ended that way, the check can't remove its temporary folder, so it gets
+            # this test's folder to make it in.
+            result = subprocess.run([sys.executable, "-B", "-c", code, root], capture_output=True, text=True,
+                                    timeout=60, check=False, stdin=subprocess.DEVNULL,
+                                    env={**os.environ, "TMPDIR": root})
+            left = [path.name for path in Path(root).glob("monolith-news-check-*")]
+        self.assertEqual(len(left), 1, left)
+        self.assertEqual((result.returncode, result.stdout), (1, ""), result.stderr)
+        self.assertIn("Timeout (0:00:02)!", result.stderr)
+        self.assertRegex(result.stderr, r"line \d+ in load_qt\n")
+        # Five minutes when the build runs it.
+        self.assertEqual(load_app("monolith_news_check_limit", CHECK).TIME_LIMIT, 300)
+
+    def test_the_checks_announcements_use_every_part(self):
+        check = load_app("monolith_news_check_test", CHECK)
+        app = load_app("monolith_news_check_app")
+        announcements, problems = app.parse_feed(check.FEED)
+        self.assertEqual(problems, [])
+        full, plain = announcements
+        self.assertTrue(all((full.category, full.install_path, full.note, full.links)))
+        for part in ("**bold**", "`code`", "](https://", "\n- "):
+            self.assertIn(part, full.body)
+        self.assertEqual((plain.category, plain.install_path, plain.note, plain.links), (None, (), None, ()))
+        self.assertEqual(check.FONTS, ("IBM Plex Sans", "IBM Plex Mono"))
+
+    @unittest.skipIf(QT is None, NO_QT)
+    def test_the_check_opens_the_window(self):
+        result = self.run_check(SHARED)
+        # An image has the fonts; a computer with Qt may not.
+        if result.returncode == 1 and "Qt doesn't find IBM Plex" in result.stderr:
+            self.skipTest("the IBM Plex fonts are not installed")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertRegex(result.stdout, rf"\AMonolith News: the window opens with {QT} [0-9.]+ on Qt [0-9.]+, "
+                                        r"in IBM Plex Sans and IBM Plex Mono\.\n\Z")
+
+    @unittest.skipIf(QT is None, NO_QT)
+    def test_the_check_fails_without_the_fonts(self):
+        # A font setup that has no fonts at all: Qt then draws with whatever it can.
+        with tempfile.TemporaryDirectory(prefix="monolith news check ") as folder:
+            setup = Path(folder) / "fonts.conf"
+            setup.write_text('<?xml version="1.0"?>\n<!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">\n'
+                             f"<fontconfig><cachedir>{folder}/cache</cachedir></fontconfig>\n",
+                             encoding="utf-8")
+            result = self.run_check(SHARED, env={"FONTCONFIG_FILE": str(setup)})
+        self.assertEqual((result.returncode, result.stdout), (1, ""), result.stderr)
+        self.assertIn("check-monolith-news: Qt doesn't find IBM Plex Sans and IBM Plex Mono, "
+                      "which Monolith News is set in.\n", result.stderr)
+
+    @unittest.skipIf(QT is None, NO_QT)
+    def test_the_check_fails_when_the_window_breaks(self):
+        source = APP.read_text(encoding="utf-8")
+        # (what the check says, the program's line, the broken line)
+        breakages = (
+            # An error while painting: both bindings report it and carry on.
+            ("RuntimeError: broken while painting",
+             "            painter.setBrush(QtGui.QColor(Color.PILL))\n",
+             "            raise RuntimeError('broken while painting')\n"),
+            # An error before the window is up.
+            ("RuntimeError: broken before the window",
+             '    app.setDesktopFileName("monolith-news")\n',
+             "    raise RuntimeError('broken before the window')\n"),
+            # A window that follows the desktop's colors.
+            ("wasn't painted in its own colors",
+             'QFrame#footerBar {{ background: {Color.CHROME};', 'QFrame#footerBar {{ background: #123456;'),
+            # A reading pane that stays empty.
+            ("showed other text than the announcements'",
+             "            self.setDocument(document)\n",
+             "            self.setDocument(document)\n            document.clear()\n            chips = ()\n"),
+            # A list that doesn't open what is picked.
+            ("showed other text than the announcements'",
+             "    news_list.currentRowChanged.connect(selected)\n", "    del selected\n"),
+            ("listed 1 of 2 announcements",
+             "        listed = list(feed.announcements)\n", "        listed = list(feed.announcements)[:1]\n"),
+        )
+        for message, old, new in breakages:
+            with self.subTest(new.strip().splitlines()[-1].strip()), \
+                    tempfile.TemporaryDirectory(prefix="monolith news check ") as root:
+                self.assertEqual(source.count(old), 1, old)
+                broken = Path(root) / "usr/bin/monolith-news"
+                broken.parent.mkdir(parents=True)
+                broken.write_text(source.replace(old, new), encoding="utf-8")
+                result = self.run_check(root)
+                self.assertEqual((result.returncode, result.stdout), (1, ""), result.stderr)
+                self.assertIn(message, result.stderr)
+                self.assertTrue(result.stderr.startswith("check-monolith-news: ")
+                                or result.stderr.startswith("Error calling Python override"), result.stderr)
 
 
 if __name__ == "__main__":

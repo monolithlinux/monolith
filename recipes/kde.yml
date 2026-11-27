@@ -9,11 +9,9 @@ modules:
         # Oxygen theme and icons are not in Fedora Kinoite.
         - plasma-oxygen
         - oxygen-icon-theme
-        # Monolith News UI; otherwise present only as an akonadi-server dependency.
+        # Qt for Python, which Monolith News draws its window with; otherwise
+        # present only as an akonadi-server dependency.
         - python3-pyside6
-        # Monolith News typefaces.
-        - ibm-plex-sans-fonts
-        - ibm-plex-mono-fonts
         # notify-send for the login update reminder; otherwise present only as a
         # dependency.
         - libnotify
@@ -144,15 +142,10 @@ modules:
         fc-match --format '%{family}\n' 'JetBrainsMono Nerd Font' \
           | grep -F 'JetBrainsMono Nerd Font'
       - |
-        # Fail the build if Monolith News cannot start from its launchers.
+        # Monolith News runs on PySide6 here. common.yml checks its launchers
+        # and check-monolith-news.py opens its window.
         set -euxo pipefail
-        test -x /usr/bin/monolith-news
-        python3 -B /usr/bin/monolith-news --help >/dev/null
         python3 -B -c 'import PySide6.QtNetwork, PySide6.QtWidgets'
-        desktop-file-validate /usr/share/applications/monolith-news.desktop \
-          /etc/xdg/autostart/monolith-news.desktop
-        fc-match --format '%{family}\n' 'IBM Plex Sans' | grep -F 'IBM Plex Sans'
-        fc-match --format '%{family}\n' 'IBM Plex Mono' | grep -F 'IBM Plex Mono'
       - |
         # Fail the build if the login update reminder cannot run.
         set -euxo pipefail
@@ -161,13 +154,13 @@ modules:
         desktop-file-validate /etc/xdg/autostart/monolith-update-reminder.desktop
         command -v notify-send busctl ghostty
       - |
-        # Expose the launcher mark in KDE's applications icon category.
+        # The launcher button shows Monolith's mark, which every edition has
+        # as the monolith-logo icon. The panel layout asks for it by this name.
         set -euxo pipefail
-        for d in /usr/share/icons/hicolor/*/places; do
-          if [ -f "$d/start-here-monolith.png" ]; then
-            install -Dm0644 "$d/start-here-monolith.png" "${d%places}apps/monolith-logo.png"
-          fi
+        for icon in /usr/share/icons/hicolor/*/apps/monolith-logo.png; do
+          install -Dm0644 "$icon" "${icon%apps/monolith-logo.png}places/start-here-monolith.png"
         done
+        test -s /usr/share/icons/hicolor/48x48/places/start-here-monolith.png
       - |
         # Refresh caches after replacing launcher icons.
         set -euxo pipefail
