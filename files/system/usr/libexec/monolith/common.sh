@@ -7,12 +7,14 @@
 #
 # Tests point these at stand-ins:
 #   MONOLITH_SYSFS       /sys
+#   MONOLITH_PROC        /proc
 #   MONOLITH_OS_RELEASE  /usr/lib/os-release
 #   MONOLITH_REGISTRY    https://ghcr.io
 #   MONOLITH_GITHUB_API  https://api.github.com
 #   MONOLITH_MOK_KEY     Monolith's Secure Boot key (DER)
 
 MONOLITH_SYSFS="${MONOLITH_SYSFS:-/sys}"
+MONOLITH_PROC="${MONOLITH_PROC:-/proc}"
 MONOLITH_OS_RELEASE="${MONOLITH_OS_RELEASE:-/usr/lib/os-release}"
 MONOLITH_REGISTRY="${MONOLITH_REGISTRY:-https://ghcr.io}"
 MONOLITH_GITHUB_API="${MONOLITH_GITHUB_API:-https://api.github.com}"
@@ -21,10 +23,12 @@ MONOLITH_MOK_KEY="${MONOLITH_MOK_KEY:-/etc/pki/akmods/certs/akmods-monolith.der}
 MONOLITH_STAGED="${MONOLITH_STAGED:-/run/ostree/staged-deployment}"
 # monolith update touches this after a full run, for the login reminder.
 MONOLITH_UPDATE_RECORD="${XDG_STATE_HOME:-$HOME/.local/state}/monolith/update-reminder/last-update"
-# Keep in sync with ALL in .github/workflows/pick-editions.sh.
-MONOLITH_EDITIONS=(kde kde-nvidia)
+# Keep in sync with ALL in .github/workflows/pick-editions.sh. An edition's
+# desktop is its name without -nvidia.
+MONOLITH_EDITIONS=(kde kde-nvidia cosmic cosmic-nvidia)
 # What build.yml calls each edition: its build job is "Build KDE NVIDIA".
-declare -gA MONOLITH_EDITION_LABELS=([kde]="KDE" [kde-nvidia]="KDE NVIDIA")
+declare -gA MONOLITH_EDITION_LABELS=([kde]="KDE" [kde-nvidia]="KDE NVIDIA"
+    [cosmic]="COSMIC" [cosmic-nvidia]="COSMIC NVIDIA")
 MONOLITH_IMAGE_PREFIX=ghcr.io/monolithlinux
 
 BOLD="" DIM="" RESET="" ACCENT="" GOOD="" WARN=""
@@ -58,6 +62,65 @@ if [[ $RESET ]]; then
     # The terminal's own text color keeps the mark visible on light themes too.
     MARK_OUTER=$'\e[39m' MARK_MIDDLE=$'\e[94m'
 fi
+
+# solid_art: should art be built from whole cells here? The mark is drawn with
+# quadrant blocks, which only join up in a terminal that draws them itself, as
+# Ghostty does. COSMIC Terminal takes them from the font and leaves a gap
+# between rows and columns, so there a cell is filled with a color or left
+# empty. MONOLITH_SOLID=1 or 0 overrides that.
+solid_art() {
+    case "${MONOLITH_SOLID-}" in
+        1) return 0 ;;
+        0) return 1 ;;
+    esac
+    [[ ${TERM_PROGRAM-} != ghostty ]] || return 1
+    # COSMIC Terminal sets nothing a program could read, so look for it among
+    # the programs this one was started from.
+    local pid=$PPID name rest hops
+    for ((hops = 0; pid > 1 && hops < 32; hops++)); do
+        { read -r name <"$MONOLITH_PROC/$pid/comm" && read -r rest <"$MONOLITH_PROC/$pid/stat"; } 2>/dev/null ||
+            return 1
+        [[ $name != cosmic-term ]] || return 0
+        # "PID (name) state parent ...": the name may hold spaces and brackets.
+        rest="${rest##*) }"
+        rest="${rest#* }"
+        pid="${rest%% *}"
+        [[ $pid =~ ^[0-9]+$ ]] || return 1
+    done
+    return 1
+}
+
+# solid_row ROW: set SOLID_ROW to a row of the mark as whole cells. A cell is
+# filled when half of it or more is: the outer slabs in the terminal's text
+# color (reverse video, which has no color of its own to go wrong on a light
+# theme) and the middle one in the accent.
+SOLID_ROW=""
+solid_row() {
+    local row="$1" ink=1 on=0 want i ch
+    SOLID_ROW=""
+    for ((i = 0; i < ${#row}; i += 1)); do
+        ch="${row:i:1}"
+        if [[ $ch == '$' && ${row:i+1:1} == [12] ]]; then
+            ink="${row:i+1:1}"
+            i=$((i + 1))
+            continue
+        fi
+        case "$ch" in
+            █ | ▀ | ▄ | ▌ | ▐ | ▚ | ▞ | ▛ | ▜ | ▙ | ▟) want=$ink ;;
+            *) want=0 ;;
+        esac
+        if [[ $want != "$on" ]]; then
+            [[ $on == 0 ]] || SOLID_ROW+="$RESET"
+            case "$want" in
+                1) SOLID_ROW+=$'\e[7m' ;;
+                2) SOLID_ROW+=$'\e[104m' ;;
+            esac
+            on=$want
+        fi
+        SOLID_ROW+=" "
+    done
+    [[ $on == 0 ]] || SOLID_ROW+="$RESET"
+}
 
 # monolith_columns: set MONOLITH_COLUMNS and MONOLITH_LINES to the terminal's
 # size, or 80 by 24.
@@ -103,16 +166,24 @@ mark_fits() {
 # beside SIZE LINE...: print the LINEs with the mark of SIZE on their left when
 # it fits, and on their own otherwise.
 beside() {
-    local size="$1" i count line plain
+    local size="$1" i count line plain solid=0
     shift
     local lines=("$@")
     mark_fits "$size" || MARK_ROWS=()
+    # Filling a cell takes a color, so without colors the blocks stay.
+    if ((${#MARK_ROWS[@]})) && [[ $RESET ]] && solid_art; then
+        solid=1
+    fi
     count=${#lines[@]}
     ((${#MARK_ROWS[@]} > count)) && count=${#MARK_ROWS[@]}
     for ((i = 0; i < count; i++)); do
         if ((${#MARK_ROWS[@]})); then
             line="${MARK_ROWS[i]-}"
             plain="${line//\$[12]/}"
+            if ((solid)); then
+                solid_row "$line"
+                line="$SOLID_ROW"
+            fi
             line="${line//\$1/$MARK_OUTER}"
             line="${line//\$2/$MARK_MIDDLE}"
             if [[ -z ${lines[i]-} ]]; then
@@ -155,6 +226,26 @@ os_release() {
     [[ -r $MONOLITH_OS_RELEASE ]] && . "$MONOLITH_OS_RELEASE"
     OS_NAME="${PRETTY_NAME:-Monolith}"
     OS_VERSION="$OSTREE_VERSION"
+}
+
+# this_desktop: the desktop this computer's image comes with (kde, cosmic),
+# from os-release. Quick enough for tab completion, unlike rpm-ostree.
+this_desktop() {
+    local VARIANT_ID=""
+    # shellcheck disable=SC1090
+    [[ -r $MONOLITH_OS_RELEASE ]] && . "$MONOLITH_OS_RELEASE"
+    printf '%s\n' "$VARIANT_ID"
+}
+
+# desktop_editions DESKTOP: the editions that come with one desktop, the plain
+# one first. Every edition when Monolith has none for that desktop.
+desktop_editions() {
+    local edition found=()
+    for edition in "${MONOLITH_EDITIONS[@]}"; do
+        [[ ${edition%-nvidia} != "$1" ]] || found+=("$edition")
+    done
+    ((${#found[@]})) || found=("${MONOLITH_EDITIONS[@]}")
+    printf '%s\n' "${found[@]}"
 }
 
 # full_update_days: how many days ago `monolith update` last finished. Fails

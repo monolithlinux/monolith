@@ -103,6 +103,68 @@ has "$out" 'Monolith KDE - 44.20261030.0'
 lacks "$out" '·'
 lacks "$out" '▙'
 
+# On a terminal ----------------------------------------------------------------
+# With colors, the mark is drawn in block characters, which join up in Ghostty.
+# COSMIC Terminal leaves gaps between them, so there the mark is built from
+# whole cells: one is filled when half of it or more is.
+mkdir "$test_root/term"
+printf '#!/bin/bash\n"$@"\nexit $?\n' >"$test_root/term/cosmic-term"
+chmod +x "$test_root/term/cosmic-term"
+# on_terminal [VARIABLE=value]... [PROGRAM]: the greeting on a terminal, started
+# from PROGRAM when there is one. Nothing is found in /proc unless a test says so.
+on_terminal() {
+    local command
+    printf -v command '%q ' env PATH="$test_root/bin:$PATH" LC_ALL=C.UTF-8 TERM=xterm-256color COLUMNS=80 \
+        MONOLITH_OS_RELEASE="$test_root/os-release" MONOLITH_STAGED="$test_root/staged" \
+        XDG_STATE_HOME="$test_root/state" MONOLITH_PROC="$test_root/no-proc" "$@" "$greeting"
+    script -qec "$command" /dev/null </dev/null | tr -d '\r'
+}
+blocks=$'\e[39m▙▖  ▗▟'
+top=$' \e[7m \e[0m    \e[7m \e[0m'
+bottom=$' \e[7m \e[0m \e[104m  \e[0m \e[7m \e[0m'
+
+out="$(on_terminal)"
+has "$out" "$blocks"
+lacks "$out" $'\e[7m'
+out="$(on_terminal MONOLITH_SOLID=1)"
+has "$(sed -n 1p <<<"$out")" "$top"
+has "$(sed -n 2p <<<"$out")" "$bottom"
+has "$out" 'Monolith KDE'
+lacks "$out" '▙'
+lacks "$out" '█'
+# Started from COSMIC Terminal, with nothing else said.
+out="$(on_terminal MONOLITH_PROC=/proc "$test_root/term/cosmic-term")"
+has "$(sed -n 1p <<<"$out")" "$top"
+lacks "$out" '▙'
+# Ghostty run from there draws the blocks itself, and MONOLITH_SOLID=0 asks for them.
+has "$(on_terminal MONOLITH_PROC=/proc TERM_PROGRAM=ghostty "$test_root/term/cosmic-term")" "$blocks"
+has "$(on_terminal MONOLITH_PROC=/proc MONOLITH_SOLID=0 "$test_root/term/cosmic-term")" "$blocks"
+# Filling a cell takes a color.
+out="$(on_terminal MONOLITH_SOLID=1 NO_COLOR=1)"
+has "$out" ' ▙▖  ▗▟   Monolith KDE'
+lacks "$out" $'\e['
+
+# Every size of the mark keeps its width as whole cells, and the large one is
+# the logo fastfetch shows in the COSMIC editions.
+solid_logo="$repo_root/files/cosmic/usr/share/fastfetch/logos/monolith-solid.txt"
+(
+    export LC_ALL=C.UTF-8
+    # shellcheck source=../files/system/usr/libexec/monolith/common.sh
+    . "$repo_root/files/system/usr/libexec/monolith/common.sh"
+    RESET=$'\e[0m'
+    for size in "" -medium -small -tiny; do
+        while IFS= read -r row; do
+            solid_row "$row"
+            plain="${row//\$[12]/}"
+            cells="$(sed 's/\x1b\[[0-9;]*m//g' <<<"$SOLID_ROW")"
+            [ "$cells" = "$(printf '%*s' "${#plain}" '')" ] || fail "monolith$size: '$row' became '$cells'"
+            [ -n "$size" ] || printf '%s\n' "$SOLID_ROW"
+        done <"$logos/monolith$size.txt"
+    done >"$test_root/solid-large"
+) || exit 1
+cmp -s "$test_root/solid-large" "$solid_logo" ||
+    fail "the solid logo isn't the large mark in whole cells: python3 tests/cosmic-terminal.py --write"
+
 # Without OSTREE_VERSION there's just the name.
 printf 'PRETTY_NAME="Monolith KDE (NVIDIA)"\n' >"$test_root/os-release"
 [ "$(greet | sed -n 1p)" = 'Monolith KDE (NVIDIA)' ] || fail "$(greet)"

@@ -81,6 +81,23 @@ MEDIA_TOOLS=(moonfin plezy sidra)
 CRAFTING_TOOLS=(photocraft vectorcraft filmcraft lightcraft pdfcraft effectcraft anicraft designcraft figcraft texturecraft materialcraft wordcraft soundcraft deckcraft cadcraft gridcraft craft-anything)
 COMMUNICATION_TOOLS=(fluxer fluxer-canary)
 APPEARANCE_TOOLS=(ghostty-themes)
+# Everything the catalog has. ALL_TOOLS is what this computer is offered.
+EVERY_TOOL=("${ALL_TOOLS[@]}")
+readonly EVERY_TOOL
+
+# Ghostty's themes are only of use with Ghostty, which the KDE editions come
+# with. Where it isn't installed they're left out of every list, unless
+# Monolith installed them before: then they can still be updated and removed.
+# Tests name another program to look for in MONOLITH_GHOSTTY.
+if ! command -v "${MONOLITH_GHOSTTY:-ghostty}" >/dev/null 2>&1 && [ ! -f "$STATE_ROOT/ghostty-themes.managed" ]; then
+    APPEARANCE_TOOLS=()
+    offered=()
+    for tool in "${ALL_TOOLS[@]}"; do
+        [ "$tool" = ghostty-themes ] || offered+=("$tool")
+    done
+    ALL_TOOLS=("${offered[@]}")
+    unset offered tool
+fi
 
 # Per-render state; menus and list compute each row once. Gear Lever apps
 # also keep the helper's summary; APP_CONFLICTS holds one path per line.
@@ -270,6 +287,14 @@ is_known_tool() {
         [ "$candidate" = "$tool" ] && return 0
     done
     return 1
+}
+
+# unknown_tool ID: stop, saying why ID can't be used here.
+unknown_tool() {
+    if [ "$1" = ghostty-themes ]; then
+        die "Ghostty Themes needs Ghostty, which isn't installed here"
+    fi
+    die "unknown tool: $1"
 }
 
 # The Crafting Apps share one release layout: storytold/<id> publishes the
@@ -1168,7 +1193,7 @@ adopt_tool() {
 
 install_tool() {
     local tool="$1"
-    is_known_tool "$tool" || die "unknown tool: $tool"
+    is_known_tool "$tool" || unknown_tool "$tool"
     if [ "$tool" = ghostty-themes ]; then
         if [ "$ONLY_IF_OUTDATED" -eq 1 ]; then
             run_helper_update ghostty_themes update
@@ -1619,7 +1644,7 @@ remove_link_if_managed() {
 
 remove_tool() {
     local tool="$1" root marker command kept
-    is_known_tool "$tool" || die "unknown tool: $tool"
+    is_known_tool "$tool" || unknown_tool "$tool"
     marker="$(state_file "$tool")"
     has_marker "$tool" || die "$(tool_name "$tool") is not managed by Monolith"
     root="$(tool_root "$tool")"
@@ -1675,7 +1700,7 @@ internal_action() {
         adopt) run=adopt_replaced_tool ;;
         *) die "unknown internal action: $1" ;;
     esac
-    is_known_tool "$2" || die "unknown tool: $2"
+    is_known_tool "$2" || unknown_tool "$2"
     acquire_operation_lock
     "$run" "$2"
 }
@@ -1744,7 +1769,7 @@ run_actions() {
     esac
     # Validate the whole request before any child starts.
     for tool in "${tools[@]}"; do
-        is_known_tool "$tool" || die "unknown tool: $tool"
+        is_known_tool "$tool" || unknown_tool "$tool"
         if [ "$action" = remove ] && ! has_marker "$tool"; then
             die "$(tool_name "$tool") is not managed by Monolith"
         fi
@@ -1822,7 +1847,7 @@ update_tools() {
         requested=("${ALL_TOOLS[@]}")
     fi
     for tool in "${requested[@]}"; do
-        is_known_tool "$tool" || die "unknown tool: $tool"
+        is_known_tool "$tool" || unknown_tool "$tool"
         if [ "$#" -gt 0 ] && ! has_marker "$tool"; then
             die "$(tool_name "$tool") is not installed by Monolith"
         fi
@@ -2800,7 +2825,11 @@ interactive_menu() {
             "$(category_label media "Media" "${MEDIA_TOOLS[@]}")"$'\t'"media"
             "$(category_label crafting "Crafting Apps" "${CRAFTING_TOOLS[@]}")"$'\t'"crafting"
             "$(category_label communication "Communication" "${COMMUNICATION_TOOLS[@]}")"$'\t'"communication"
-            "$(category_label appearance "Appearance" "${APPEARANCE_TOOLS[@]}")"$'\t'"appearance"
+        )
+        if [ "${#APPEARANCE_TOOLS[@]}" -gt 0 ]; then
+            options+=("$(category_label appearance "Appearance" "${APPEARANCE_TOOLS[@]}")"$'\t'"appearance")
+        fi
+        options+=(
             "$(menu_label all "All applications")"$'\t'"all"
             "$(menu_label update "Update installed" "$marked managed by Monolith")"$'\t'"update"
             "$(menu_label system "System tools" "Status, updates, scheduler, rollback and more")"$'\t'"system"
@@ -2901,8 +2930,10 @@ Tool IDs:
                    materialcraft wordcraft soundcraft deckcraft cadcraft
                    gridcraft craft-anything
   Communication    fluxer fluxer-canary
-  Appearance       ghostty-themes
 EOF
+    if [ "${#APPEARANCE_TOOLS[@]}" -gt 0 ]; then
+        printf '  Appearance       %s\n' "${APPEARANCE_TOOLS[*]}"
+    fi
 }
 
 main() {
@@ -2925,6 +2956,9 @@ main() {
         __action) internal_action "$@" ;;
         # App IDs and names for `monolith __complete`.
         __ids) for tool in "${ALL_TOOLS[@]}"; do printf '%s\t%s\n' "$tool" "$(tool_name "$tool")"; done ;;
+        # The same for everything the catalog has, whatever this computer is
+        # offered. The daily download check runs where there is no Ghostty.
+        __catalog) for tool in "${EVERY_TOOL[@]}"; do printf '%s\t%s\n' "$tool" "$(tool_name "$tool")"; done ;;
         help|-h|--help) usage ;;
         *) die "unknown command: $command (run monolith help)" ;;
     esac

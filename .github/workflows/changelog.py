@@ -12,6 +12,7 @@ MAJOR_PACKAGES = [
     ("Mesa", "mesa-dri-drivers"),
     ("NVIDIA driver", "nvidia-driver"),
     ("Plasma", "plasma-workspace"),
+    ("COSMIC", "cosmic-session"),
     ("systemd", "systemd"),
     ("Brave", "brave-origin-nightly"),
     ("Steam", "steam"),

@@ -10,12 +10,15 @@ stop the rest. Their full output goes to ~/.local/state/monolith/update/. On a
 terminal the update plays the Sunrise: Monolith's mark rises out of the ground
 and the sun comes up behind it as the steps finish. Piped output, NO_COLOR and
 the Linux console get plain lines, and MONOLITH_MOTION=0 keeps the picture
-still. A run that gets through every step is recorded for the login reminder,
+still. COSMIC Terminal leaves gaps between block characters, so there the
+picture is built from whole cells (MONOLITH_SOLID=1 or 0 for any terminal).
+A run that gets through every step is recorded for the login reminder,
 `monolith status` and the greeting.
 
 Tests point these at stand-ins: MONOLITH_OS_RELEASE, MONOLITH_LOGOS,
-MONOLITH_OSTREE_BOOTED, MONOLITH_STAGED, FLATPAK_USER_DIR, FLATPAK_SYSTEM_DIR,
-and MONOLITH_UPDATE_POLL, the seconds between checks while waiting.
+MONOLITH_OSTREE_BOOTED, MONOLITH_STAGED, MONOLITH_PROC, FLATPAK_USER_DIR,
+FLATPAK_SYSTEM_DIR, and MONOLITH_UPDATE_POLL, the seconds between checks while
+waiting.
 """
 import ast
 import codecs
@@ -44,6 +47,7 @@ LIBEXEC = Path(__file__).resolve().parent
 SOFTWARE = LIBEXEC / "software"
 LOGOS = Path(os.environ.get("MONOLITH_LOGOS") or LIBEXEC.parent.parent / "share/fastfetch/logos")
 OS_RELEASE = Path(os.environ.get("MONOLITH_OS_RELEASE") or "/usr/lib/os-release")
+PROC = Path(os.environ.get("MONOLITH_PROC") or "/proc")
 OSTREE_BOOTED = Path(os.environ.get("MONOLITH_OSTREE_BOOTED") or "/run/ostree-booted")
 # ostree writes this file when it sets a downloaded build up for the next
 # restart, and keeps it until then.
@@ -301,6 +305,34 @@ class Look:
                         and not term.startswith("vt"))
         self.motion = os.environ.get("MONOLITH_MOTION") != "0"
         self.live = self.color and self.unicode
+        self.solid = solid_art()
+
+
+def solid_art():
+    """Should the art be built from whole cells? The same answer as solid_art
+    in common.sh: yes in COSMIC Terminal, which leaves a gap between block
+    characters, and whatever MONOLITH_SOLID=1 or 0 says."""
+    forced = os.environ.get("MONOLITH_SOLID")
+    if forced in ("0", "1"):
+        return forced == "1"
+    if os.environ.get("TERM_PROGRAM") == "ghostty":
+        return False
+    # COSMIC Terminal sets nothing a program could read, so look for it among
+    # the programs this one was started from.
+    pid = os.getppid()
+    for _ in range(32):
+        if pid <= 1:
+            break
+        try:
+            name = (PROC / str(pid) / "comm").read_text(encoding="utf-8", errors="replace").strip()
+            stat = (PROC / str(pid) / "stat").read_text(encoding="utf-8", errors="replace")
+            if name == "cosmic-term":
+                return True
+            # "PID (name) state parent ...": the name may hold spaces and brackets.
+            pid = int(stat.rsplit(")", 1)[1].split()[1])
+        except (OSError, ValueError, IndexError):
+            break
+    return False
 
 
 class Paint:
@@ -325,6 +357,9 @@ GLYPH = {bits: ch for ch, bits in QUAD.items()}
 # text color, which has no background form, so they always take the foreground.
 INK = {"outer": ("39", None), "middle": ("94", "104"), "sun": ("93", "103")}
 PRIORITY = ("outer", "middle", "sun")
+# A whole cell in one ink, for terminals that leave gaps between block
+# characters. Reverse video fills a cell with the terminal's own text color.
+FILL = {"outer": "7", "middle": "104", "sun": "103"}
 
 
 def load_mark(path):
@@ -386,8 +421,10 @@ class Scene:
         "large": ("monolith.txt", 38, 4, 8.0, 0.4),
         "medium": ("monolith-medium.txt", 20, 2, 3.5, 0.4),
     }
+    # The sun as whole cells: half its width in each row, from the top.
+    SOLID_SUN = {"large": (3, 4, 4, 3), "medium": (1,)}
 
-    def __init__(self, size):
+    def __init__(self, size, solid=False):
         logo, self.cols, self.sky, self.rx, end = self.SIZES[size]
         self.mw, self.mh, self.mark = load_mark(LOGOS / logo)
         self.ox = (self.cols - self.mw) // 2
@@ -399,6 +436,14 @@ class Scene:
         top = min(y for (_x, y), ink in self.mark.items() if ink == "middle")
         self.cy_end = 2 * self.sky + end
         self.cy_start = 2 * self.sky + top + self.ry + 1.0
+        # Whole cells for a terminal that leaves gaps between block
+        # characters: a cell is the mark's when half of it or more is.
+        self.solid = solid
+        self.sun_rows = self.SOLID_SUN[size]
+        inks = {}
+        for (x, y), ink in self.mark.items():
+            inks.setdefault((x // 2, y // 2), []).append(ink)
+        self.blocks = {at: max(PRIORITY, key=found.count) for at, found in inks.items() if len(found) >= 2}
         rng = random.Random(11)
         self.stars = {}
         for y in range(self.ground):
@@ -407,12 +452,33 @@ class Scene:
                     self.stars[(x, y)] = (rng.uniform(0, 6.3), rng.uniform(0.8, 2.0), rng.random() < 0.2)
 
     def frame(self, t, rise=1.0, progress=0.0, flare=None):
-        px = {}
         # The sun rises with the mark at first, hidden behind the middle slab,
         # then climbs evenly with the update's progress.
         lift = round((1 - ease(rise)) * 2 * self.mh)
         cy = self.cy_start + (self.cy_end - self.cy_start) * smooth(progress) + lift
+        if self.solid:
+            inked, cy = self.whole_cells(cy, lift)
+        else:
+            inked = self.quadrant_cells(cy, lift)
         rays = self.rays(cy, flare) if flare is not None else {}
+        lines = []
+        for row in range(self.rows):
+            cells = []
+            for col in range(self.cols):
+                if row == self.ground:
+                    cells.append(self.ground_cell(col, rise, progress))
+                elif (col, row) in inked:
+                    cells.append(inked[(col, row)])
+                elif (col, row) in rays:
+                    cells.append(rays[(col, row)])
+                else:
+                    cells.append(self.sky_cell(col, row, t, cy, rise, progress, flare))
+            lines.append(paint_row(cells))
+        return lines
+
+    def quadrant_cells(self, cy, lift):
+        """The sun and the mark in quadrant blocks, two pixels to a cell each way."""
+        px = {}
         floor = 2 * self.ground
         for y in range(int(cy - self.ry) - 1, int(cy + self.ry) + 2):
             for x in range(int(self.cx - self.rx) - 1, int(self.cx + self.rx) + 2):
@@ -422,22 +488,29 @@ class Scene:
             yy = y + 2 * self.sky + lift
             if yy < floor:
                 px[(x + 2 * self.ox, yy)] = ink
-        lines = []
-        for row in range(self.rows):
-            cells = []
+        cells = {}
+        for row in range(self.ground):
             for col in range(self.cols):
-                if row == self.ground:
-                    cells.append(self.ground_cell(col, rise, progress))
-                    continue
                 quad = [px.get((2 * col + k % 2, 2 * row + k // 2)) for k in range(4)]
                 if any(quad):
-                    cells.append(cell(quad))
-                elif (col, row) in rays:
-                    cells.append(rays[(col, row)])
-                else:
-                    cells.append(self.sky_cell(col, row, t, cy, rise, progress, flare))
-            lines.append(paint_row(cells))
-        return lines
+                    cells[(col, row)] = cell(quad)
+        return cells
+
+    def whole_cells(self, cy, lift):
+        """The same in whole cells, and where the sun's middle then is. A cell
+        can't be half one thing, so the mark and the sun move a row at a time."""
+        cells = {}
+        top = math.floor(cy / 2 - len(self.sun_rows) / 2 + 0.5)
+        middle = self.cx // 2
+        for i, half in enumerate(self.sun_rows):
+            if 0 <= top + i < self.ground:
+                for col in range(middle - half, middle + half):
+                    cells[(col, top + i)] = (FILL["sun"], " ")
+        for (col, row), ink in self.blocks.items():
+            row += self.sky + lift // 2
+            if row < self.ground:
+                cells[(col + self.ox, row)] = (FILL[ink], " ")
+        return cells, 2 * top + len(self.sun_rows)
 
     def rays(self, cy, flare):
         """A sunburst: six rays that grow outwards and fade, one cell per row
@@ -937,9 +1010,9 @@ DIFF_CHANGE = re.compile(r"^(\S+)\s+(\S+)\s+->\s+(\S+)$")
 # The packages the release notes call major, as in .github/workflows/changelog.py.
 MAJOR = (("Kernel", ("kernel-cachyos", "kernel-cachyos-lto", "kernel-core", "kernel")),
          ("Mesa", ("mesa-dri-drivers",)), ("NVIDIA", ("nvidia-driver",)), ("Plasma", ("plasma-workspace",)),
-         ("systemd", ("systemd",)), ("Brave", ("brave-origin-nightly",)), ("Steam", ("steam",)),
-         ("Gamescope", ("gamescope",)), ("GameMode", ("gamemode",)), ("MangoHud", ("mangohud",)),
-         ("Tailscale", ("tailscale",)), ("Fish", ("fish",)))
+         ("COSMIC", ("cosmic-session",)), ("systemd", ("systemd",)), ("Brave", ("brave-origin-nightly",)),
+         ("Steam", ("steam",)), ("Gamescope", ("gamescope",)), ("GameMode", ("gamemode",)),
+         ("MangoHud", ("mangohud",)), ("Tailscale", ("tailscale",)), ("Fish", ("fish",)))
 
 
 def parse_diff(lines):
@@ -2053,7 +2126,7 @@ class Screen:
     def scene(self, size):
         if size not in self.scenes:
             try:
-                self.scenes[size] = Scene(size)
+                self.scenes[size] = Scene(size, self.look.solid)
             except (OSError, ValueError):
                 self.scenes[size] = None
         return self.scenes[size]

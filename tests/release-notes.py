@@ -59,6 +59,15 @@ class ReleaseNotes(unittest.TestCase):
         self.assertIn("| ✨ | new-package | | 2.0-1 |", notes)
         self.assertNotIn("too many to list", notes)
 
+    def test_a_cosmic_edition_has_cosmic_among_its_major_packages(self):
+        # No Plasma there: the desktop's version is cosmic-session's.
+        prev = {"cosmic-session": "0:1.11.0-2.fc45", "kernel": "0:6.17.2-1.fc45"}
+        curr = {"cosmic-session": "0:1.12.0-1.fc45", "kernel": "0:6.17.2-1.fc45"}
+        notes = self.notes(prev, curr)
+        self.assertRegex(notes, r"\| \*\*COSMIC\*\* \| 1\.11\.0-2 \S+ 1\.12\.0-1 \|")
+        self.assertIn("| **Kernel** | 6.17.2-1 |", notes)
+        self.assertNotIn("**Plasma**", notes)
+
     def test_new_fedora_release_lists_only_added_and_removed(self):
         # Every package changed, as in the move from Fedora 44 to 45.
         prev = packages(2600, 44)

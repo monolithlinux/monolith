@@ -306,6 +306,8 @@ class World:
             "SCENARIO": str(self.scenario), "MONOLITH_OS_RELEASE": str(self.root / "os-release"),
             "MONOLITH_LOGOS": str(LOGOS), "MONOLITH_OSTREE_BOOTED": str(self.root / "ostree-booted"),
             "MONOLITH_STAGED": str(self.root / "staged-deployment"),
+            # An empty stand-in, so no test depends on the terminal it runs in.
+            "MONOLITH_PROC": str(self.root / "proc"),
             "FLATPAK_SYSTEM_DIR": str(self.root / "var/lib/flatpak"), "MONOLITH_UPDATE_POLL": "0.05",
             # GitHub's runners have Homebrew in its usual place.
             "HOMEBREW_PREFIX": str(self.root / "linuxbrew"),
@@ -662,6 +664,17 @@ def a_build_downloaded_earlier_says_when(w):
 
 
 @test
+def a_new_cosmic_is_among_the_major_changes(w):
+    # The COSMIC editions have no Plasma: their desktop's version is cosmic-session's.
+    m = load_module(w.env())
+    changed = {"cosmic-session": ("1.11.0-2.fc45", "1.12.0-1.fc45"),
+               "cosmic-term": ("1.11.0-2.fc45", "1.12.0-1.fc45"),
+               "kernel-cachyos": ("6.17.2-1.fc45", "6.17.3-1.fc45")}
+    said = m.major_changes(changed, 3)
+    expect(said == f"New: Kernel 6.17.3 {m.SYM['dot']} COSMIC 1.12.0", f"said {said!r}", changed)
+
+
+@test
 def builds_with_the_same_version_are_told_apart(w):
     m = load_module(w.env())
     ours = "ostree-image-signed:docker://ghcr.io/monolithlinux/"
@@ -955,6 +968,124 @@ def the_art_shows_the_whole_mark(w):
         expect(all(module.width(line) == scene.cols for line in end), f"{size}: uneven rows")
         start = [plain(line) for line in scene.frame(0.0, rise=0.0, progress=0.0)]
         expect(not any("█" in line for line in start), f"{size}: the mark showed before rising")
+
+
+def styled_cells(line):
+    """One line of the art as (style, character) cells."""
+    cells, style = [], ""
+    for code, ch in re.findall(r"\x1b\[([0-9;]*)m|(.)", line):
+        if ch:
+            cells.append((style, ch))
+        else:
+            style = code[2:] if code.startswith("0;") else ""
+    return cells
+
+
+@test
+def the_art_is_whole_cells_where_blocks_leave_gaps(w):
+    module = load_module(w.env())
+    blocks = set(module.QUAD) - {" "}
+    for size, logo in (("large", "monolith.txt"), ("medium", "monolith-medium.txt")):
+        # The mark as whole cells: one is filled when half of it or more is.
+        want = {}
+        for y, row in enumerate((LOGOS / logo).read_text(encoding="utf-8").splitlines()):
+            x, fill = 0, "7"
+            for part in re.split(r"(\$[12])", row):
+                if part in ("$1", "$2"):
+                    fill = "7" if part == "$1" else "104"
+                    continue
+                for ch in part:
+                    if sum(module.QUAD[ch]) >= 2:
+                        want[(x, y)] = fill
+                    x += 1
+        scene = module.Scene(size, True)
+        slab = max(sum(1 for (_x, y), fill in want.items() if fill == "104" and y == row) for row in range(scene.mh))
+
+        def inked(frame, scene=scene):
+            found = {}
+            for row, line in enumerate(frame):
+                cells = styled_cells(line)
+                expect(len(cells) == scene.cols, f"{size}: a row of {len(cells)} cells", plain(line))
+                if row < scene.ground:
+                    expect(not blocks & {ch for _style, ch in cells}, f"{size}: a block character", plain(line))
+                for col, (style, ch) in enumerate(cells):
+                    if style in ("7", "104", "103"):
+                        expect(ch == " ", f"{size}: {ch!r} in a filled cell")
+                        found[(col, row)] = style
+            for (col, row), style in found.items():
+                expect(found.get((scene.cols - 1 - col, row)) == style, f"{size}: lopsided at {col},{row}")
+            return found
+
+        end = inked(scene.frame(10.0, rise=1.0, progress=1.0))
+        mark = {(col - scene.ox, row - scene.sky): fill for (col, row), fill in end.items() if fill != "103"}
+        expect(mark == want, f"{size}: not the mark in whole cells", sorted(set(mark.items()) ^ set(want.items())))
+        # The sun ends narrower than the middle slab, with sky under it.
+        sun = sorted((row, col) for (col, row), fill in end.items() if fill == "103")
+        expect(sun, f"{size}: no sun at the end")
+        widest = max(sum(1 for row, _col in sun if row == at) for at in {row for row, _col in sun})
+        expect(widest < slab, f"{size}: a sun of {widest} cells over a slab of {slab}")
+        slab_top = scene.sky + min(y for (_x, y), fill in want.items() if fill == "104")
+        expect(sun[-1][0] + 1 < slab_top, f"{size}: the sun sits on the slab")
+        # It starts out of sight, and the mark keeps its shape as it rises a
+        # row at a time.
+        start = inked(scene.frame(0.0, rise=0.0, progress=0.0))
+        expect(not start, f"{size}: something showed before rising", start)
+        for rise in (0.1, 0.3, 0.5, 0.7, 0.9, 1.0):
+            for progress in (0.0, 0.2, 0.5, 0.8, 1.0):
+                for flare in (None, 0.0, 0.4, 1.0):
+                    found = inked(scene.frame(1.5, rise=rise, progress=progress, flare=flare))
+                    shown = {at: fill for at, fill in found.items() if fill != "103"}
+                    if not shown:
+                        continue
+                    down = min(row for _col, row in shown) - scene.sky - min(y for _x, y in want)
+                    risen = {(x + scene.ox, y + scene.sky + down): fill for (x, y), fill in want.items()
+                             if y + scene.sky + down < scene.ground}
+                    expect(shown == risen, f"{size}: the mark changed shape at rise {rise}")
+        # Block characters again without it.
+        expect(any("█" in line for line in module.Scene(size).frame(10.0)), f"{size}: no blocks by default")
+    # The live view asks the terminal's look for it.
+    look = module.Look(sys.stdout)
+    look.solid = True
+    expect(module.Screen(look, module.Paint(True), module.Session(module.Log(None))).scene("large").solid,
+           "the screen ignores the look")
+
+
+@test
+def cosmic_terminal_is_found_by_its_name(w):
+    proc = w.root / "proc"
+    module = load_module(w.env(MONOLITH_PROC=str(proc)))
+    parent = os.getppid()
+
+    def process(pid, name, above):
+        w.write(proc / str(pid) / "comm", name + "\n")
+        w.write(proc / str(pid) / "stat", f"{pid} ({name}) S {above} {pid} {pid} 0 -1 4194304 100 0\n")
+
+    def solid(ask=module.solid_art, **env):
+        saved = dict(os.environ)
+        for name in ("MONOLITH_SOLID", "TERM_PROGRAM"):
+            os.environ.pop(name, None)
+        os.environ.update(env)
+        try:
+            return ask()
+        finally:
+            os.environ.clear()
+            os.environ.update(saved)
+
+    expect(not solid(), "whole cells with nothing in /proc")
+    expect(solid(MONOLITH_SOLID="1"), "MONOLITH_SOLID=1 is ignored")
+    # A shell in a multiplexer whose name has spaces and brackets, in COSMIC Terminal.
+    process(parent, "fish", 4242)
+    process(4242, "tmux: client (x) y", 4243)
+    process(4243, "cosmic-term", 1)
+    expect(solid(), "COSMIC Terminal wasn't found")
+    expect(not solid(TERM_PROGRAM="ghostty"), "Ghostty got whole cells")
+    expect(not solid(MONOLITH_SOLID="0"), "MONOLITH_SOLID=0 is ignored")
+    expect(solid(lambda: module.Look(sys.stdout).solid), "the look doesn't ask")
+    # Another terminal, and a /proc that goes in circles.
+    process(4243, "ptyxis", 1)
+    expect(not solid(), "another terminal got whole cells")
+    process(4243, "bash", 4242)
+    expect(not solid(), "a loop in /proc")
 
 
 @test
@@ -1312,8 +1443,11 @@ def main():
         for scenario in sys.argv[2:]:
             name, _, text = scenario.partition("=")
             w.flag(name, text + "\n")
-        env = w.env(DELAY="1.2", TICK="0.3", TERM=os.environ.get("TERM", "xterm-256color"))
+        env = w.env(DELAY="1.2", TICK="0.3", TERM=os.environ.get("TERM", "xterm-256color"),
+                    TERM_PROGRAM=os.environ.get("TERM_PROGRAM"), MONOLITH_SOLID=os.environ.get("MONOLITH_SOLID"))
         env.pop("MONOLITH_UPDATE_POLL")
+        # The art is drawn for the terminal the demo plays in.
+        env.pop("MONOLITH_PROC")
         try:
             subprocess.run([str(w.update)], env=env)
         finally:

@@ -177,6 +177,9 @@ modules:
         - apr
         - apr-util
         - grub2-tools-extra
+        # The kernel and NVIDIA module signing scripts call it. Kinoite comes
+        # with it; Fedora COSMIC Atomic doesn't.
+        - openssl
         # Runs the startup screen's script; the base image comes without it.
         - plymouth-plugin-script
         - libcamera-gstreamer

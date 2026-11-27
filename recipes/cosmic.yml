@@ -1,0 +1,94 @@
+---
+# yaml-language-server: $schema=https://schema.blue-build.org/recipe-v1.json
+# COSMIC layer shared by standard and NVIDIA editions. Fedora COSMIC Atomic
+# already has the whole desktop and its login screen.
+modules:
+  - type: dnf
+    remove:
+      packages:
+        # Bazaar is the shared app store.
+        - cosmic-store
+        # COSMIC Terminal is the terminal here; it replaces the shared one.
+        - ptyxis
+    install:
+      packages:
+        # Qt for Python, which Monolith News draws its window with. PyQt6's
+        # base package needs no more Qt than this image already has; PySide6,
+        # which the KDE editions come with, would add every Qt module here.
+        - python3-pyqt6-base
+
+  # After the packages, so Monolith's dock pins win over Fedora's. The same
+  # folder holds COSMIC Terminal's defaults: fish, Monolith's font and the
+  # colours Ghostty has in the KDE editions. COSMIC reads them one setting at
+  # a time, and anything a user changes in the terminal's own settings wins.
+  - type: files
+    files:
+      - source: cosmic
+        destination: /
+
+  # COSMIC desktop apps; shared Flatpaks live in common.yml. The image has
+  # COSMIC's own files, text editor, terminal and video player, an archive
+  # tool, a disk tool and a system monitor.
+  - type: default-flatpaks
+    configurations:
+      - notify: false
+        scope: system
+        install:
+          - org.gnome.Papers # documents        (KDE: okular)
+          - org.gnome.SimpleScan # scanning     (KDE: skanpage)
+          - org.gnome.baobab # disk usage       (KDE: filelight)
+          - org.gnome.Characters # characters   (KDE: kcharselect)
+          - org.gnome.Loupe # image viewer      (KDE: Photos)
+          # Native cosmic-utils apps.
+          - dev.edfloreshz.Calculator
+          - com.jwestall.Forecast
+
+  - type: script
+    scripts:
+      # Fails the build if COSMIC Terminal would fall back to another font,
+      # other colours or the login shell. See the script.
+      - check-cosmic-terminal.py
+    snippets:
+      - |
+        # fastfetch shows the mark built from whole cells here. COSMIC
+        # Terminal leaves gaps between the block characters of the usual one.
+        set -euxo pipefail
+        test -s /usr/share/fastfetch/logos/monolith-solid.txt
+        sed -i 's|"/usr/share/fastfetch/logos/monolith.txt"|"/usr/share/fastfetch/logos/monolith-solid.txt"|' \
+          /etc/xdg/fastfetch/config.jsonc
+        grep -q '"/usr/share/fastfetch/logos/monolith-solid.txt"' /etc/xdg/fastfetch/config.jsonc
+      - |
+        # fastfetch reads COSMIC Terminal's font from a user's own settings
+        # only, so its Terminal Font row would name the terminal's built-in
+        # font, not the one Monolith sets. The row is left out here.
+        set -euxo pipefail
+        sed -i -z 's|        {\n            "type": "terminalfont",\n            "key": "[^"]*"\n        },\n||' \
+          /etc/xdg/fastfetch/config.jsonc
+        if grep -q terminalfont /etc/xdg/fastfetch/config.jsonc; then exit 1; fi
+        python3 -B -c 'import json, pathlib, sys; json.loads(pathlib.Path(sys.argv[1]).read_text("utf-8"))' \
+          /etc/xdg/fastfetch/config.jsonc
+      - |
+        # Monolith News runs on PyQt6 here. common.yml checks its launchers
+        # and check-monolith-news.py opens its window.
+        set -euxo pipefail
+        python3 -B -c 'import PyQt6.QtNetwork, PyQt6.QtWidgets'
+      - |
+        # Fail the build if the desktop, its login screen, its terminal or
+        # the dock's apps are missing.
+        set -euxo pipefail
+        rpm -q cosmic-session cosmic-comp cosmic-greeter greetd xdg-desktop-portal-cosmic cosmic-term
+        test "$(readlink /etc/systemd/system/display-manager.service)" = \
+          /usr/lib/systemd/system/cosmic-greeter.service
+        if rpm -q cosmic-store; then exit 1; fi
+        if rpm -q ptyxis; then exit 1; fi
+        desktop-file-validate /usr/share/applications/com.system76.CosmicTerm.desktop \
+          /usr/share/applications/com.system76.CosmicFiles.desktop \
+          /usr/share/applications/brave-origin-nightly.desktop \
+          /usr/share/applications/steam.desktop
+        grep -q com.system76.CosmicTerm /usr/share/cosmic/com.system76.CosmicAppList/v1/favorites
+        # Super+T and launchers that ask for a terminal start this command.
+        grep -q 'Terminal: "cosmic-term"' \
+          /usr/share/cosmic/com.system76.CosmicSettings.Shortcuts/v1/system_actions
+        test -x /usr/bin/fish
+        test -f /usr/share/fish/vendor_functions.d/fish_prompt.fish
+        test -f /usr/share/fish/vendor_conf.d/pure.fish

@@ -9,7 +9,7 @@
 # Output: one edition key per line; no output means no image changes.
 set -euo pipefail
 
-ALL=(kde kde-nvidia)
+ALL=(kde kde-nvidia cosmic cosmic-nvidia)
 
 arg="${1:?usage: pick-editions.sh all|-|<git diff range>}"
 
@@ -29,8 +29,11 @@ while IFS= read -r f; do
   case "$f" in
     recipes/recipe-kde.yml) mark kde ;;
     recipes/recipe-kde-nvidia.yml) mark kde-nvidia ;;
+    recipes/recipe-cosmic.yml) mark cosmic ;;
+    recipes/recipe-cosmic-nvidia.yml) mark cosmic-nvidia ;;
     recipes/kde.yml|files/kde/*) mark kde kde-nvidia ;;
-    recipes/nvidia.yml) mark kde-nvidia ;;
+    recipes/cosmic.yml|files/cosmic/*) mark cosmic cosmic-nvidia ;;
+    recipes/nvidia.yml) mark kde-nvidia cosmic-nvidia ;;
     # These files do not change an image.
     *.md|LICENSE|.gitignore|justfile|iso/*|tests/*|news/*|.github/dependabot.yml) ;;
     .github/ISSUE_TEMPLATE/*) ;;

@@ -39,11 +39,18 @@ declare -A usage_override=([scheduler]="[mode]")
 declare -A choices=(
     [scheduler]="-=Show the current scheduler;gaming=Gaming: scx_lavd tuned for low latency;powersave=Power save: scx_lavd tuned for battery life;auto=Auto: scx_lavd adjusts itself to the load;off=Off: back to the kernel's own scheduler"
     [boot-menu]="-=Show whether Monolith's look is on;on=On: the logo, centred entries, five seconds to choose;off=Off: GRUB's plain list, shown for one second"
-    [edition]="-=Show your edition;kde=KDE: AMD or Intel graphics, or older NVIDIA cards;kde-nvidia=KDE NVIDIA: NVIDIA's driver for GTX 16, RTX 20 and newer"
     [rollback]="-=Go back to the build you had before;list=Show the builds you can go back to;latest=Return to the newest build and daily updates"
     [pr]="-=Show the pull requests you can try, and pick one;list=Show the pull requests you can try;latest=Return to the newest build and daily updates"
     [toggle-updates]="status=Show whether they're on;enable=Turn them on;disable=Turn them off"
 )
+# The editions offered are the ones for this computer's desktop.
+choices[edition]="-=Show your edition"
+while IFS= read -r edition; do
+    fits="AMD or Intel graphics, or older NVIDIA cards"
+    [[ $edition != *-nvidia ]] || fits="NVIDIA's driver for GTX 16, RTX 20 and newer"
+    choices[edition]+=";$edition=${MONOLITH_EDITION_LABELS[$edition]}: $fits"
+done < <(desktop_editions "$(this_desktop)")
+unset edition fits
 
 just_json() {
     just --justfile "$justfile" --dump --dump-format json

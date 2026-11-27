@@ -229,3 +229,20 @@ Preview your change before opening a pull request:
 ```bash
 files/system/usr/bin/monolith-news --preview news/announcements.toml
 ```
+
+## The COSMIC editions
+
+The COSMIC editions are built on Fedora COSMIC Atomic instead of Kinoite. The
+kernel, the `monolith` command, updates, the boot menu, the startup screen,
+OpenDeck, Node.js and Monolith News are the same as on KDE. What's different:
+
+- The terminal is COSMIC Terminal, set up to start Fish with the JetBrains Mono
+  Nerd Font and Gruvbox Dark, like Ghostty on KDE. Ghostty and its themes aren't
+  installed, so `monolith` doesn't list Ghostty Themes there.
+- COSMIC Terminal leaves thin gaps between block characters, so Monolith's logo
+  and the pictures in `monolith update` are drawn from whole cells there. They
+  look a little blockier than on KDE.
+- The terminal always opens at COSMIC's own size. COSMIC has no setting for it
+  yet.
+- The update reminder at login and the Waywallen wallpaper plugin are KDE only.
+- Bazaar is the app store, as on KDE. COSMIC Store is removed.

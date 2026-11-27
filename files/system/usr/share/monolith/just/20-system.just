@@ -6,7 +6,7 @@
 status:
     "$MONOLITH_LIBEXEC/status"
 
-# Switch between the KDE and KDE NVIDIA editions
+# Switch between your desktop's two editions
 [group('System')]
 [positional-arguments]
 edition NAME="":

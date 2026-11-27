@@ -46,7 +46,7 @@ bin="$test_root/bin"
 mkdir -p "$bin"
 printf '#!/usr/bin/env bash\nexit 1\n' >"$bin/rpm-ostree"
 chmod +x "$bin/rpm-ostree"
-printf 'NAME=Monolith\nPRETTY_NAME="Monolith KDE"\n' >"$test_root/os-release"
+printf 'NAME=Monolith\nPRETTY_NAME="Monolith KDE"\nVARIANT_ID=kde\n' >"$test_root/os-release"
 
 export PATH="$usr/bin:$bin:$PATH" MONOLITH_OS_RELEASE="$test_root/os-release" NO_COLOR=1
 unset MONOLITH_LIBEXEC
@@ -228,6 +228,15 @@ done
 [ "$(words update --list)" = '' ] || fail "update --list completion: $(words update --list)"
 [ "$(words scheduler)" = 'gaming powersave auto off lowlatency ' ] || fail "scheduler completion: $(words scheduler)"
 [ "$(words edition)" = 'kde kde-nvidia ' ] || fail "edition completion: $(words edition)"
+# The editions offered are the ones for this computer's desktop: COSMIC's two
+# on a COSMIC edition, and all of them where the desktop isn't one of Monolith's.
+printf 'NAME=Monolith\nPRETTY_NAME="Monolith COSMIC"\nVARIANT_ID="cosmic"\n' >"$test_root/os-release"
+[ "$(words edition)" = 'cosmic cosmic-nvidia ' ] || fail "edition completion on COSMIC: $(words edition)"
+grep -q $'^edition\t[^\t]*\t-=Show your edition;cosmic=COSMIC: AMD or Intel[^;]*;cosmic-nvidia=COSMIC NVIDIA: NVIDIA' \
+    <<<"$(monolith __menu)" || fail "the menu on COSMIC lacks COSMIC's editions: $(monolith __menu | grep '^edition')"
+printf 'NAME="Fedora Linux"\nVARIANT_ID=kinoite\n' >"$test_root/os-release"
+[ "$(words edition)" = 'kde kde-nvidia cosmic cosmic-nvidia ' ] || fail "edition completion elsewhere: $(words edition)"
+printf 'NAME=Monolith\nPRETTY_NAME="Monolith KDE"\nVARIANT_ID=kde\n' >"$test_root/os-release"
 [ "$(words rollback)" = 'list latest ' ] || fail "rollback completion: $(words rollback)"
 [ "$(words pr)" = 'list latest ' ] || fail "pr completion: $(words pr)"
 [ "$(words status)" = '' ] || fail 'status completes arguments'
@@ -304,6 +313,8 @@ for script in status scheduler rollback pr edition report-bug; do
     stand_in "$menu_usr/libexec/monolith/$script" "$script"
 done
 stand_in "$test_root/menu/bin/sudo" sudo 'exit 1'
+# Ghostty's themes, the Appearance entry, are only offered beside Ghostty.
+stand_in "$test_root/menu/bin/ghostty" ghostty
 fresh
 # 10 System tools, 9 scheduler, 2 gaming, Enter, 23 Back, 11 Exit.
 printf '10\n9\n2\n\n23\n11\n' | PATH="$test_root/menu/bin:$PATH" HOME="$test_root/menu/home" TERM=dumb \

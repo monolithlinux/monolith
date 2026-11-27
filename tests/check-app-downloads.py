@@ -894,10 +894,10 @@ class ByTheCatalog(Checks):
                              f"{CHECK} saw. It sees what the catalog downloads with curl.")
 
     def test_a_catalog_that_cannot_list_its_apps_ends_the_check(self):
-        with self.changed_catalog('        __ids) for tool in', '        __ids) die "no list today"; for tool in'), \
+        with self.changed_catalog('        __catalog) for tool in', '        __catalog) die "no list today"; for tool in'), \
                 self.assertRaises(SystemExit) as stopped:
             self.check("tea")
-        self.assertEqual(stopped.exception.code, "Could not list the catalog's apps with libexec/software __ids: "
+        self.assertEqual(stopped.exception.code, "Could not list the catalog's apps with libexec/software __catalog: "
                                                  "Error: no list today")
         self.assertEqual(self.web.requests, [])
 

@@ -169,21 +169,25 @@ case "$sb" in
     *) row note "Secure Boot" "not available on this computer" ;;
 esac
 
-# The NVIDIA driver, where it matters.
+# The NVIDIA driver, where it matters. The advice names this desktop's two
+# editions: the plain one, and the same name with -nvidia.
 nvidia_gpu=no
 has_nvidia_gpu && nvidia_gpu=yes
+plain="${IMAGE_EDITION:-kde}"
+plain="${plain%-nvidia}"
+plain_label="${MONOLITH_EDITION_LABELS[$plain]-$plain}"
 if [[ -r $MONOLITH_SYSFS/module/nvidia/version ]]; then
     row ok NVIDIA "driver $(<"$MONOLITH_SYSFS/module/nvidia/version") is running"
-elif [[ ${IMAGE_EDITION-} == kde-nvidia && $nvidia_gpu == yes ]]; then
+elif [[ ${IMAGE_EDITION-} == *-nvidia && $nvidia_gpu == yes ]]; then
     row warn NVIDIA "the driver didn't load" \
         "Its messages from this boot:" "journalctl -b -k --grep=nvidia" \
-        "Cards older than the GTX 16 series need the KDE edition:" "monolith edition kde"
-elif [[ ${IMAGE_EDITION-} == kde-nvidia ]]; then
+        "Cards older than the GTX 16 series need the $plain_label edition:" "monolith edition $plain"
+elif [[ ${IMAGE_EDITION-} == *-nvidia ]]; then
     row warn NVIDIA "no NVIDIA card found" \
-        "The KDE edition fits this computer better:" "monolith edition kde"
+        "The $plain_label edition fits this computer better:" "monolith edition $plain"
 elif [[ $nvidia_gpu == yes ]]; then
     row note NVIDIA "card found, running on Nouveau/NVK" \
-        "For NVIDIA's own driver on a GTX 16, RTX 20 or newer card:" "monolith edition kde-nvidia"
+        "For NVIDIA's own driver on a GTX 16, RTX 20 or newer card:" "monolith edition ${plain}-nvidia"
 fi
 
 # The last full update, which monolith update records for the login reminder.

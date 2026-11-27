@@ -1,28 +1,36 @@
 #!/usr/bin/bash
-# monolith edition [kde|kde-nvidia]: show your edition, or switch to the other
-# one. Switching always lands on the newest build, which also resumes updates
-# after a rollback.
+# monolith edition [NAME]: show your edition, or switch to the other one for
+# your desktop: with or without NVIDIA's driver. Switching always lands on the
+# newest build, which also resumes updates after a rollback. It doesn't switch
+# desktops: the old desktop's settings would come along to the new one.
 set -euo pipefail
 # shellcheck source-path=SCRIPTDIR source=common.sh
 . "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/common.sh"
 
 describe() {
+    local label="${MONOLITH_EDITION_LABELS[$1]-$1}"
     case "$1" in
-        kde) echo "KDE, for AMD or Intel graphics, or NVIDIA cards older than the GTX 16 series" ;;
-        kde-nvidia) echo "KDE NVIDIA, with NVIDIA's open driver for GTX 16, RTX 20 and newer cards" ;;
+        *-nvidia) echo "$label, with NVIDIA's open driver for GTX 16, RTX 20 and newer cards" ;;
+        *) echo "$label, for AMD or Intel graphics, or NVIDIA cards older than the GTX 16 series" ;;
     esac
 }
 
+# The editions it names are the ones for this computer's desktop.
 usage() {
-    cat <<'EOF'
-Usage: monolith edition [kde|kde-nvidia]
-
-  monolith edition              show your edition
-  monolith edition kde          switch to KDE (AMD, Intel or older NVIDIA graphics)
-  monolith edition kde-nvidia   switch to KDE NVIDIA (GTX 16, RTX 20 and newer)
-
-Your apps, files and settings stay. Nothing changes until you restart.
-EOF
+    local edition names fits width=0
+    mapfile -t names < <(desktop_editions "$(this_desktop)")
+    for edition in "${names[@]}"; do
+        ((${#edition} <= width)) || width=${#edition}
+    done
+    printf 'Usage: monolith edition [%s]\n\n' "$(IFS='|'; printf '%s' "${names[*]}")"
+    printf '  monolith edition %-*s   show your edition\n' "$width" ""
+    for edition in "${names[@]}"; do
+        fits="AMD, Intel or older NVIDIA graphics"
+        [[ $edition != *-nvidia ]] || fits="GTX 16, RTX 20 and newer"
+        printf '  monolith edition %-*s   switch to %s (%s)\n' "$width" "$edition" \
+            "${MONOLITH_EDITION_LABELS[$edition]}" "$fits"
+    done
+    printf '\nYour apps, files and settings stay. Nothing changes until you restart.\n'
 }
 
 case "${1-}" in
@@ -33,16 +41,21 @@ load_image_info || die "Couldn't read your build from rpm-ostree."
     die "You're not on one of Monolith's images (${IMAGE_NAME:-unknown}), so there's no edition to switch."
 
 name="${1-}"
+# The editions for the desktop this computer runs.
+mapfile -t here < <(desktop_editions "${IMAGE_EDITION%-nvidia}")
 if [[ -z $name ]]; then
     printf "You're on %s.\n\n" "$(describe "$IMAGE_EDITION")"
-    for edition in "${MONOLITH_EDITIONS[@]}"; do
+    for edition in "${here[@]}"; do
         [[ $edition == "$IMAGE_EDITION" ]] && continue
         printf 'To switch to %s:\n    monolith edition %s\n' "$(describe "$edition")" "$edition"
     done
     exit 0
 fi
-[[ " ${MONOLITH_EDITIONS[*]} " == *" $name "* ]] ||
-    die "Monolith's editions are ${MONOLITH_EDITIONS[*]}."
+if [[ " ${here[*]} " != *" $name "* ]]; then
+    [[ " ${MONOLITH_EDITIONS[*]} " != *" $name "* ]] ||
+        echo "The $name edition has another desktop, and this command doesn't switch desktops." >&2
+    die "Monolith's editions for this desktop are ${here[*]}."
+fi
 # A switch that waits for a restart counts: it decides which edition this
 # computer runs next.
 switch_plan "$name" latest
@@ -66,9 +79,10 @@ case "$SWITCH_PLAN" in
         ;;
 esac
 
-if [[ $name == kde-nvidia ]] && ! has_nvidia_gpu; then
-    printf "This computer doesn't seem to have an NVIDIA card, and the KDE NVIDIA\nedition is only for those.\n\n"
-elif [[ $name == kde ]] && has_nvidia_gpu; then
+if [[ $name == *-nvidia ]] && ! has_nvidia_gpu; then
+    printf "This computer doesn't seem to have an NVIDIA card, and the %s\nedition is only for those.\n\n" \
+        "${MONOLITH_EDITION_LABELS[$name]}"
+elif [[ $name != *-nvidia ]] && has_nvidia_gpu; then
     printf "Your NVIDIA card will run on Nouveau/NVK instead of NVIDIA's driver.\n\n"
 fi
 printf 'This switches you to the newest build of %s.\n' "$(describe "$name")"
