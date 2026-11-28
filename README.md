@@ -29,12 +29,19 @@ On top of Kinoite you get:
 | --- | --- | --- |
 | KDE | `kde` | AMD or Intel graphics, or an older NVIDIA card on Nouveau/NVK |
 | KDE NVIDIA | `kde-nvidia` | an NVIDIA card from the GTX 16 or RTX 20 series onward, for NVIDIA's open driver built for the CachyOS kernel |
+| COSMIC | `cosmic` | the same graphics as for KDE, and want the COSMIC desktop instead of Plasma |
+| COSMIC NVIDIA | `cosmic-nvidia` | the same cards as for KDE NVIDIA, and want the COSMIC desktop instead of Plasma |
+
+The COSMIC editions are built on Fedora COSMIC Atomic, and a few things on them
+work differently. [The COSMIC editions](docs/desktop.md#the-cosmic-editions)
+lists them.
 
 ## Install
 
 Monolith installs on top of an existing Fedora Atomic system, such as Fedora
-Kinoite, by switching ("rebasing") it to the Monolith image. Replace `<edition>`
-below with `kde` or `kde-nvidia`.
+Kinoite, by switching ("rebasing") it to the Monolith image. For a COSMIC
+edition, start from Fedora COSMIC Atomic. Replace `<edition>` below with the
+image name from the table.
 
 1. Switch to the image once without signature checks. This installs Monolith's
    signing policy:

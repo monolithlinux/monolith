@@ -47,7 +47,9 @@ done <"$log/input.$n"
 exit 1
 EOF
 printf '#!/bin/sh\nexit 0\n' >"$test_root/bin/systemctl"
-chmod +x "$test_root/bin/fzf" "$test_root/bin/systemctl"
+# The KDE editions come with Ghostty; its themes are only offered beside it.
+printf '#!/bin/sh\nexit 0\n' >"$test_root/bin/ghostty"
+chmod +x "$test_root/bin/fzf" "$test_root/bin/systemctl" "$test_root/bin/ghostty"
 
 # arg N OPTION: the value fzf call N got for --OPTION.
 arg() {
@@ -72,7 +74,7 @@ catalog() {
     printf '%s\n' "$@" >"$test_root/log/answers"
     env -i HOME="$test_root/home" PATH="$test_root/bin:/usr/bin:/bin" LANG=C.UTF-8 \
         TERM="${TERM_OVERRIDE:-xterm-256color}" COLUMNS="${COLUMNS_OVERRIDE:-100}" LINES="${LINES_OVERRIDE:-40}" \
-        ${EXTRA_ENV:+$EXTRA_ENV} \
+        MONOLITH_PROC="$test_root/no-proc" ${EXTRA_ENV:+$EXTRA_ENV} \
         XDG_STATE_HOME="$test_root/home/.local/state" MONOLITH_OS_RELEASE="$test_root/os-release" \
         MONOLITH_STAGED="$test_root/staged" FAKE_FZF_LOG="$test_root/log" \
         timeout 120 script -qec "$usr/bin/monolith" /dev/null >"$test_root/out" 2>&1 ||
@@ -138,6 +140,26 @@ EXTRA_ENV="MONOLITH_ICONS=1" catalog exit
 has "$(cat "$test_root/log/input.1")" $'\xf3\xb0\x86\x8d'
 EXTRA_ENV="TERM_PROGRAM=ghostty MONOLITH_ICONS=0" catalog exit
 lacks "$(cat "$test_root/log/input.1")" $'\xf3\xb0'
+
+# COSMIC Terminal leaves gaps between block characters, so there the mark is
+# built from whole cells. fzf draws the header and gets the same codes.
+EXTRA_ENV="MONOLITH_SOLID=1" catalog exit
+header="$(arg 1 header)"
+has "$header" $'\e[7m   \e[0m   \e[104m    \e[0m   \e[7m   \e[0m'
+lacks "$header" '█'
+lacks "$header" '▄'
+has "$(plain "$header")" 'Monolith KDE'
+
+# Without Ghostty, as in the COSMIC editions, its themes and their category
+# are left out.
+has "$(cat "$test_root/log/input.1")" 'Appearance'
+EXTRA_ENV="MONOLITH_GHOSTTY=no-ghostty-here" catalog exit
+rows="$(cat "$test_root/log/input.1")"
+lacks "$rows" 'Appearance'
+lacks "$rows" 'Ghostty'
+has "$rows" 'Communication'
+has "$rows" 'All applications'
+[ "$(wc -l <<<"$rows")" -eq 10 ] || fail "rows without Ghostty: $rows"
 
 # NO_COLOR: black and white, no color codes in the options.
 EXTRA_ENV="NO_COLOR=1" catalog exit

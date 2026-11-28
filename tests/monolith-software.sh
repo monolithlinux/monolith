@@ -282,6 +282,8 @@ cat >"$mock_bin/modprobe" <<'MOCK'
 #!/usr/bin/env bash
 printf 'modprobe %s\n' "$*" >>"$MOCK_HOST_LOG"
 MOCK
+# The KDE editions come with Ghostty; its themes are only offered beside it.
+printf '#!/bin/sh\nexit 0\n' >"$mock_bin/ghostty"
 chmod 0755 "$mock_bin"/*
 # Flatpak answers from a per-case model state; see tests/gear-lever-apps.py.
 fake_flatpak="$repo_root/tests/gear-lever-apps.py"
@@ -295,7 +297,7 @@ sed '$d' "$manager" >"$catalog_lib"
 # One line per app: ID, how it installs, name, category, Flatpak ID, what
 # removal keeps, description, and the category arrays that list it.
 catalog_table="$test_root/catalog.tsv"
-HOME="$test_root/catalog-home" bash -c '
+HOME="$test_root/catalog-home" PATH="$mock_bin:$PATH" bash -c '
 . "$1"
 declare -A label=([CLI_TOOLS]="Developer CLIs" [AI_TOOLS]="AI coding" [GAMING_TOOLS]=Gaming [MEDIA_TOOLS]=Media
     [CRAFTING_TOOLS]="Crafting Apps" [COMMUNICATION_TOOLS]=Communication [APPEARANCE_TOOLS]=Appearance)
@@ -792,6 +794,51 @@ test_apps_no_longer_offered_are_left_alone() {
         [ "$(cat -- "$state_root/$gone.managed")" = 'written by an older Monolith' ] ||
             fail "the marker of $gone was changed or removed"
     done
+}
+
+# Ghostty's themes are only offered where Ghostty is installed, as in the KDE
+# editions, or where Monolith installed them before.
+test_ghostty_themes_need_ghostty() {
+    local action
+    run_monolith list >"$case_root/list.log"
+    grep -Eq '^Appearance +Ghostty Themes +not installed' "$case_root/list.log" ||
+        fail 'Ghostty Themes is not listed beside Ghostty'
+    run_monolith help | grep -Fxq '  Appearance       ghostty-themes' ||
+        fail 'help does not name ghostty-themes beside Ghostty'
+
+    extra_env=(MONOLITH_GHOSTTY=no-ghostty-here)
+    run_monolith list >"$case_root/list.log"
+    if grep -Eqi 'ghostty|appearance' "$case_root/list.log"; then fail 'Ghostty Themes is listed without Ghostty'; fi
+    grep -Eq '^Developer CLIs +Tea +not installed' "$case_root/list.log" || fail 'the rest of the list is gone'
+    [ "$(tail -n +3 "$case_root/list.log" | wc -l)" -eq "$(run_monolith __ids | wc -l)" ] ||
+        fail 'list and tab completion disagree without Ghostty'
+    if run_monolith __ids | grep -qi ghostty; then fail 'tab completion offers ghostty-themes without Ghostty'; fi
+    # The daily download check still gets every app.
+    run_monolith __catalog | grep -Fxq $'ghostty-themes\tGhostty Themes' ||
+        fail 'the whole catalog lacks ghostty-themes without Ghostty'
+    [ "$(run_monolith __catalog | wc -l)" -eq $(($(run_monolith __ids | wc -l) + 1)) ] ||
+        fail 'the whole catalog is not one app longer than what is offered without Ghostty'
+    if run_monolith help | grep -Eqi 'ghostty|appearance'; then fail 'help names Appearance without Ghostty'; fi
+    run_monolith help | grep -Fxq '  Communication    fluxer fluxer-canary' || fail 'help lost its other tools'
+    for action in install remove update; do
+        expect_failure "$action" ghostty-themes
+        grep -Fxq "Error: Ghostty Themes needs Ghostty, which isn't installed here" \
+            "$case_root/expected-failure.log" || fail "$action ghostty-themes did not say why it can't"
+    done
+    expect_failure install no-such-tool
+    grep -Fxq 'Error: unknown tool: no-such-tool' "$case_root/expected-failure.log" ||
+        fail 'an unknown tool was not refused as one'
+    [ ! -s "$case_root/curl.log" ] || fail 'something was downloaded for Ghostty Themes without Ghostty'
+    run_monolith update >"$case_root/update.log" || fail 'update with nothing installed failed without Ghostty'
+
+    # Themes Monolith installed before stay listed, so they can be removed.
+    mkdir -p "$state_root"
+    printf 'version=1\nsource=test\n' >"$state_root/ghostty-themes.managed"
+    run_monolith list >"$case_root/list.log"
+    grep -Eq '^Appearance +Ghostty Themes +' "$case_root/list.log" ||
+        fail 'themes Monolith installed are hidden without Ghostty'
+    run_monolith help | grep -Fxq '  Appearance       ghostty-themes' ||
+        fail 'help hides ghostty-themes that Monolith installed'
 }
 
 # An update leaves healthy items that already have the newest release alone:
@@ -1945,7 +1992,7 @@ passed=0
 failed=0
 all_tests=(omp_lifecycle omp_unmanaged_launcher omp_replaced_launcher omp_checksum_failure failed_publication
     failed_launcher_publication failed_marker_publication download_failure_cleanup batch_preflight
-    empty_update_all apps_no_longer_offered_are_left_alone update_skips_current_items
+    empty_update_all apps_no_longer_offered_are_left_alone ghostty_themes_need_ghostty update_skips_current_items
     batch_continues_after_failure tea_lifecycle superfile_lifecycle
     herdr_lifecycle checksum_list_failures bad_archive_and_broken_program
     regular_file_adoption failed_adoption_restores_originals

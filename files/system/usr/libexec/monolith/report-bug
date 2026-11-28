@@ -52,7 +52,11 @@ details() {
     [[ ! -r $MONOLITH_SYSFS/module/nvidia/version ]] ||
         printf 'NVIDIA driver: %s\n' "$(<"$MONOLITH_SYSFS/module/nvidia/version")"
     printf 'Mesa: %s\n' "$(package_version mesa-dri-drivers)"
-    printf 'Plasma: %s\n' "$(package_version plasma-workspace)"
+    if [[ $(this_desktop) == cosmic ]]; then
+        printf 'COSMIC: %s\n' "$(package_version cosmic-session)"
+    else
+        printf 'Plasma: %s\n' "$(package_version plasma-workspace)"
+    fi
     printf 'Session: %s\n' "${XDG_SESSION_TYPE:-unknown}"
     if [[ -r $MONOLITH_SYSFS/kernel/sched_ext/state && $(<"$MONOLITH_SYSFS/kernel/sched_ext/state") == enabled ]]; then
         scheduler="$(cat -- "$MONOLITH_SYSFS/kernel/sched_ext/root/ops" 2>/dev/null || echo sched-ext)"

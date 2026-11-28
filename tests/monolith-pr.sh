@@ -488,6 +488,30 @@ yes_run 60 >/dev/null || fail 'switching with an edition switch waiting'
 [ "$(tail -n 1 "$log/rpm-ostree")" = 'rebase ostree-image-signed:docker://ghcr.io/monolithlinux/kde-nvidia:pr-60-45' ] ||
     fail "with an edition switch waiting: $(cat "$log/rpm-ostree")"
 
+# A COSMIC computer reads COSMIC's build job and COSMIC's image, whatever
+# became of the other editions' builds.
+fresh
+image cosmic latest 1200
+pull 74 'Changes every edition'
+checks 74 'Build KDE/completed/failure/150' 'Build COSMIC/completed/success/150' \
+    'Build COSMIC NVIDIA/completed/failure/150' "$decided/151"
+image cosmic pr-74-45 120
+deployments cosmic latest 1200
+out="$(run list)" || fail "$out"
+has "$out" $'  + #74  Changes every edition\n         built 2 hours ago - 18 hours ahead of latest\n'
+yes_run 74 >/dev/null || fail 'switching to a test build on COSMIC'
+[ "$(tail -n 1 "$log/rpm-ostree")" = 'rebase ostree-image-signed:docker://ghcr.io/monolithlinux/cosmic:pr-74-45' ] ||
+    fail "on COSMIC: $(cat "$log/rpm-ostree")"
+# Its NVIDIA edition's build of the same pull request failed.
+fresh
+image cosmic-nvidia latest 1200
+pull 74 'Changes every edition'
+checks 74 'Build KDE/completed/failure/150' 'Build COSMIC/completed/success/150' \
+    'Build COSMIC NVIDIA/completed/failure/150' "$decided/151"
+deployments cosmic-nvidia latest 1200
+out="$(run list)" || fail "$out"
+lacks "$out" '  + #74'
+
 # Nothing open, and nothing to try.
 fresh
 out="$(run)" || fail "$out"

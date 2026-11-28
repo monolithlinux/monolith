@@ -894,7 +894,11 @@ class Wiring(unittest.TestCase):
     def test_the_image_gets_the_plugin_and_is_checked_after_the_initramfs(self):
         common = read(os.path.join(REPO, "recipes/common.yml"))
         self.assertRegex(common, r"(?m)^\s+- plymouth-plugin-script$")
-        for recipe in ("recipe-kde.yml", "recipe-kde-nvidia.yml"):
+        # Every edition: the startup screen is in the layer all of them share.
+        recipes = sorted(name for name in os.listdir(os.path.join(REPO, "recipes"))
+                         if name.startswith("recipe-"))
+        self.assertGreaterEqual(len(recipes), 4, recipes)
+        for recipe in recipes:
             text = read(os.path.join(REPO, "recipes", recipe))
             self.assertLess(text.index("- type: initramfs"), text.index("check-boot-splash.py"), recipe)
 

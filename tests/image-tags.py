@@ -749,7 +749,7 @@ class Workflow(unittest.TestCase):
     """build.yml decides when the script runs. These read it as text."""
 
     def test_every_edition_names_itself_and_hands_its_digest_on(self):
-        self.assertEqual(editions(), ["kde", "kde-nvidia"])
+        self.assertEqual(editions(), ["kde", "kde-nvidia", "cosmic", "cosmic-nvidia"])
         check, build = "\n".join(job("check")), job("bluebuild")
         outputs = build[build.index("    outputs:") + 1:build.index("    strategy:")]
         self.assertEqual([line.strip() for line in outputs],

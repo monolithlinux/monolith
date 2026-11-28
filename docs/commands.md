@@ -191,14 +191,19 @@ command also says how the menu is drawn larger there.
 
 ## Switching editions
 
-Monolith comes in two editions. KDE is for AMD or Intel graphics, or an older
-NVIDIA card on Nouveau/NVK. KDE NVIDIA has NVIDIA's open driver, for cards from
-the GTX 16 or RTX 20 series onward.
+Each desktop comes in two editions. KDE and COSMIC are for AMD or Intel
+graphics, or an older NVIDIA card on Nouveau/NVK. KDE NVIDIA and COSMIC NVIDIA
+have NVIDIA's open driver, for cards from the GTX 16 or RTX 20 series onward.
 
-`monolith edition` shows which one you're on, and `monolith edition kde-nvidia` or
-`monolith edition kde` switches. Your apps, files and settings stay, and the
-switch takes effect when you restart. To call it off before then, run
-`monolith edition` with the edition you're still on.
+`monolith edition` shows which one you're on and switches between the two for
+your desktop: `monolith edition kde-nvidia` or `monolith edition kde` on KDE,
+`monolith edition cosmic-nvidia` or `monolith edition cosmic` on COSMIC. Your
+apps, files and settings stay, and the switch takes effect when you restart. To
+call it off before then, run `monolith edition` with the edition you're still
+on.
+
+It doesn't switch desktops, because the old desktop's settings would come along
+to the new one.
 
 ## Setup
 

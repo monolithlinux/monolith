@@ -62,6 +62,8 @@ jobs:
         run: bash tests/pick-editions.sh
       - name: Test the Plasma version check
         run: python3 tests/plasma-versions.py
+      - name: Test COSMIC Terminal's defaults
+        run: python3 tests/cosmic-terminal.py
       - name: Test the boot menu's large font
         run: python3 tests/boot-menu-font.py
       - name: Test the startup screen
@@ -120,6 +122,8 @@ jobs:
           entries=()
           if has kde; then entries+=('{"label":"KDE","edition":"kde","recipe":"recipe-kde.yml"}'); fi
           if has kde-nvidia; then entries+=('{"label":"KDE NVIDIA","edition":"kde-nvidia","recipe":"recipe-kde-nvidia.yml"}'); fi
+          if has cosmic; then entries+=('{"label":"COSMIC","edition":"cosmic","recipe":"recipe-cosmic.yml"}'); fi
+          if has cosmic-nvidia; then entries+=('{"label":"COSMIC NVIDIA","edition":"cosmic-nvidia","recipe":"recipe-cosmic-nvidia.yml"}'); fi
 
           if [ "${#entries[@]}" -gt 0 ]; then
             ( IFS=,; echo "editions=[${entries[*]}]" >> "${GITHUB_OUTPUT}" )
@@ -196,6 +200,8 @@ jobs:
     outputs:
       kde: ${{ steps.pushed.outputs.kde }}
       kde-nvidia: ${{ steps.pushed.outputs.kde-nvidia }}
+      cosmic: ${{ steps.pushed.outputs.cosmic }}
+      cosmic-nvidia: ${{ steps.pushed.outputs.cosmic-nvidia }}
     strategy:
       fail-fast: false
       matrix:

@@ -395,6 +395,8 @@ Monolith already includes 554 Ghostty themes (see
 Ghostty 1.3.1: Ghostty's official 463-theme bundle, including names such as
 `Gruvbox Dark`, downloaded for your account.
 
+The category and the entry only show up where Ghostty is installed.
+
 Your own theme files and your selected theme are kept.
 `monolith update ghostty-themes` repairs the collection,
 `monolith install ghostty-themes` downloads it again, and

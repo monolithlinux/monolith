@@ -201,12 +201,13 @@ def check_themes():
 # --- everything else, through the catalog --------------------------------------------------------
 
 def catalog_apps():
-    """The catalog's apps as {ID: name}, in its order."""
-    listed = subprocess.run(["bash", str(CATALOG), "__ids"], capture_output=True, text=True, timeout=60,
+    """The catalog's apps as {ID: name}, in its order. __catalog lists them all; __ids leaves out what
+    the computer it runs on isn't offered, such as Ghostty's themes where there is no Ghostty."""
+    listed = subprocess.run(["bash", str(CATALOG), "__catalog"], capture_output=True, text=True, timeout=60,
                             stdin=subprocess.DEVNULL, env={"PATH": os.environ.get("PATH", os.defpath), "HOME": "/"})
     apps = dict(line.split("\t", 1) for line in listed.stdout.splitlines() if "\t" in line)
     if listed.returncode != 0 or not apps:
-        sys.exit(f"Could not list the catalog's apps with {CATALOG.relative_to(ROOT)} __ids: "
+        sys.exit(f"Could not list the catalog's apps with {CATALOG.relative_to(ROOT)} __catalog: "
                  f"{(listed.stderr or listed.stdout).strip() or f'exit status {listed.returncode}'}")
     return apps
 

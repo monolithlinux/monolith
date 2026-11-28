@@ -171,7 +171,12 @@ printf '#!/bin/sh\n' >"$bin/sleep"
 for scheduler in scx_lavd scx_bpfland; do printf '#!/bin/sh\n' >"$bin/$scheduler"; done
 chmod +x "$bin"/*
 
-printf 'NAME=Monolith\nPRETTY_NAME="Monolith KDE (NVIDIA)"\n' >"$test_root/os-release"
+# desktop_is NAME: the os-release of that desktop's image. It says which
+# editions a computer is offered.
+desktop_is() {
+    printf 'NAME=Monolith\nPRETTY_NAME="Monolith %s (NVIDIA)"\nVARIANT_ID="%s"\n' "${1^^}" "$1" >"$test_root/os-release"
+}
+desktop_is kde
 cat >"$test_root/tags.json" <<'EOF'
 {"name": "monolithlinux/kde", "tags": ["20261025", "20261026", "20261027", "20261028", "20261029",
  "20261029-44", "latest", "44", "pr-50-44", "sha256-0123.sig"]}
@@ -791,9 +796,99 @@ rebased kde-nvidia:latest
 
 reset
 out="$(yes_run edition gnome)" && fail 'switched to an edition that does not exist'
-has "$out" "Monolith's editions are kde kde-nvidia."
+has "$out" "Monolith's editions for this desktop are kde kde-nvidia."
+lacks "$out" 'another desktop'
 has "$(run edition kde)" 'Nothing changed.'
 not_rebased
+
+# No edition switches desktops. The other desktop's editions are refused, and
+# each desktop is offered its own two.
+reset
+deployments signed kde latest 44.20261029.0
+out="$(yes_run edition cosmic-nvidia)" && fail 'switched from KDE to COSMIC'
+has "$out" "The cosmic-nvidia edition has another desktop, and this command doesn't switch desktops."
+has "$out" "Monolith's editions for this desktop are kde kde-nvidia."
+not_rebased
+lacks "$(run edition)" cosmic
+[ "$(run edition --help)" = 'Usage: monolith edition [kde|kde-nvidia]
+
+  monolith edition              show your edition
+  monolith edition kde          switch to KDE (AMD, Intel or older NVIDIA graphics)
+  monolith edition kde-nvidia   switch to KDE NVIDIA (GTX 16, RTX 20 and newer)
+
+Your apps, files and settings stay. Nothing changes until you restart.' ] || fail "edition --help on KDE: $(run edition --help)"
+
+desktop_is cosmic
+reset
+deployments signed cosmic latest 45.20261127.0
+out="$(run edition)"
+has "$out" "You're on COSMIC, for AMD or Intel graphics"
+has "$out" "To switch to COSMIC NVIDIA, with NVIDIA's open driver"
+has "$out" '    monolith edition cosmic-nvidia'
+lacks "$out" kde
+[ "$(run edition --help)" = 'Usage: monolith edition [cosmic|cosmic-nvidia]
+
+  monolith edition                 show your edition
+  monolith edition cosmic          switch to COSMIC (AMD, Intel or older NVIDIA graphics)
+  monolith edition cosmic-nvidia   switch to COSMIC NVIDIA (GTX 16, RTX 20 and newer)
+
+Your apps, files and settings stay. Nothing changes until you restart.' ] || fail "edition --help on COSMIC: $(run edition --help)"
+out="$(yes_run edition cosmic-nvidia)" || fail "$out"
+has "$out" "This switches you to the newest build of COSMIC NVIDIA, with NVIDIA's open driver"
+lacks "$out" "doesn't seem to have an NVIDIA card"
+rebased cosmic-nvidia:latest
+reset
+no_nvidia
+deployments signed cosmic latest 45.20261127.0
+out="$(yes_run edition cosmic-nvidia)"
+has "$out" "doesn't seem to have an NVIDIA card, and the COSMIC NVIDIA"
+rebased cosmic-nvidia:latest
+reset
+deployments signed cosmic-nvidia latest 45.20261127.0
+out="$(yes_run edition cosmic)"
+has "$out" 'Your NVIDIA card will run on Nouveau/NVK'
+rebased cosmic:latest
+reset
+deployments signed cosmic latest 45.20261127.0
+out="$(yes_run edition kde)" && fail 'switched from COSMIC to KDE'
+has "$out" "The kde edition has another desktop, and this command doesn't switch desktops."
+has "$out" "Monolith's editions for this desktop are cosmic cosmic-nvidia."
+not_rebased
+# status sends a COSMIC computer to COSMIC's editions, not to KDE's.
+reset
+deployments signed cosmic latest 45.20261127.0
+rm -rf "$sys/module/nvidia"
+out="$(run status)" || fail "an NVIDIA card on the COSMIC edition needs attention: $out"
+has "$out" '  - NVIDIA        card found, running on Nouveau/NVK'
+has "$out" '-> monolith edition cosmic-nvidia'
+lacks "$out" 'monolith edition kde'
+reset
+deployments signed cosmic-nvidia latest 45.20261127.0
+rm -rf "$sys/module/nvidia"
+out="$(run status)" && fail 'COSMIC NVIDIA without its driver passed'
+has "$out" 'Cards older than the GTX 16 series need the COSMIC edition:'
+has "$out" '-> monolith edition cosmic'
+lacks "$out" 'monolith edition cosmic-nvidia'
+lacks "$out" 'monolith edition kde'
+reset
+no_nvidia
+deployments signed cosmic-nvidia latest 45.20261127.0
+out="$(run status)" && fail 'COSMIC NVIDIA without a card passed'
+has "$out" 'The COSMIC edition fits this computer better:'
+has "$out" '-> monolith edition cosmic'
+lacks "$out" 'monolith edition cosmic-nvidia'
+# A bug report from there gives COSMIC's version where a KDE one gives Plasma's.
+reset
+deployments signed cosmic latest 45.20261127.0
+out="$(WAYLAND_DISPLAY=wayland-0 run report-bug)" || fail "$out"
+has "$out" 'Build: 45.20261127.0 from cosmic:latest (signed: yes)'
+has "$out" 'COSMIC: '
+lacks "$out" 'Plasma: '
+desktop_is kde
+reset
+out="$(WAYLAND_DISPLAY=wayland-0 run report-bug)" || fail "$out"
+has "$out" 'Plasma: '
+lacks "$out" 'COSMIC: '
 
 # The editions here are the ones CI builds.
 editions="$(bash -c '. "$1"; echo "${MONOLITH_EDITIONS[*]}"' _ "$libexec/common.sh")"

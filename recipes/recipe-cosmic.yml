@@ -1,0 +1,59 @@
+---
+# yaml-language-server: $schema=https://schema.blue-build.org/recipe-v1.json
+name: cosmic
+description: Monolith COSMIC image based on Fedora COSMIC Atomic.
+base-image: quay.io/fedora-ostree-desktops/cosmic-atomic
+image-version: 45
+
+modules:
+  - from-file: common.yml
+
+  - from-file: cosmic.yml
+
+  - type: os-release
+    properties:
+      NAME: Monolith
+      PRETTY_NAME: Monolith COSMIC
+      ID: monolith
+      ID_LIKE: fedora
+      VARIANT: COSMIC
+      VARIANT_ID: cosmic
+      DEFAULT_HOSTNAME: monolith
+      LOGO: monolith-logo-icon
+      HOME_URL: https://github.com/monolithlinux/monolith
+      DOCUMENTATION_URL: https://github.com/monolithlinux/monolith
+      SUPPORT_URL: https://github.com/monolithlinux/monolith/issues
+      BUG_REPORT_URL: https://github.com/monolithlinux/monolith/issues
+
+  - type: script
+    snippets:
+      - |
+        # Changing the login shell breaks an account when a later image lacks
+        # that shell; COSMIC Terminal starts fish by itself. Last, so no later
+        # package transaction can restore them.
+        set -euxo pipefail
+        rm -f /usr/bin/chsh /usr/bin/lchsh
+        test ! -e /usr/bin/chsh
+        test ! -e /usr/bin/lchsh
+
+  # After the last package change: OpenCL has to run and Monolith News has to
+  # open its window. See the scripts.
+  - type: script
+    scripts:
+      - check-opencl.py
+      - check-monolith-news.py
+
+  - type: initramfs
+
+  # Plymouth shows the startup screen from the initramfs: check that the
+  # theme, its plugin and a font got in. See the script.
+  - type: script
+    scripts:
+      - check-boot-splash.py
+
+  - type: signing
+
+  # Last, after everything that writes files; see the script.
+  - type: script
+    scripts:
+      - stabilize-layers.py
