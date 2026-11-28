@@ -227,5 +227,5 @@ dismissed it; publish a new `id` for that.
 Preview your change before opening a pull request:
 
 ```bash
-files/kde/usr/bin/monolith-news --preview news/announcements.toml
+files/system/usr/bin/monolith-news --preview news/announcements.toml
 ```
